@@ -1,0 +1,54 @@
+#!/usr/bin/env -S gdb -q -x
+
+define rebuild
+	!ninja
+	if $_shell_exitcode == 0
+		directory
+		file drift
+	end
+end
+
+define rerun
+	rebuild
+	if $_shell_exitcode == 0
+		if $argc == 1
+			run $arg0
+		else
+			run
+		end
+	end
+end
+
+define sav-breakpoints
+	save breakpoints breakpoints.sav
+end
+
+rebuild
+start --vk --fullscreen
+
+delete breakpoints
+source breakpoints.sav
+
+break DriftAbort
+commands
+	backtrace
+	select-frame 1
+	info args
+	info locals
+end
+
+break DriftBreakpoint
+commands
+	return
+	frame
+end
+
+break __sanitizer::Die
+commands
+	select-frame 4
+	frame
+end
+
+printf "Ready to debug. Launching...\n"
+set scheduler-locking step
+continue

@@ -1,0 +1,14 @@
+art/
+bin/
+build/
+ext/
+gfx/
+music/
+sfx/
+TODO
+*.txt
+*.cap
+*.md
+*.tgz
+*.zip
+
