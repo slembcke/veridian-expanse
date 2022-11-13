@@ -53,7 +53,7 @@ typedef struct {
 	GLsync fence;
 } DriftGLRenderer;
 
-#define DRIFT_GL_RENDERER_COUNT 4
+#define DRIFT_GL_RENDERER_COUNT 2
 
 typedef struct {
 	SDL_GLContext* gl_context;
@@ -97,6 +97,7 @@ static PFNGLDISABLEPROC _glDisable;
 static PFNGLSCISSORPROC _glScissor;
 static PFNGLBLENDEQUATIONSEPARATEPROC _glBlendEquationSeparate;
 static PFNGLBLENDFUNCSEPARATEPROC _glBlendFuncSeparate;
+static PFNGLBLENDCOLORPROC _glBlendColor;
 static PFNGLCULLFACEPROC _glCullFace;
 static PFNGLENABLEVERTEXATTRIBARRAYPROC _glEnableVertexAttribArray;
 static PFNGLDISABLEVERTEXATTRIBARRAYPROC _glDisableVertexAttribArray;
@@ -172,6 +173,7 @@ static void DriftLoadGL(void){
 	DRIFT_GL_LOAD_FUNC(glScissor);
 	DRIFT_GL_LOAD_FUNC(glBlendEquationSeparate);
 	DRIFT_GL_LOAD_FUNC(glBlendFuncSeparate);
+	DRIFT_GL_LOAD_FUNC(glBlendColor);
 	DRIFT_GL_LOAD_FUNC(glCullFace);
 	DRIFT_GL_LOAD_FUNC(glEnableVertexAttribArray);
 	DRIFT_GL_LOAD_FUNC(glDisableVertexAttribArray);
@@ -250,14 +252,14 @@ static bool DriftGLCheckShaderError(GLuint obj, GLenum status, ShaderParamFunc p
 	}
 }
 
-static void DriftGLLogShader(const char *label, const DriftConstData* source){
+static void DriftGLLogShader(const char *label, const DriftData source){
 	DRIFT_LOG("%s", label);
 	
-	const char *cursor = source->data;
+	const char *cursor = source.ptr;
 	for(int line = 1; true; line++){
 		fprintf(stderr, "% 4d: ", line);
 		while(true){
-			if(cursor == source->data + source->length) return;
+			if(cursor == source.ptr + source.size) return;
 			fputc(cursor[0], stderr);
 			cursor++;
 			
@@ -266,9 +268,9 @@ static void DriftGLLogShader(const char *label, const DriftConstData* source){
 	}
 }
 
-static GLuint DriftGLCompileShaderSource(GLenum type, const DriftConstData* source){
+static GLuint DriftGLCompileShaderSource(GLenum type, const DriftData source){
 	GLuint shader = _glCreateShader(type);
-	_glShaderSource(shader, 1, (const GLchar *[]){source->data}, (GLint[]){source->length});
+	_glShaderSource(shader, 1, (const GLchar *[]){source.ptr}, (GLint[]){source.size});
 	_glCompileShader(shader);
 	DRIFTGL_ASSERT_ERRORS();
 	
@@ -283,7 +285,7 @@ static GLuint DriftGLCompileShaderSource(GLenum type, const DriftConstData* sour
 	}
 }
 
-static GLuint DriftGLCompileShader(const DriftConstData* vsource, const DriftConstData* fsource){
+static GLuint DriftGLCompileShader(const DriftData vsource, const DriftData fsource){
 	GLuint shader = _glCreateProgram();
 	DRIFTGL_ASSERT_ERRORS();
 	
@@ -323,17 +325,17 @@ static const struct {
 	GLint size;
 	bool normalized;
 	bool integer;
-} DriftGfxTypeMap[_DRIFT_TYPE_COUNT] = {
-	[DRIFT_TYPE_U8] = {GL_UNSIGNED_BYTE, 1, .integer = true},
-	[DRIFT_TYPE_U16] = {GL_UNSIGNED_SHORT, 1, .integer = true},
-	[DRIFT_TYPE_U8_2] = {GL_UNSIGNED_BYTE, 2, .integer = true},
-	[DRIFT_TYPE_U8_4] = {GL_UNSIGNED_BYTE, 4, .integer = true},
-	[DRIFT_TYPE_UNORM8_2] = {GL_UNSIGNED_BYTE, 2, .normalized = true},
-	[DRIFT_TYPE_UNORM8_4] = {GL_UNSIGNED_BYTE, 4, .normalized = true},
-	[DRIFT_TYPE_FLOAT32] = {GL_FLOAT, 1},
-	[DRIFT_TYPE_FLOAT32_2] = {GL_FLOAT, 2},
-	[DRIFT_TYPE_FLOAT32_3] = {GL_FLOAT, 3},
-	[DRIFT_TYPE_FLOAT32_4] = {GL_FLOAT, 4},
+} DriftGfxTypeMap[_DRIFT_GFX_TYPE_COUNT] = {
+	[DRIFT_GFX_TYPE_U8] = {GL_UNSIGNED_BYTE, 1, .integer = true},
+	[DRIFT_GFX_TYPE_U16] = {GL_UNSIGNED_SHORT, 1, .integer = true},
+	[DRIFT_GFX_TYPE_U8_2] = {GL_UNSIGNED_BYTE, 2, .integer = true},
+	[DRIFT_GFX_TYPE_U8_4] = {GL_UNSIGNED_BYTE, 4, .integer = true},
+	[DRIFT_GFX_TYPE_UNORM8_2] = {GL_UNSIGNED_BYTE, 2, .normalized = true},
+	[DRIFT_GFX_TYPE_UNORM8_4] = {GL_UNSIGNED_BYTE, 4, .normalized = true},
+	[DRIFT_GFX_TYPE_FLOAT32] = {GL_FLOAT, 1},
+	[DRIFT_GFX_TYPE_FLOAT32_2] = {GL_FLOAT, 2},
+	[DRIFT_GFX_TYPE_FLOAT32_3] = {GL_FLOAT, 3},
+	[DRIFT_GFX_TYPE_FLOAT32_4] = {GL_FLOAT, 4},
 };
 
 static const GLenum DriftGfxBlendFactorToGL[] = {
@@ -348,6 +350,7 @@ static const GLenum DriftGfxBlendFactorToGL[] = {
 	[DRIFT_GFX_BLEND_FACTOR_DST_ALPHA] = GL_DST_ALPHA,
 	[DRIFT_GFX_BLEND_FACTOR_ONE_MINUS_DST_ALPHA] = GL_ONE_MINUS_DST_ALPHA,
 	[DRIFT_GFX_BLEND_FACTOR_SRC_ALPHA_SATURATE] = GL_SRC_ALPHA_SATURATE,
+	[DRIFT_GFX_BLEND_FACTOR_CONSTANT_COLOR] = GL_CONSTANT_COLOR,
 };
 
 static const GLenum DriftGfxBlendOpToGL[] = {
@@ -390,7 +393,7 @@ static void DriftGLBindBuffers(DriftGLRenderer *renderer, bool flush_and_unmap){
 	}
 }
 
-void DriftGLRendererExecute(DriftGLRenderer* renderer){
+static void DriftGLRendererExecute(DriftGLRenderer* renderer){
 	DriftGLBindBuffers(renderer, true);
 	
 	_glEnable(GL_SCISSOR_TEST);
@@ -400,7 +403,7 @@ void DriftGLRendererExecute(DriftGLRenderer* renderer){
 	DriftGLRendererMapAndUnbindBuffers(renderer);
 }
 
-void DriftGLRendererWait(DriftGLRenderer* renderer){
+static void DriftGLRendererWait(DriftGLRenderer* renderer){
 	if(renderer->fence){
 		switch(_glClientWaitSync(renderer->fence, GL_SYNC_FLUSH_COMMANDS_BIT, UINT64_MAX)){
 			case GL_ALREADY_SIGNALED:
@@ -456,13 +459,16 @@ static void DriftGLCommandSetScissor(const DriftGfxRenderer* renderer, const Dri
 }
 
 GLenum TextureTarget[] = {
-	[DRIFT_GFX_TEXTURE_TYPE_2D] = GL_TEXTURE_2D,
-	[DRIFT_GFX_TEXTURE_TYPE_2D_ARRAY] = GL_TEXTURE_2D_ARRAY,
+	[DRIFT_GFX_TEXTURE_2D] = GL_TEXTURE_2D,
+	[DRIFT_GFX_TEXTURE_2D_ARRAY] = GL_TEXTURE_2D_ARRAY,
 };
 
 static void DriftGLCommandBindPipeline(const DriftGfxRenderer* renderer, const DriftGfxCommand* command, DriftGfxRenderState* state){
 	DriftGLRenderer* _renderer = (DriftGLRenderer*)renderer;
 	DriftGfxCommandPipeline* _command = (DriftGfxCommandPipeline*)command;
+	
+	// TODO Does it make sense to cache the bindings?
+	const DriftGfxPipelineBindings* bindings = _command->bindings;
 	
 	const DriftGfxPipeline* pipeline = _command->pipeline;
 	const DriftGfxPipeline* current_pipeline = state->pipeline;
@@ -481,6 +487,11 @@ static void DriftGLCommandBindPipeline(const DriftGfxRenderer* renderer, const D
 					DriftGfxBlendFactorToGL[blend->color_src_factor], DriftGfxBlendFactorToGL[blend->color_dst_factor],
 					DriftGfxBlendFactorToGL[blend->alpha_src_factor], DriftGfxBlendFactorToGL[blend->alpha_dst_factor]
 				);
+				
+				if(blend->enable_blend_color){
+					DriftVec4 c = bindings->blend_color;
+					_glBlendColor(c.r, c.g, c.b, c.a);
+				}
 			} else {
 				_glDisable(GL_BLEND);
 			}
@@ -505,15 +516,12 @@ static void DriftGLCommandBindPipeline(const DriftGfxRenderer* renderer, const D
 		}
 	}
 	
-	// TODO Does it make sense to cache the bindings?
-	const DriftGfxPipelineBindings* bindings = _command->bindings;
-	
 	const DriftGfxShaderDesc* desc = pipeline->options.shader->desc;
 	size_t vertex_stride = desc->vertex_stride;
 	size_t instance_stride = desc->instance_stride;
 	for(int i = 0; i < DRIFT_GFX_VERTEX_ATTRIB_COUNT; i++){
 		DriftGfxVertexAttrib attr = desc->vertex[i];
-		if(attr.type != _DRIFT_TYPE_NONE){
+		if(attr.type != _DRIFT_GFX_TYPE_NONE){
 			DRIFT_ASSERT(DriftGfxTypeMap[attr.type].size > 0, "Invalid vertex attrib type");
 			_glEnableVertexAttribArray(i);
 			size_t stride = (attr.instanced ? instance_stride : vertex_stride);
@@ -537,7 +545,7 @@ static void DriftGLCommandBindPipeline(const DriftGfxRenderer* renderer, const D
 	
 	DriftGLTexture** textures = (DriftGLTexture**)bindings->textures;
 	DriftGLSampler** samplers = (DriftGLSampler**)bindings->samplers;
-	for(uint i = 0; i < DRIFT_GFX_SAMPLER_BINDING_COUNT; i++){
+	for(uint i = 0; i < DRIFT_GFX_TEXTURE_BINDING_COUNT; i++){
 		int texture_idx = shader->combined_mapping[i].texture;
 		if(texture_idx >= 0){
 			DriftGLTexture* texture = textures[texture_idx];
@@ -565,7 +573,7 @@ static void DriftGLCommandDrawIndexed(const DriftGfxRenderer* renderer, const Dr
 	DRIFTGL_ASSERT_ERRORS();
 }
 
-DriftGLRenderer* DriftGLRendererNew(void){
+static DriftGLRenderer* DriftGLRendererNew(void){
 	DriftGLRenderer* renderer = DriftAlloc(DriftSystemMem, sizeof(DriftGLRenderer));
 	(*renderer) = (DriftGLRenderer){};
 	DriftGfxRendererInit(&renderer->base, (DriftGfxVTable){
@@ -599,7 +607,7 @@ static void DriftGLShaderFree(const DriftGfxDriver* driver, void* obj){
 	_glDeleteProgram(shader->id);
 }
 
-static DriftGfxShader* DriftGLShaderNew(const DriftGfxDriver* driver, const char* shader_name, const DriftGfxShaderDesc* desc, const DriftConstData* vsource, const DriftConstData* fsource){
+static DriftGfxShader* DriftGLShaderNew(const DriftGfxDriver* driver, const char* shader_name, const DriftGfxShaderDesc* desc, const DriftData vsource, const DriftData fsource){
 	DriftSDLGLContext* ctx = driver->ctx;
 	DriftGLShader* shader = DriftAlloc(DriftSystemMem, sizeof(*shader));
 	DriftMapInsert(&ctx->destructors, (uintptr_t)shader, (uintptr_t)DriftGLShaderFree);
@@ -708,30 +716,18 @@ static DriftGfxShader* DriftGLShaderNew(const DriftGfxDriver* driver, const char
 }
 
 static const GLenum TextureInternalFormat[] = {
-	[DRIFT_GFX_TEXTURE_FORMAT_SRGBA8] = GL_SRGB8_ALPHA8,
-	[DRIFT_GFX_TEXTURE_FORMAT_R8] = GL_R8,
-	[DRIFT_GFX_TEXTURE_FORMAT_RG8] = GL_RG8,
 	[DRIFT_GFX_TEXTURE_FORMAT_RGBA8] = GL_RGBA8,
 	[DRIFT_GFX_TEXTURE_FORMAT_RGBA16F] = GL_RGBA16F,
-	[DRIFT_GFX_TEXTURE_FORMAT_R8U] = GL_R8UI,
 };
 
 static const GLenum TextureFormat[] = {
-	[DRIFT_GFX_TEXTURE_FORMAT_SRGBA8] = GL_RGBA,
-	[DRIFT_GFX_TEXTURE_FORMAT_R8] = GL_RED,
-	[DRIFT_GFX_TEXTURE_FORMAT_RG8] = GL_RG,
 	[DRIFT_GFX_TEXTURE_FORMAT_RGBA8] = GL_RGBA,
 	[DRIFT_GFX_TEXTURE_FORMAT_RGBA16F] = GL_RGBA,
-	[DRIFT_GFX_TEXTURE_FORMAT_R8U] = GL_RED_INTEGER,
 };
 
 static const GLenum TextureType[] = {
-	[DRIFT_GFX_TEXTURE_FORMAT_SRGBA8] = GL_UNSIGNED_BYTE,
-	[DRIFT_GFX_TEXTURE_FORMAT_R8] = GL_UNSIGNED_BYTE,
-	[DRIFT_GFX_TEXTURE_FORMAT_RG8] = GL_UNSIGNED_BYTE,
 	[DRIFT_GFX_TEXTURE_FORMAT_RGBA8] = GL_UNSIGNED_BYTE,
 	[DRIFT_GFX_TEXTURE_FORMAT_RGBA16F] = GL_HALF_FLOAT,
-	[DRIFT_GFX_TEXTURE_FORMAT_R8U] = GL_UNSIGNED_BYTE,
 };
 
 static const GLenum TextureAddressMode[] = {
@@ -784,7 +780,7 @@ static void DriftGLTextureFree(const DriftGfxDriver* driver, void* obj){
 	_glDeleteTextures(1, &texture->id);
 }
 
-DriftGfxTexture* DriftGLTextureNew(const DriftGfxDriver* driver, uint width, uint height, DriftGfxTextureOptions options){
+static DriftGfxTexture* DriftGLTextureNew(const DriftGfxDriver* driver, uint width, uint height, DriftGfxTextureOptions options){
 	DriftAppAssertGfxThread();
 	
 	DriftSDLGLContext* ctx = driver->ctx;
@@ -803,10 +799,10 @@ DriftGfxTexture* DriftGLTextureNew(const DriftGfxDriver* driver, uint width, uin
 
 	_glBindTexture(target, texture->id);
 	switch(options.type){
-		case DRIFT_GFX_TEXTURE_TYPE_2D: {
+		case DRIFT_GFX_TEXTURE_2D: {
 			_glTexImage2D(target, 0, internalFormat, (GLint)width, (GLint)height, 0, format, type, NULL);
 		} break;
-		case DRIFT_GFX_TEXTURE_TYPE_2D_ARRAY: {
+		case DRIFT_GFX_TEXTURE_2D_ARRAY: {
 			_glTexImage3D(target, 0, internalFormat, (GLint)width, (GLint)height, options.layers, 0, format, type, NULL);
 		} break;
 		default: DRIFT_ABORT("Invalid enumeration.");
@@ -826,7 +822,7 @@ DriftGfxTexture* DriftGLTextureNew(const DriftGfxDriver* driver, uint width, uin
 	return &texture->base;
 }
 
-void DriftGLLoadTextureLayer(const DriftGfxDriver* driver, DriftGfxTexture* texture, uint layer, const void* pixels){
+static void DriftGLLoadTextureLayer(const DriftGfxDriver* driver, DriftGfxTexture* texture, uint layer, const void* pixels){
 	DriftAppAssertGfxThread();
 	
 	DriftGLTexture* _texture = (DriftGLTexture*)texture;
@@ -836,10 +832,10 @@ void DriftGLLoadTextureLayer(const DriftGfxDriver* driver, DriftGfxTexture* text
 	
 	_glBindTexture(target, _texture->id);
 	switch(texture->options.type){
-		case DRIFT_GFX_TEXTURE_TYPE_2D: {
+		case DRIFT_GFX_TEXTURE_2D: {
 			_glTexSubImage2D(target, 0, 0, 0, texture->width, texture->height, format, type, pixels);
 		} break;
-		case DRIFT_GFX_TEXTURE_TYPE_2D_ARRAY: {
+		case DRIFT_GFX_TEXTURE_2D_ARRAY: {
 			_glTexSubImage3D(target, 0, 0, 0, layer, texture->width, texture->height, 1, format, type, pixels);
 		} break;
 		default: DRIFT_ABORT("Invalid enumeration.");
@@ -871,10 +867,10 @@ static DriftGfxRenderTarget* DriftGLRenderTargetNew(const DriftGfxDriver* driver
 		DriftGLTexture* texture = (DriftGLTexture*)options.bindings[i].texture;
 		if(texture){
 			switch(texture->base.options.type){
-				case DRIFT_GFX_TEXTURE_TYPE_2D: {
+				case DRIFT_GFX_TEXTURE_2D: {
 					_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, texture->id, 0);
 				} break;
-				case DRIFT_GFX_TEXTURE_TYPE_2D_ARRAY: {
+				case DRIFT_GFX_TEXTURE_2D_ARRAY: {
 					_glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, texture->id, 0, options.bindings[i].layer);
 				} break;
 				default: DRIFT_ABORT("Invalid enumeration.");
@@ -900,11 +896,10 @@ static DriftGfxRenderTarget* DriftGLRenderTargetNew(const DriftGfxDriver* driver
 static DriftGfxShader* DriftGLShaderLoad(const DriftGfxDriver* driver, const char* name, const DriftGfxShaderDesc* desc){
 	DriftAppAssertGfxThread();
 	
-	char filename[64];
-	snprintf(filename, sizeof(filename), "shaders/%s%s", name, ".vert");
-	const DriftConstData* vshader = DriftAssetGet(filename);
-	snprintf(filename, sizeof(filename), "shaders/%s%s", name, ".frag");
-	const DriftConstData* fshader = DriftAssetGet(filename);
+	u8 buffer[64*1024];
+	DriftMem* mem = DriftLinearMemInit(buffer, sizeof(buffer), "Shader Mem");
+	DriftData vshader = DriftAssetLoad(mem, "shaders/%s%s", name, ".vert");
+	DriftData fshader = DriftAssetLoad(mem, "shaders/%s%s", name, ".frag");
 	return DriftGLShaderNew(driver, name, desc, vshader, fshader);
 }
 
@@ -989,7 +984,7 @@ void* DriftShellSDLGL(DriftApp* app, DriftShellEvent event, void* shell_value){
 			u32 window_flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;
 			if(app->fullscreen) window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 			
-			app->shell_window = SDL_CreateWindow("Drift SDL OpenGL", app->window_x, app->window_y, app->window_w, app->window_h, window_flags);
+			app->shell_window = SDL_CreateWindow("Veridian Expanse", app->window_x, app->window_y, app->window_w, app->window_h, window_flags);
 			DRIFT_ASSERT_HARD(app->shell_window, "Failed to create SDL window.");
 			
 			SDL_PumpEvents();
@@ -1014,7 +1009,7 @@ void* DriftShellSDLGL(DriftApp* app, DriftShellEvent event, void* shell_value){
 				.free_all = DriftGLFreeAll,
 			};
 			app->gfx_driver = driver;
-			tina_scheduler_enqueue(app->scheduler, "JobSDLGLInit", DriftSDLGLInitContext, app, 0, DRIFT_JOB_QUEUE_GFX, NULL);
+			tina_scheduler_enqueue(app->scheduler, DriftSDLGLInitContext, app, 0, DRIFT_JOB_QUEUE_GFX, NULL);
 		} break;
 		
 		case DRIFT_SHELL_SHOW_WINDOW: SDL_ShowWindow(app->shell_window); break;

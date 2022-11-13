@@ -5,7 +5,9 @@
 
 tina_scheduler* tina_job_get_scheduler(tina_job* job);
 
-void DriftThrottledParallelFor(tina_job* job, const char* name, tina_job_func func, void* user_data, uint count);
+void DriftThrottledParallelFor(tina_job* job, tina_job_func func, void* user_data, uint count);
+void tina_scheduler_enqueue_n(tina_scheduler* sched, tina_job_func* func, void* user_data, uint count, unsigned queue_idx, tina_group* group);
+void DriftParallelFor(tina_job* job, tina_job_func func, void* user_data, uint count);
 
 #define DRIFT_APP_DEFAULT_SCREEN_W 1280
 #define DRIFT_APP_DEFAULT_SCREEN_H 720
@@ -47,8 +49,16 @@ typedef void* DriftShellFunc(DriftApp* app, DriftShellEvent event, void* ctx);
 
 #define DRIFT_APP_MAX_THREADS 16u
 
+#define TMP_PREFS_FILENAME "prefs.bin"
+typedef struct {
+	float master_volume, music_volume;
+} DriftPreferences;
+
+void DriftPrefsIO(DriftIO* io);
+
 typedef struct DriftGfxDriver DriftGfxDriver;
 typedef struct DriftGfxRenderer DriftGfxRenderer;
+typedef struct DriftAudioContext DriftAudioContext;
 
 struct DriftApp {
 	int argc;
@@ -63,20 +73,25 @@ struct DriftApp {
 	tina_group module_entrypoint_jobs, module_rebuild_jobs;
 	
 	enum {
-		DRIFT_APP_MODULE_IDLE,
-		DRIFT_APP_MODULE_BUILDING,
-		DRIFT_APP_MODULE_ERROR,
-		DRIFT_APP_MODULE_READY,
+		DRIFT_MODULE_RUNNING, // Module is running normally.
+		DRIFT_MODULE_BUILDING, // Module is building.
+		DRIFT_MODULE_ERROR, // Module failed to build or load.
+		DRIFT_MODULE_READY, // Module is built and ready to reload.
 	} module_status;
 #endif
 	
-	tina_job_func* init_func;
+	DriftPreferences prefs;
+	
+	tina_job_func* entry_func;
 	DriftShellFunc* shell_func;
 	DriftShellFunc* shell_restart;
 	int window_x, window_y, window_w, window_h;
+	float scaling_factor;
 	void* shell_window;
 	void* shell_context;
 	bool fullscreen;
+	
+	DriftAudioContext* audio;
 	
 	// Jobs.
 	tina_scheduler* scheduler;
@@ -94,16 +109,16 @@ void* DriftShellSDLGL(DriftApp* app, DriftShellEvent event, void* shell_value);
 void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value);
 
 #if DRIFT_MODULES
-extern tina_job_func* DriftAppModuleStart;
-bool DriftAppModuleRequestReload(DriftApp* app, tina_job* job);
+void DriftModuleRun(tina_job* job);
+void DriftModuleRequestReload(DriftApp* app, tina_job* job);
 #endif
 
 int DriftMain(DriftApp* app);
 void DriftAppShowWindow(DriftApp* app);
-DriftGfxRenderer* DriftAppBeginFrame(DriftApp* app, DriftZoneMem* zone);
+DriftGfxRenderer* DriftAppBeginFrame(DriftApp* app, DriftMem* mem);
 void DriftAppPresentFrame(DriftApp* app, DriftGfxRenderer* renderer);
 void DriftAppHaltScheduler(DriftApp* app);
 void DriftAppToggleFullscreen(DriftApp* app);
 
-void DriftAppAssertMainThread();
-void DriftAppAssertGfxThread();
+void DriftAppAssertMainThread(void);
+void DriftAppAssertGfxThread(void);

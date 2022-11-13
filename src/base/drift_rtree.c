@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <string.h>
 
 #include "drift_base.h"
@@ -45,7 +46,7 @@ typedef struct {
 } PartitionContext;
 
 // Manhattan distance to nearest center.
-static float k_metric(DriftAABB2 bb, DriftVec2 p){return fabsf((bb.l + bb.r)/2 - p.x) + fabsf((bb.b + bb.t)/2 - p.y);}
+static float k_metric(DriftAABB2 bb, DriftVec2 p){return fabsf((bb.l + bb.r) - 2*p.x) + fabsf((bb.b + bb.t) - 2*p.y);}
 
 static void kmeans2(PartitionContext* ctx){
 	// Find the min/max bounding box centers.
@@ -83,11 +84,10 @@ static void kmeans2(PartitionContext* ctx){
 			// Weight by area.
 			float weight = (bb.r - bb.l)*(bb.t - bb.b);
 			DRIFT_ASSERT(fabsf(weight) < INFINITY, "Infinite weight.");
-			DriftVec2 center = DriftVec2Mul(DriftAABB2Center(bb), weight);
-			if((part[i] = k_metric(bb, mean0) < k_metric(bb, mean1))){
-				sum0 = DriftVec2Add(center, sum0), weight0 += weight;
+			if((part[i] = (k_metric(bb, mean0) < k_metric(bb, mean1)))){
+				sum0 = DriftVec2FMA(sum0, DriftAABB2Center(bb), weight), weight0 += weight;
 			} else {
-				sum1 = DriftVec2Add(center, sum1), weight1 += weight;
+				sum1 = DriftVec2FMA(sum1, DriftAABB2Center(bb), weight), weight1 += weight;
 			}
 		}
 		
@@ -343,7 +343,7 @@ DRIFT_ARRAY(DriftIndexPair) DriftRTreePairs(DriftRTree* tree, DriftAABB2* bounds
 								.tree = tree, .bounds = bounds, .pairs = leaf_queue, .next = leaf_ctx,
 								.result = DRIFT_ARRAY_NEW(mem, leaf_count*RTREE_BRANCH_FACTOR/4, DriftIndexPair),
 							}));
-							tina_scheduler_enqueue(sched, "JobRTreeLeaves", process_leaves_job, leaf_ctx, 0, DRIFT_JOB_QUEUE_WORK, &leaf_group);
+							tina_scheduler_enqueue(sched, process_leaves_job, leaf_ctx, 0, DRIFT_JOB_QUEUE_WORK, &leaf_group);
 							
 							leaf_queue = DRIFT_ARRAY_NEW(mem, leaf_count, DriftIndexPair);
 						}
@@ -379,3 +379,32 @@ DRIFT_ARRAY(DriftIndexPair) DriftRTreePairs(DriftRTree* tree, DriftAABB2* bounds
 	TracyCZoneEnd(ZONE_PAIRS);
 	return out_pairs;
 }
+
+#if DRIFT_DEBUG
+static bool intersection(DriftAABB2 bb, DriftVec2 origin, DriftVec2 dir){
+	DriftVec2 idir = {1/dir.x + FLT_MIN, 1/dir.y};
+	
+	float tx1 = (bb.l - origin.x)*idir.x;
+	float tx2 = (bb.r - origin.x)*idir.x;
+
+	float tmin = fminf(tx1, tx2);
+	float tmax = fmaxf(tx1, tx2);
+
+	float ty1 = (bb.b - origin.y)*idir.y;
+	float ty2 = (bb.t - origin.y)*idir.y;
+
+	tmin = fmaxf(tmin, fminf(ty1, ty2));
+	tmax = fminf(tmax, fmaxf(ty1, ty2));
+	DRIFT_LOG("%f %F", tmin, tmax);
+	return tmax >= fmaxf(0, tmin);
+}
+
+void unit_test_rtree(void){
+	DriftAABB2 bb = {-1, -1, 1, 1};
+	intersection(bb, (DriftVec2){-2,  0}, (DriftVec2){1, 0});
+	intersection(bb, (DriftVec2){-2, +1}, (DriftVec2){1, 0});
+	intersection(bb, (DriftVec2){-2, -1}, (DriftVec2){1, 0});
+	
+	DRIFT_LOG("R-Tree tests passed.");
+}
+#endif

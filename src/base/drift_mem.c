@@ -9,35 +9,30 @@
 #include "drift_types.h"
 #include "drift_util.h"
 #include "drift_mem.h"
+#include "drift_app.h"
 
 uint DriftAppGetThreadID(void);
 
 
-typedef void* DriftMemFunc(void* ctx, void* ptr, size_t osize, size_t nsize);
+typedef void* DriftMemFunc(DriftMem* mem, void* ptr, size_t osize, size_t nsize);
 
 struct DriftMem {
-	char const* name;
-	void* ctx;
 	DriftMemFunc* func;
+	char const* label;
 };
 
-void* DriftAlloc(DriftMem* mem, size_t size){return mem->func(mem->ctx, NULL, 0, size);}
+void* DriftAlloc(DriftMem* mem, size_t size){return mem->func(mem, NULL, 0, size);}
 void* DriftRealloc(DriftMem* mem, void* ptr, size_t osize, size_t nsize){
 	if(ptr == NULL || osize == 0) DRIFT_ASSERT_WARN(ptr == NULL && osize == 0, "Invalid realloc params.");
 	// DRIFT_LOG_DEBUG("Realloc from %u to %u bytes.", osize, nsize);
-	return mem->func(mem->ctx, ptr, osize, nsize);
+	return mem->func(mem, ptr, osize, nsize);
 }
-void DriftDealloc(DriftMem* mem, void* ptr, size_t size){if(ptr) mem->func(mem->ctx, ptr, size, 0);}
+void DriftDealloc(DriftMem* mem, void* ptr, size_t size){if(ptr) mem->func(mem, ptr, size, 0);}
 
-static void* DriftSystemMemFunc(void* ctx, void* ptr, size_t osize, size_t nsize){
+static void* DriftSystemMemFunc(DriftMem* mem, void* ptr, size_t osize, size_t nsize){
 	if(osize == 0){
-		// return calloc(1, nsize);
 		DRIFT_ASSERT(nsize < 1024*1024*1024, "Huge allocation detected!");
-		void* ptr = calloc(1, nsize);
-#if DRIFT_DEBUG
-		// memset(ptr, 0xFF, nsize);
-#endif
-		return ptr;
+		return calloc(1, nsize);
 	} else if(nsize == 0){
 		free(ptr);
 		return NULL;
@@ -47,18 +42,19 @@ static void* DriftSystemMemFunc(void* ctx, void* ptr, size_t osize, size_t nsize
 }
 
 DriftMem* const DriftSystemMem = &(DriftMem){
-	.name = "DriftSystemMemory",
 	.func = DriftSystemMemFunc,
+	.label= "DriftSystemMemory",
 };
 
 
 // MARK: Linear Allocator.
 
-struct DriftLinearMem {
+typedef struct DriftLinearMem {
+	DriftMem mem;
 	uintptr_t buffer, cursor;
-};
+} DriftLinearMem;
 
-void* DriftLinearMemAlloc(DriftLinearMem* mem, size_t size){
+static void* DriftLinearMemAlloc(DriftLinearMem* mem, size_t size){
 	// Check for underflow first.
 	if(size <= mem->cursor){
 		// Bump downwards and apply alignment.
@@ -73,149 +69,119 @@ void* DriftLinearMemAlloc(DriftLinearMem* mem, size_t size){
 	return NULL;
 }
 
-DriftLinearMem* DriftLinearMemInit(void* buffer, size_t size){
-	// Allocate the header from the block, copy, and return it.
+static void* DriftLinearMemFunc(DriftMem* mem, void* ptr, size_t osize, size_t nsize){
+	if(nsize <= osize){
+		// If shrinking or dellocating, do nothing.
+		return (nsize > 0 ? ptr : NULL);
+	} else {
+		void* new_ptr = DriftLinearMemAlloc((DriftLinearMem*)mem, nsize);
+		// Copy to new ptr if grown.
+		return (osize > 0 ? memcpy(new_ptr, ptr, osize) : new_ptr);
+	}
+}
+
+static DriftLinearMem* _DriftLinearMemInit(void* buffer, size_t size, const char* label){
 	DriftLinearMem tmp = {.buffer = (uintptr_t)buffer, .cursor = (uintptr_t)buffer + size};
+	// Allocate the header from the block, copy, and return it.
 	DriftLinearMem* mem = DriftLinearMemAlloc(&tmp, sizeof(tmp));
+	tmp.mem = (DriftMem){.func = DriftLinearMemFunc, .label = "DriftLinearMem"};
 	(*mem) = tmp;
 	return mem;
+}
+
+DriftMem* DriftLinearMemInit(void* buffer, size_t size, const char* label){
+	return &_DriftLinearMemInit(buffer, size, label)->mem;
 }
 
 
 // MARK: Zone Allocator.
 
-static void* DriftZoneMemInternalMalloc(DriftZoneMemHeap* heap, size_t size);
+#define MAX_BLOCKS 256
+#define MAX_ZONES 8
+#define BLOCK_SIZE (1 << 20)
 
-typedef struct DriftZoneMemNode {
-	struct DriftZoneMemNode* next;
-	void* ptr;
-	size_t size;
-} DriftZoneMemNode;
-
-static void* DriftZoneMemNodeNew(DriftZoneMemHeap* heap, void* ptr, size_t size){
-	DriftZoneMemNode* node = DriftZoneMemInternalMalloc(heap, sizeof(*node));
-	(*node) = (DriftZoneMemNode){.ptr = ptr, .size = size};
-	return node;
-}
-
-static void DriftZoneMemListPush(DriftZoneMemNode** list, DriftZoneMemNode* node){
-	node->next = (*list);
-	(*list) = node;
-}
-
-static DriftZoneMemNode* DriftZoneMemListPop(DriftZoneMemNode** list){
-	DriftZoneMemNode* node = (*list);
-	if(node) (*list) = node->next;
-	return node;
-}
+typedef struct {
+	DriftMem mem;
+	DriftZoneMemHeap* parent_heap;
+	DriftLinearMem* current_allocator[DRIFT_APP_MAX_THREADS];
+	
+	uint block_count;
+	void* blocks[MAX_BLOCKS];
+} DriftZone;
 
 struct DriftZoneMemHeap {
-	const char* name;
+	const char* label;
 	DriftMem* parent_mem;
-	size_t block_size, max_blocks;
-	
 	mtx_t lock;
-	DriftLinearMem* internal_mem;
-	size_t block_count;
-	DriftZoneMemNode* blocks;
-	DriftZoneMemNode* pooled_blocks;
-	DriftZoneMemNode* pooled_zones;
+	
+	DRIFT_ARRAY(void*) blocks;
+	DRIFT_ARRAY(void*) pooled_blocks;
+	
+	DriftZone zones[MAX_ZONES];
+	DRIFT_ARRAY(DriftZone*) pooled_zones;
 };
 
-#define MAX_THREADS 64
-
-struct DriftZoneMem {
-	DriftZoneMemNode node;
-	DriftZoneMemHeap* parent_heap;
-	const char* name;
+static void* alloc_block(DriftZoneMemHeap* heap){
+	DriftArray* header = DriftArrayHeader(heap->blocks);
+	DRIFT_ASSERT_HARD(header->count < header->capacity, "Zone heap '%s' is full!", heap->label);
 	
-	DriftZoneMemNode* blocks;
-	DriftLinearMem* current_allocator[MAX_THREADS];
-};
-
-#define DRIFT_ZONE_MEM_INTERNAL_BLOCK_SIZE (64*1024)
-
-static void* DriftZoneMemInternalMalloc(DriftZoneMemHeap* heap, size_t size){
-	if(heap->internal_mem){
-		void* ptr = DriftLinearMemAlloc(heap->internal_mem, size);
-		if(ptr) return ptr;
-	}
+	void* block = DriftAlloc(heap->parent_mem, BLOCK_SIZE);
+	DRIFT_ASSERT_HARD(block, "Zone heap '%s' failed to allocate block.", heap->label);
 	
-	// Allocate new internal block.
-	if(heap->blocks) DRIFT_LOG("Zone heap '%s' allocating new internal block.", heap->name);
-	void* block = DriftAlloc(heap->parent_mem, DRIFT_ZONE_MEM_INTERNAL_BLOCK_SIZE);
-	heap->internal_mem = DriftLinearMemInit(block, DRIFT_ZONE_MEM_INTERNAL_BLOCK_SIZE);
-	DriftZoneMemListPush(&heap->blocks, DriftZoneMemNodeNew(heap, block, DRIFT_ZONE_MEM_INTERNAL_BLOCK_SIZE));
-	return DriftLinearMemAlloc(heap->internal_mem, size);
+	DRIFT_ARRAY_PUSH(heap->blocks, block);
+	return block;
 }
 
-DriftZoneMemNode* DriftZoneMemHeapAllocateBlock(DriftZoneMemHeap* heap){
-	DRIFT_ASSERT_HARD(heap->block_count < heap->max_blocks, "Zone heap '%s' is full!", heap->name);
-	DriftZoneMemNode* block_node = DriftZoneMemNodeNew(heap, DriftAlloc(heap->parent_mem, heap->block_size), heap->block_size);
-	DriftZoneMemListPush(&heap->blocks, block_node);
+static void* get_block(DriftZoneMemHeap* heap){
+	mtx_lock(&heap->lock);
+	if(DriftArrayLength(heap->pooled_blocks) == 0){
+		// Allocate a new one if there are no free blocks.
+		DRIFT_ARRAY_PUSH(heap->pooled_blocks, alloc_block(heap));
+		DriftArray* header = DriftArrayHeader(heap->blocks);
+		DRIFT_LOG("Zone heap '%s' allocated new block. (%d/%d)", heap->label, header->count, header->capacity);
+	}
 	
-	heap->block_count++;
-	return block_node;
+	void* block = DRIFT_ARRAY_POP(heap->pooled_blocks);
+	mtx_unlock(&heap->lock);
+	
+	return block;
 }
 
-DriftZoneMemHeap* DriftZoneMemHeapNew(const char* name, DriftMem* mem, size_t block_size, size_t max_blocks, size_t initial_blocks){
-	DRIFT_ASSERT_WARN(block_size >= (1 << 20), "Zone heap (%s) block size is kinda small? (%d bytes)", name, block_size);
+DriftZoneMemHeap* DriftZoneMemHeapNew(DriftMem* mem, const char* label){
 	
-	DriftZoneMemHeap tmp = (DriftZoneMemHeap){.name = name, .parent_mem = mem, .block_size = block_size, .max_blocks = max_blocks};
-	DriftZoneMemHeap* heap = DriftZoneMemInternalMalloc(&tmp, sizeof(*heap));
-	(*heap) = tmp;
+	DriftZoneMemHeap* heap = DRIFT_COPY(mem, ((DriftZoneMemHeap){
+		.label = label, .parent_mem = mem,
+		.blocks = DRIFT_ARRAY_NEW(mem, MAX_BLOCKS, void*),
+		.pooled_blocks = DRIFT_ARRAY_NEW(mem, MAX_BLOCKS, void*),
+		.pooled_zones = DRIFT_ARRAY_NEW(mem, MAX_ZONES, DriftZone*),
+	}));
 	
-	// Allocate initial blocks for the pool.
-	for(uint i = 0; i < initial_blocks; i++){
-		DriftZoneMemListPush(&heap->pooled_blocks, DriftZoneMemHeapAllocateBlock(heap));
-	}
+	// Pool the zones.
+	for(uint i = 0; i < MAX_ZONES; i++) DRIFT_ARRAY_PUSH(heap->pooled_zones, heap->zones + i);
+	
+	// Allocate some initial blocks for the pool.
+	for(uint i = 0; i < 16; i++) DRIFT_ARRAY_PUSH(heap->pooled_blocks, alloc_block(heap));
 	
 	mtx_init(&heap->lock, mtx_plain);
 	return heap;
 }
 
-void DriftZoneHeapFree(DriftZoneMemHeap* heap){
-	DRIFT_NYI(); // TODO This has never actually been tested?
-	mtx_destroy(&heap->lock);
+// static void DriftZoneHeapFree(DriftZoneMemHeap* heap){
+// 	DRIFT_NYI(); // TODO This has never actually been tested?
+// 	mtx_destroy(&heap->lock);
 	
-	// Free blocks in reverse order.
-	DriftZoneMemNode* cursor = heap->blocks;
-	while(cursor){
-		DriftZoneMemNode* node = cursor;
-		cursor = cursor->next;
-		DriftDealloc(heap->parent_mem, node->ptr, node->size);
-	}
-}
+// 	// Free blocks in reverse order.
+// 	DriftZoneMemNode* cursor = heap->blocks;
+// 	while(cursor){
+// 		DriftZoneMemNode* node = cursor;
+// 		cursor = cursor->next;
+// 		DriftDealloc(heap->parent_mem, node->ptr, node->size);
+// 	}
+// }
 
-DriftZoneMem* DriftZoneMemAquire(DriftZoneMemHeap* heap, const char* name){
-	mtx_lock(&heap->lock);
-	DriftZoneMemNode* zone_node = DriftZoneMemListPop(&heap->pooled_zones);
-	// Make a new zone if there isn't a pooled one.
-	DriftZoneMem* zone = zone_node ? zone_node->ptr : DriftZoneMemInternalMalloc(heap, sizeof(*zone));
-	mtx_unlock(&heap->lock);
-	
-	(*zone) = (DriftZoneMem){.node.ptr = zone, .parent_heap = heap, .name = name};
-	return zone;
-}
-
-void DriftZoneMemRelease(DriftZoneMem* zone){
-	DriftZoneMemHeap* heap = zone->parent_heap;
-	mtx_lock(&heap->lock);
-	
-	DriftZoneMemNode* cursor = zone->blocks;
-	while(cursor){
-		DriftZoneMemNode* node = cursor;
-		cursor = cursor->next;
-		DriftZoneMemListPush(&heap->pooled_blocks, node);
-	}
-	
-	DriftZoneMemListPush(&heap->pooled_zones, &zone->node);
-	mtx_unlock(&heap->lock);
-}
-
-void* DriftZoneMemAlloc(DriftZoneMem* zone, size_t size){
+static void* DriftZoneMemAlloc(DriftZone* zone, size_t size){
 	uint thread_id = DriftAppGetThreadID();
-	DRIFT_ASSERT_HARD(thread_id < MAX_THREADS, "DriftZoneMalloc(): Invalid thread id.");
+	DRIFT_ASSERT_HARD(thread_id < DRIFT_APP_MAX_THREADS, "DriftZoneMalloc(): Invalid thread id.");
 	
 	// Fast path when there is an allocator with enough space.
 	if(zone->current_allocator[thread_id]){
@@ -223,57 +189,140 @@ void* DriftZoneMemAlloc(DriftZoneMem* zone, size_t size){
 		if(ptr) return ptr;
 	}
 	
-	DriftZoneMemHeap* heap = zone->parent_heap;
-	DRIFT_ASSERT(size < heap->block_size, "Allocation size exceeds block size.");
-	
-	// Get a new block.
-	mtx_lock(&heap->lock);
-	DriftZoneMemNode* block_node = DriftZoneMemListPop(&heap->pooled_blocks);
-	if(block_node == NULL){
-		// No free blocks. Allocate a new one and push it onto the block list.
-		block_node = DriftZoneMemHeapAllocateBlock(heap);
-		DRIFT_LOG("Zone heap '%s' allocated new block. (%d/%d)", heap->name, heap->block_count, heap->max_blocks);
-	}
-	DRIFT_ASSERT_HARD(block_node->ptr, "Zone heap '%s' failed to allocate block!", heap->name);
+	size_t block_size = BLOCK_SIZE;
+	DRIFT_ASSERT(size < block_size, "Allocation size exceeds block size.");
+	void* block = get_block(zone->parent_heap);
 	
 	// Claim the block.
-	DriftZoneMemListPush(&zone->blocks, block_node);
-	mtx_unlock(&heap->lock);
-	
+	zone->blocks[zone->block_count++] = block;
 	// Initialize the allocator.
-	zone->current_allocator[thread_id] = DriftLinearMemInit(block_node->ptr, zone->parent_heap->block_size);
-	void* ptr = DriftLinearMemAlloc(zone->current_allocator[thread_id], size);
-	DRIFT_ASSERT(ptr, "Failed to allocate zone memory!");
-	return ptr;
+	zone->current_allocator[thread_id] = _DriftLinearMemInit(block, block_size, zone->mem.label);
+	return DriftLinearMemAlloc(zone->current_allocator[thread_id], size);
 }
 
-typedef struct {
-	DriftZoneMem* zone;
-	DriftMem mem;
-} DriftZoneMemContext;
-
-static void* DriftZoneMemFunc(void* ctx, void* ptr, size_t osize, size_t nsize){
+static void* DriftZoneMemFunc(DriftMem* mem, void* ptr, size_t osize, size_t nsize){
 	if(nsize <= osize){
 		// If shrinking or dellocating, do nothing.
 		return (nsize > 0 ? ptr : NULL);
 	} else {
 		// Combined alloc/grow.
-		DriftZoneMemContext* zctx = ctx;
-		void* new_ptr = DriftZoneMemAlloc(zctx->zone, nsize);
-		if(osize > 0) memcpy(new_ptr, ptr, osize);
-		return new_ptr;
+		void* new_ptr = DriftZoneMemAlloc((DriftZone*)mem, nsize);
+		return (osize > 0 ? memcpy(new_ptr, ptr, osize) : new_ptr);
 	}
 }
 
-DriftMem* DriftZoneMemWrap(DriftZoneMem* zone){
-	DriftZoneMemContext* ctx = DriftZoneMemAlloc(zone, sizeof(*ctx));
-	(*ctx) = (DriftZoneMemContext){.zone = zone, .mem = {.name = zone->name, .func = DriftZoneMemFunc, .ctx = ctx}};
-	return &ctx->mem;
+DriftMem* DriftZoneMemAquire(DriftZoneMemHeap* heap, const char* label){
+	mtx_lock(&heap->lock);
+	DriftZone* zone = DRIFT_ARRAY_POP(heap->pooled_zones);
+	mtx_unlock(&heap->lock);
+	
+	DRIFT_ASSERT(zone, "Ran out of pooled zones.");
+	*zone = (DriftZone){.mem.func = DriftZoneMemFunc, .mem.label = label, .parent_heap = heap};
+	// DRIFT_LOG("zone aquired '%s' %p", label, zone);
+	return &zone->mem;
+}
+
+void DriftZoneMemRelease(DriftMem* mem){
+	DRIFT_ASSERT(mem->func == DriftZoneMemFunc, "Invalid zone mem object.");
+	DriftZone* zone = (DriftZone*)mem;
+	// DRIFT_LOG("releasing zone: '%s' %p", mem->label, zone);
+	DriftZoneMemHeap* heap = zone->parent_heap;
+	
+	// Re-pool the resources.
+	zone->mem.label = "<pooled>";
+	mtx_lock(&heap->lock);
+	while(zone->block_count--) DRIFT_ARRAY_PUSH(heap->pooled_blocks, zone->blocks[zone->block_count]);
+	DRIFT_ARRAY_PUSH(heap->pooled_zones, zone);
+	mtx_unlock(&heap->lock);
 }
 
 
-// MARK: Buddy Allocator.
+// MARK: Strings
 
+char* DriftSMPrintf(DriftMem* mem, const char* format, ...){
+	va_list args;
+	
+	va_start(args, format);
+	// + 1 for the null terminator.
+	size_t size = 1 + vsnprintf(NULL, 0, format, args);
+	va_end(args);
+	
+	va_start(args, format);
+	char* str = DriftAlloc(mem, size);
+	size_t used = vsnprintf(str, size, format, args);
+	DRIFT_ASSERT_WARN(size == used + 1, "DriftSMFormat() size mismatch?!");
+	va_end(args);
+	
+	return str;
+}
+
+char* DriftSMFormat(DriftMem* mem, const char* format, ...){
+	va_list args;
+	
+	va_start(args, format);
+	// + 1 for the null terminator.
+	size_t size = 1 + DriftVSNFormat(NULL, 0, format, &args);
+	va_end(args);
+	
+	va_start(args, format);
+	char* str = DriftAlloc(mem, size);
+	size_t used = DriftVSNFormat(str, size, format, &args);
+	DRIFT_ASSERT_WARN(size == used + 1, "DriftSMFormat() size mismatch?!");
+	va_end(args);
+	
+	return str;
+}
+
+// MARK: Stretchy Buffers
+
+static inline size_t DriftStretchyBufferSize(DriftArray* header){
+	return sizeof(*header) + header->capacity*header->elt_size;
+}
+
+void* _DriftArrayNew(DriftMem* mem, size_t capacity, size_t elt_size){
+	if(capacity < DRIFT_STRETCHY_BUFER_MIN_CAPACITY) capacity = DRIFT_STRETCHY_BUFER_MIN_CAPACITY;
+	DriftArray tmp = {._magic = 0xABCDABCDABCDABCD, .mem = mem, .capacity = capacity, .elt_size = elt_size};
+	
+	DriftArray* header = DriftAlloc(mem, DriftStretchyBufferSize(&tmp));
+	*header = tmp;
+	return header->array;
+}
+
+void DriftArrayFree(void* ptr){
+	if(ptr){
+		DriftArray* header = DriftArrayHeader(ptr);
+		DriftDealloc(header->mem, header, DriftStretchyBufferSize(header));
+	}
+}
+
+void* _DriftArrayGrow(void* ptr, size_t n_elt){
+	DriftArray* header = DriftArrayHeader(ptr);
+	size_t osize = DriftStretchyBufferSize(header);
+	header->capacity = 3*(header->capacity + n_elt)/2;
+	
+	header = DriftRealloc(header->mem, header, osize, DriftStretchyBufferSize(header));
+	return header->array;
+}
+
+void _DriftArrayShiftUp(void* ptr, unsigned idx){
+	DriftArray* header = DriftArrayHeader(ptr);
+	size_t elt_size = header->elt_size;
+	memmove(ptr + (idx + 1)*elt_size, ptr + (idx + 0)*elt_size, (header->count - idx)*elt_size);
+	header->count++;
+}
+
+void DriftArrayTruncate(void* ptr, size_t len){
+	DriftArray* header = DriftArrayHeader(ptr);
+	if(header->count > len) header->count = len;
+}
+
+void DriftArrayRangeCommit(void* ptr, void* cursor){
+	DriftArray* header = DriftArrayHeader(ptr);
+	header->count = (cursor - ptr)/header->elt_size;
+	DRIFT_ASSERT(header->count <= header->capacity, "Buffer overrun detected.");
+}
+
+/*
 typedef struct DriftBuddyMemNode {
 	struct DriftBuddyMemNode* prev;
 	struct DriftBuddyMemNode* next;
@@ -451,77 +500,4 @@ void* DriftBuddyMemRealloc(DriftBuddyMem* mem, void* ptr, size_t osize, size_t n
 		return resized;
 	}
 }
-
-
-// MARK: Strings
-
-const char* DriftSMPrintf(DriftMem* mem, const char* format, ...){
-	va_list args;
-	
-	va_start(args, format);
-	// + 1 for the null terminator.
-	size_t size = 1 + vsnprintf(NULL, 0, format, args);
-	va_end(args);
-	
-	va_start(args, format);
-	char* str = DriftAlloc(mem, size);
-	size_t used = vsnprintf(str, size, format, args);
-	DRIFT_ASSERT_WARN(size == used + 1, "DriftSMFormat() size mismatch?!");
-	va_end(args);
-	
-	return str;
-}
-
-const char* DriftSMFormat(DriftMem* mem, const char* format, ...){
-	va_list args;
-	
-	va_start(args, format);
-	// + 1 for the null terminator.
-	size_t size = 1 + DriftVSNFormat(NULL, 0, format, &args);
-	va_end(args);
-	
-	va_start(args, format);
-	char* str = DriftAlloc(mem, size);
-	size_t used = DriftVSNFormat(str, size, format, &args);
-	DRIFT_ASSERT_WARN(size == used + 1, "DriftSMFormat() size mismatch?!");
-	va_end(args);
-	
-	return str;
-}
-
-// MARK: Stretchy Buffers
-
-static inline size_t DriftStretchyBufferSize(DriftArray* header){
-	return sizeof(*header) + header->capacity*header->elt_size;
-}
-
-void* _DriftArrayNew(DriftMem* mem, size_t capacity, size_t elt_size){
-	if(capacity < DRIFT_STRETCHY_BUFER_MIN_CAPACITY) capacity = DRIFT_STRETCHY_BUFER_MIN_CAPACITY;
-	DriftArray tmp = {._magic = 0xABCDABCDABCDABCD, .mem = mem, .capacity = capacity, .elt_size = elt_size};
-	
-	DriftArray* header = DriftAlloc(mem, DriftStretchyBufferSize(&tmp));
-	*header = tmp;
-	return header->array;
-}
-
-void DriftArrayFree(void* ptr){
-	if(ptr){
-		DriftArray* header = DriftArrayHeader(ptr);
-		DriftDealloc(header->mem, header, DriftStretchyBufferSize(header));
-	}
-}
-
-void* _DriftArrayGrow(void* ptr, size_t n_elt){
-	DriftArray* header = DriftArrayHeader(ptr);
-	size_t osize = DriftStretchyBufferSize(header);
-	header->capacity = 3*(header->capacity + n_elt)/2;
-	
-	header = DriftRealloc(header->mem, header, osize, DriftStretchyBufferSize(header));
-	return header->array;
-}
-
-void DriftArrayRangeCommit(void* ptr, void* cursor){
-	DriftArray* header = DriftArrayHeader(ptr);
-	header->count = (cursor - ptr)/header->elt_size;
-	DRIFT_ASSERT(header->count <= header->capacity, "Buffer overrun detected.");
-}
+*/

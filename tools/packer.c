@@ -62,7 +62,7 @@ static void write_image(const char* name_format, Image img, int atlas_index){
 	}
 	
 	snprintf(filename, sizeof(filename), name_format, atlas_index, "qoi");
-	if(!qoi_write(filename, flip, img.w, img.h, 4)){
+	if(!qoi_write(NULL, filename, flip, img.w, img.h, 4)){
 		fprintf(stderr, "PACKING ERROR: '%s' could not be written.\n", filename);
 		abort();
 	}
@@ -207,20 +207,6 @@ static int gen_atlases(lua_State *lua){
 		
 		write_image("resources/gfx/ATLAS%d.%s", albedo, atlas_index);
 		write_image("resources/gfx/ATLAS%d_FX.%s", normal, atlas_index);
-		// char filename[1024];
-		// { // Write albedo
-		// 	snprintf(filename, sizeof(filename), "resources/gfx/ATLAS%d.qoi", atlas_index);
-		// 	// stbi_write_png(filename, albedo.w, albedo.h, 4, albedo.px, 0);
-		// 	qoi_write(filename, albedo.px, albedo.w, albedo.h, 4);
-		// }
-		// { // Write normal
-		// 	snprintf(filename, sizeof(filename), "resources/gfx/ATLAS%d_FX.qoi", atlas_index);
-		// 	// stbi_write_png(filename, normal.w, normal.h, 4, normal.px, 0);
-		// 	qoi_write(filename, normal.px, normal.w, normal.h, 4);
-		// }
-		
-		// TODO push onto return list
-		// lua_pushfstring(lua, "ATLAS%d", atlas_index);
 		atlas_index++;
 	}
 	

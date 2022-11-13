@@ -17,7 +17,7 @@ DriftComponent* DriftComponentInit(DriftComponent* component, DriftTableDesc des
 	
 	DriftTableInit(&component->table, desc);
 	DriftName name = component->table._names[0];
-	DRIFT_ASSERT_WARN(name.str[0] == '@', "Component '%s' should start with a '@'", name);
+	DRIFT_ASSERT_WARN(name.str[0] == '@', "Component '%s' should start with a '@'", name.str);
 	name.str[0] = '#';
 	DriftMapInit(&component->map, component->table.desc.mem, name.str, desc.min_row_capacity);
 	
@@ -59,7 +59,7 @@ uint DriftComponentAdd(DriftComponent *component, DriftEntity entity){
 void DriftComponentRemove(DriftComponent* component, DriftEntity entity){
 	uint dst_idx = DriftComponentFind(component, entity);
 	if(dst_idx){
-		if(component->cleanup) component->cleanup(component, dst_idx);
+		// if(component->cleanup) component->cleanup(component, dst_idx);
 		uint src_idx = component->table.row_count = component->count--;
 		
 		// Update before removing in case src == dst
@@ -88,12 +88,6 @@ void DriftComponentGC(DriftComponent* component, DriftEntitySet* entities, uint 
 	}
 }
 
-static int DriftComponentCountCompare(const void *a, const void *b){
-	const DriftComponentJoin* join0 = a;
-	const DriftComponentJoin* join1 = b;
-	return join0->component->count - join1->component->count;
-}
-
 DriftJoin DriftJoinMake(DriftComponentJoin* joins){
 	DriftJoin join = {};
 	for(uint i = 0; joins[i].variable; i++){
@@ -101,10 +95,7 @@ DriftJoin DriftJoinMake(DriftComponentJoin* joins){
 		join.joins[i] = joins[i];
 		join.count++;
 	}
-	
-	// Sort by component count to minimize the number of joins.
-	// TODO can't sort with optional joins...
-	// qsort(join.joins, join.count, sizeof(DriftComponentJoin), DriftComponentCountCompare);
+
 	return join;
 }
 
@@ -139,7 +130,7 @@ typedef struct {
 } ValueComponent;
 
 void unit_test_component(void){
-	uint n = 256 << 10;
+	uint n = 1 << 15;
 	
 	static DriftEntitySet entities = {};
 	DriftEntitySetInit(&entities);
@@ -148,12 +139,12 @@ void unit_test_component(void){
 	ValueComponent values = {};
 	
 	DriftComponentInit(&empty.c, (DriftTableDesc){
-		.name = "Empty Component", .mem = DriftSystemMem, .min_row_capacity = n,
+		.name = "@Empty", .mem = DriftSystemMem, .min_row_capacity = n,
 		.columns.arr = {DRIFT_DEFINE_COLUMN(empty.entity)},
 	});
 	
 	DriftComponentInit(&values.c, (DriftTableDesc){
-		.name = "Value Component", .mem = DriftSystemMem, .min_row_capacity = n,
+		.name = "@Value", .mem = DriftSystemMem, .min_row_capacity = n,
 		.columns.arr = {
 			DRIFT_DEFINE_COLUMN(values.entity),
 			DRIFT_DEFINE_COLUMN(values.values),
@@ -195,6 +186,9 @@ void unit_test_component(void){
 		values.values_copied[value_idx] = value;
 	}
 	DRIFT_ASSERT(sum == expected, "Invalid sum.");
+	
+	DriftComponentDestroy(&values.c);
+	DriftComponentDestroy(&empty.c);
 	
 	DRIFT_LOG("Component tests passed.");
 }

@@ -28,7 +28,7 @@ for _, filename in ipairs(arg) do
 			table.insert(rects, rect)
 		end
 	else
-		assert(#data.meta.slices == 1, "Packed files cannot have multiple slices")
+		assert(#data.meta.slices == 1, string.format("Sheet '%s' must have 1 slice. (has %d)", filename, #data.meta.slices))
 		table.insert(images, basename)
 		
 		local name = data.meta.slices[1].name

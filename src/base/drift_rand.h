@@ -1,1 +1,1 @@
-DriftVec2 DriftRandomInUnitCircle();
+DriftVec2 DriftRandomInUnitCircle(void);

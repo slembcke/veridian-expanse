@@ -21,7 +21,7 @@ static inline uint DriftMapHash(DriftMap const* map, uintptr_t key){return key &
 static inline uint DriftMapNextIndex(DriftMap const* map, uint index){return (index + 1) & (map->table.row_capacity - 1);}
 
 // Lookup the hash table index for a given key.
-uint DriftMapFindIndex(DriftMap const* map, uintptr_t key){
+static uint DriftMapFindIndex(DriftMap const* map, uintptr_t key){
 	uint index = DriftMapHash(map, key);
 	u8 info = DRIFT_INDEXMAP_BUCKET_TAKEN;
 	
@@ -89,8 +89,8 @@ void DriftMapDestroy(DriftMap* map){
 // Update the index for `key` with `value`.
 // Returns the old index value (or the default value).
 uintptr_t DriftMapInsert(DriftMap *map, uintptr_t key, uintptr_t value){
-	// TODO don't hard code load factor?
-	if(10*map->table.row_count > 9*map->table.row_capacity) DriftMapResize(map);
+	// Hard coded load factor. Doesn't seem to be much reason to change it though.
+	if(5*map->table.row_count > 4*map->table.row_capacity) DriftMapResize(map);
 	
 	uint index = DriftMapHash(map, key);
 	for(u8 info = DRIFT_INDEXMAP_BUCKET_TAKEN; info < DRIFT_INDEXMAP_MAX_INFO; info++){
@@ -181,9 +181,9 @@ void unit_test_map(void){
 	DRIFT_ASSERT(max_probe <= DRIFT_INDEXMAP_MAX_PROBE, "Maximum probe length exceeded.");
 	
 	// for(int i = 0; i < DRIFT_INDEXMAP_MAX_PROBE; i++) printf("histogram[%d]: % 6d\n", i, histogram[i]);
-	DRIFT_LOG("max_probe: %d, average: %f", max_probe, sum/map.table.row_count);
-	DRIFT_LOG("count: %d, capacity: %d", (int)map.table.row_count, (int)map.table.row_capacity);
-	DRIFT_LOG("load factor: %f", map.table.row_count/map.table.row_capacity);
+	// DRIFT_LOG("max_probe: %d, average: %f", max_probe, sum/map.table.row_count);
+	// DRIFT_LOG("count: %d, capacity: %d", (int)map.table.row_count, (int)map.table.row_capacity);
+	// DRIFT_LOG("load factor: %f", map.table.row_count/map.table.row_capacity);
 	DRIFT_ASSERT(max_probe < DRIFT_INDEXMAP_MAX_INFO - DRIFT_INDEXMAP_BUCKET_TAKEN, "Max probe length exceeded.");
 	
 	// Find values

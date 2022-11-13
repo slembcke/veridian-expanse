@@ -43,11 +43,9 @@ void VShader(in VertInput IN, out FragInput FRAG){
 SamplerState _repeat : DRIFT_SAMP2;
 Texture2DArray _tiles : DRIFT_TEX1;
 
-#define SDF_MAX_DIST (32/4)
-
 float4 FShader(in FragInput FRAG) : SV_TARGET0{
 	float4 gather4 = _tiles.Load(float4(FRAG.uv_sdf, 0));
-	gather4 = SDF_MAX_DIST*(2*gather4 - 1);
+	gather4 = DRIFT_SDF_MAX_DIST*(2*gather4 - 1);
 	
 	// Calculate sdf values.
 	float2 sdf_blend = frac(FRAG.uv_sdf.xy);
@@ -62,23 +60,32 @@ float4 FShader(in FragInput FRAG) : SV_TARGET0{
 	float2 dheight = (2*height)*sdf_deriv;
 	// return float4(dheight, 0, 1);
 	
-	float pcoef = (1 - height)/sqrt(1 + dot(dheight, dheight));
+	float2 foo = sin(4000*FRAG.uv_biome);
+	float hmod = -0.2*(0.5*foo.x*foo.y + 0.5);
+	float2 dmod = (8/DRIFT_ATLAS_SIZE)*float2(ddx(hmod), ddy(hmod))/fwidth(FRAG.uv.xy);
+	
+	float pcoef = (1 - height - hmod)/sqrt(1 + dot(dheight - dmod, dheight - dmod));
 	float2 uv2 = FRAG.uv + pcoef*FRAG.parallax;
 	// return float4(frac(16*uv2.xy)*sdf_mask, 0, 1);
 	
+	float4 blue_noise = 0.5*DriftAtlas.Sample(_repeat, float3(uv2, FRAG.uv.z + 8));
+	blue_noise -= blue_noise.wzyx;
+	
+	FRAG.uv_biome.xy += (pcoef/256)*FRAG.parallax;
 	float4 biome = DriftAtlas.Sample(DriftLinear, FRAG.uv_biome);
+	float terrain_mask = biome.r + biome.g + biome.b + biome.a;
+	biome += 0.2*(blue_noise - 0.5);
 	float4 biome_rb_ga = lerp(float4(0, 4, biome.rb), float4(2, 6, biome.ga), step(biome.rb, biome.ga).xyxy);
 	float biome_idx = lerp(biome_rb_ga.x, biome_rb_ga.y, step(biome_rb_ga.z, biome_rb_ga.w));
 	float layer = FRAG.uv.z + biome_idx;
 	
 	float4 albedo = DriftAtlas.Sample(_repeat, float3(uv2, layer));
-	albedo.rgb *= lerp(0.5, 1.0, sdf_mask);
+	albedo.rgb = SRGBToLinear(albedo.rgb);
+	albedo.rgb *= lerp(0.20, 1.0, sdf_mask);
 	albedo.rgb *= smoothstep(-1, 0, sdf); // Temporary
 	
 	// Normals
-	// float3 normal = DriftAtlas.Sample(_repeat, float3(uv2, layer + 1));
-	// float2 deriv = 4*(normal.xy - 0.5)/float2(-normal.z, normal.z);
-	float2 deriv = dheight + 2*(2*DriftAtlas.Sample(_repeat, float3(uv2, layer + 1)) - 1);
+	float2 deriv = dheight + 8*dmod + 2*(2*DriftAtlas.Sample(_repeat, float3(uv2, layer + 1)) - 1);
 	deriv = float2(dot(deriv, ddx(FRAG.uv.xy)), dot(deriv, ddy(FRAG.uv.xy)))*FRAG.uv_scale;
 	float3 n = float3(-deriv, 1)/sqrt(1 + dot(deriv, deriv));
 	

@@ -3,16 +3,11 @@
 #include <stdio.h>
 
 #include "tina/tina.h"
-#include "SDL.h"
+#include <SDL.h>
 #include "tracy/TracyC.h"
 
 #include "drift_game.h"
 #include "base/drift_nuklear.h"
-
-void DriftPrefsIO(DriftIO* io){
-	DriftPreferences* prefs = io->user_ptr;
-	DriftIOBlock(io, "prefs", prefs, sizeof(*prefs));
-}
 
 void DriftGameStateIO(DriftIO* io){
 	DriftGameState* state = io->user_ptr;
@@ -42,8 +37,7 @@ void DriftDestroyEntity(DriftUpdate* update, DriftEntity entity){
 	mtx_unlock(&update->state->entities_mtx);
 }
 
-// TODO terrible name
-void DriftGameStateReset(DriftGameState* state, bool reset_game){
+void DriftGameStateInit(DriftGameState* state, bool reset_game){
 	state->tables = DRIFT_ARRAY_NEW(DriftSystemMem, 64, DriftTable*);
 	state->components = DRIFT_ARRAY_NEW(DriftSystemMem, 64, DriftComponent*);
 	
@@ -51,45 +45,80 @@ void DriftGameStateReset(DriftGameState* state, bool reset_game){
 	DriftSystemsInit(state);
 	
 	if(reset_game){
-		{ // TODO
+		{ // TODO Initialize home
 			DriftEntity e = DriftMakeEntity(state);
-			uint pnode_idx = DriftComponentAdd(&state->power_nodes.c, e);
-			state->power_nodes.node[pnode_idx].x = 128;
-			
 			uint transform_idx = DriftComponentAdd(&state->transforms.c, e);
-			state->transforms.matrix[transform_idx] = (DriftAffine){1, 0, 0, 1, 128, 0};
+			state->transforms.matrix[transform_idx] = (DriftAffine){1, 0, 0, 1, DRIFT_HOME_POSITION.x, DRIFT_HOME_POSITION.y};
+			uint scan_idx = DriftComponentAdd(&state->scan.c, e);
+			state->scan.type[scan_idx] = DRIFT_SCAN_CRASHED_SHIP;
 			
-			uint sprite_idx = DriftComponentAdd(&state->sprites.c, e);
-			state->sprites.data[sprite_idx].frame = DRIFT_SPRITE_POWER_NODE;
-			state->sprites.data[sprite_idx].color = DRIFT_RGBA8_WHITE;
+			uint pnode_idx = DriftComponentAdd(&state->power_nodes.c, e);
+			state->power_nodes.position[pnode_idx] = DRIFT_HOME_POSITION;
 			
+			// Mark the node as a root in the flow map.
 			uint idx0 = DriftComponentAdd(&state->flow_maps[0].c, e);
-			state->flow_maps[0].node[idx0].next = e;
-			state->flow_maps[0].node[idx0].root_dist = 0;
+			// state->flow_maps[0].node[idx0].next = e;
+			// state->flow_maps[0].node[idx0].topo_dist = 0;
+			state->flow_maps[0].flow[idx0].dist = 0;
+		}{ // TODO initialize factory
+			DriftEntity e = state->status.factory_node = DriftMakeEntity(state);
+			uint transform_idx = DriftComponentAdd(&state->transforms.c, e);
+			state->transforms.matrix[transform_idx] = (DriftAffine){1, 0, 0, 1, DRIFT_FACTORY_POSITION.x, DRIFT_FACTORY_POSITION.y};
+			uint scan_idx = DriftComponentAdd(&state->scan.c, e);
+			state->scan.type[scan_idx] = DRIFT_SCAN_FACTORY;
+			
+			uint pnode_idx = DriftComponentAdd(&state->power_nodes.c, e);
+			state->power_nodes.position[pnode_idx] = DRIFT_FACTORY_POSITION;
+			
+			static const DriftVec2 nodes[] = {
+				{ 776.504822f, -6417.437012f}, {1080.529419f, -6147.798828f},
+			// 	{ 961.307556f, -6149.188965f}, { 812.382935f, -6235.325684f},
+			// 	{ 791.330078f, -6135.786133f}, { 698.192078f, -6036.168457f},
+			// 	{ 666.177185f, -5924.809082f}, { 785.853455f, -5818.169434f},
+			// 	{ 937.032349f, -5761.960938f}, {1072.341187f, -5778.540039f},
+			// 	{1178.818970f, -5873.663086f}, {1351.409302f, -5855.001953f},
+			// 	{1378.697998f, -5730.277344f}, {1407.379395f, -5556.059082f},
+			// 	{1449.643311f, -5433.543457f}, {1569.712280f, -5300.566406f},
+			// 	{1673.919678f, -5220.365234f}, {1733.368896f, -5050.591309f},
+			// 	{1823.671509f, -4945.645020f}, {1452.292725f, -6126.862305f},
+			// 	{1595.359863f, -6170.755859f}, {1636.837402f, -6312.337891f},
+			// 	{1517.781738f, -6455.876953f}, {1406.651855f, -6533.980469f},
+			// 	{1294.234131f, -6648.239258f}, {1470.014893f, -6817.790527f},
+			// 	{1643.240479f, -6828.110840f}, {1811.197998f, -6842.036621f},
+			// 	{1800.954224f, -7014.615723f}, {1695.205078f, -7137.684570f},
+			// 	{1597.286133f, -7096.293945f}, {1581.863037f, -6536.433105f},
+			// 	{1715.755981f, -6471.106445f}, {1818.337524f, -6409.083008f},
+			// 	{ 930.199158f, -6314.508789f}, {1324.249146f, -6774.219727f},
+			// 	{1602.564575f, -6017.763672f},
+			};
+			
+			u8 buffer[16*1024];
+			DriftMem* mem = DriftLinearMemInit(buffer, sizeof(buffer), "startup mem");
+			for(uint i = 0; i < sizeof(nodes)/sizeof(*nodes); i++){
+				DriftEntity e = DriftItemMake(state, DRIFT_ITEM_POWER_NODE, nodes[i], DRIFT_VEC2_ZERO);
+				DriftPowerNodeActivate(state, e, mem);
+			}
 		}
 	} else {
 		DriftIOFileRead(TMP_SAVE_FILENAME, DriftGameStateIO, state);
 	}
 }
 
-DriftGameContext* DriftGameContextCreate(DriftApp* app, tina_job* job){
+static DriftGameContext* DriftGameContextCreate(DriftApp* app, tina_job* job){
 	DriftGameContext* ctx = DriftAlloc(DriftSystemMem, sizeof(*ctx));
 	memset(ctx, 0x00, sizeof(*ctx));
 	ctx->app = app;
 	
-	ctx->prefs = (DriftPreferences){.master_volume = 1, .music_volume = 0.5f};
-	DriftIOFileRead(TMP_PREFS_FILENAME, DriftPrefsIO, &ctx->prefs);
-	
-	ctx->audio = DriftAudioContextCreate();
-	DriftAudioSetParams(ctx->audio, ctx->prefs.master_volume, ctx->prefs.music_volume);
-	
 	{ // Init ctx.state.
 		mtx_init(&ctx->state.entities_mtx, mtx_plain);
 		ctx->state.terra = DriftTerrainNew(job, false);
-		DriftGameStateReset(&ctx->state, true);
+		DriftGameStateInit(&ctx->state, true);
+		
+		ctx->player = DriftMakeEntity(&ctx->state);
+		DriftTempPlayerInit(&ctx->state, ctx->player, (DriftVec2){1870, -4970});
 	}
 	
-	ctx->script.ctx = ctx;
+	ctx->mu = DriftUIInit();
 	
 	uint queue = tina_job_switch_queue(job, DRIFT_JOB_QUEUE_GFX);
 	ctx->draw_shared = DriftDrawSharedNew(app, job);
@@ -102,22 +131,24 @@ DriftGameContext* DriftGameContextCreate(DriftApp* app, tina_job* job){
 	return ctx;
 }
 
+tina_job_func DriftGameContextStart;
 void DriftGameContextStart(tina_job* job){
+	TracyCZoneN(ZONE_START, "Context start", true);
 	DriftApp* app = tina_job_get_description(job)->user_data;
 	DriftGameContext* ctx = app->app_context;
-	DriftAssetsReset();	extern tina_func tutorial_func;
-	tina_func* script_func = tutorial_func;
+	tina_func* script_func = DriftTutorialScript;
 	
 	if(ctx == NULL){
 		// No context, normal startup.
+		TracyCZoneN(ZONE_CREATE, "Create Context", true);
 		ctx = app->app_context = DriftGameContextCreate(app, job);
+		TracyCZoneEnd(ZONE_CREATE);
 	} else {
 		if(ctx->debug.reset_on_load){
-			DriftGameStateReset(&ctx->state, true);
+			DriftGameStateInit(&ctx->state, true);
 		}
 		
-		script_func = ctx->script.coro ? tutorial_func : NULL;
-		ctx->message = NULL;
+		script_func = ctx->script.coro ? DriftTutorialScript : NULL;
 		
 		DriftTerrainResetCache(ctx->state.terra);
 		if(ctx->debug.regen_terrain_on_load){
@@ -132,90 +163,110 @@ void DriftGameContextStart(tina_job* job){
 		tina_job_switch_queue(job, queue);
 	}
 	
-	if(!ctx->audio_ready){
-		DriftAudioOpenDevice(ctx->audio);
-		ctx->audio_ready = true;
-	}
-
-	DriftAudioLoadSamples(ctx->audio, job);
-	DriftAudioStartMusic(ctx->audio);
-	DriftAudioPause(ctx->audio, false);
+	DriftUIHotload(ctx->mu);
 	
-	ctx->script.debug_skip = true;
+	TracyCZoneN(ZONE_SAMPLES, "Load Samples", true);
+	DriftAudioLoadSamples(app->audio, job);
+	TracyCZoneEnd(ZONE_SAMPLES);
+	TracyCZoneN(ZONE_MUSIC, "load Music", true);
+	DriftAudioStartMusic(app->audio);
+	TracyCZoneEnd(ZONE_MUSIC);
+	DriftAudioPause(app->audio, false);
+	
 	if(script_func) ctx->script.coro = tina_init(ctx->script.buffer, sizeof(ctx->script.buffer), script_func, &ctx->script);
+	TracyCZoneEnd(ZONE_START);
 	
 	DriftAppShowWindow(app);
 	DriftGameContextLoop(job);
 }
 
-static void DriftGameStateRender(DriftGameState* state, DriftDraw* draw){
-	DriftGfxRenderer* renderer = draw->renderer;
-	DriftDrawShared* draw_shared = draw->shared;	
-	
-	typedef struct {
-		DriftGPUMatrix v_matrix, p_matrix, terrain_matrix;
-		DriftGPUMatrix vp_matrix, vp_inverse, reproj_matrix;
-		DriftVec2 pixel_extent, screen_extent, buffer_extent;
-		float atlas_size, biome_layer;
-	} GlobalUniforms;
-	
-	GlobalUniforms global_uniforms = {
-		.v_matrix = DriftAffineToGPU(draw->v_matrix),
-		.p_matrix = DriftAffineToGPU(draw->p_matrix),
-		.terrain_matrix = DriftAffineToGPU(state->terra->map_to_world),
-		.vp_matrix = DriftAffineToGPU(draw->vp_matrix),
-		.vp_inverse = DriftAffineToGPU(draw->vp_inverse),
-		.reproj_matrix = DriftAffineToGPU(draw->reproj_matrix),
-		.pixel_extent = draw->pixel_extent,
-		.screen_extent = draw->screen_extent,
-		.buffer_extent = draw->buffer_extent,
-		.atlas_size = DRIFT_ATLAS_SIZE, .biome_layer = DRIFT_ATLAS_BIOME,
-	};
-	
-	DriftAffine ui_projection = DriftAffineOrtho(0, draw->screen_extent.x, 0, draw->screen_extent.y);
-	GlobalUniforms ui_uniforms = global_uniforms;
-	ui_uniforms.v_matrix = DriftAffineToGPU(DRIFT_AFFINE_IDENTITY);
-	ui_uniforms.p_matrix = DriftAffineToGPU(ui_projection);
-	ui_uniforms.vp_matrix = ui_uniforms.p_matrix;
-	ui_uniforms.vp_inverse = DriftAffineToGPU(DriftAffineInverse(ui_projection));
+double DriftGameContextUpdateNanos(DriftGameContext* ctx){
+	u64 prev_nanos = ctx->clock_nanos;
+	ctx->clock_nanos = DriftTimeNanos();
+	return ctx->clock_nanos - prev_nanos;
+}
 
-	// Push global data.
-	static const DriftVec2 QUAD_UVS[] = {{0, 0}, {1, 0}, {0, 1}, {1, 1}};
-	static const u16 QUAD_INDICES[] = {0, 1, 2, 3, 2, 1};
-	draw->quad_vertex_binding = DriftGfxRendererPushGeometry(renderer, QUAD_UVS, sizeof(QUAD_UVS)).binding;
-	draw->quad_index_binding = DriftGfxRendererPushIndexes(renderer, QUAD_INDICES, sizeof(QUAD_INDICES)).binding;
-	draw->globals_binding = DriftGfxRendererPushUniforms(renderer, &global_uniforms, sizeof(global_uniforms)).binding;
-	DriftGfxBufferBinding ui_binding = DriftGfxRendererPushUniforms(renderer, &ui_uniforms, sizeof(ui_uniforms)).binding;
+static void debug_bb(DriftGameState* state, DriftAABB2 bb, DriftRGBA8 color){
+	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = {bb.l, bb.b}, .p1 = {bb.r, bb.b}, .radii = {1}, .color = color}));
+	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = {bb.l, bb.t}, .p1 = {bb.r, bb.t}, .radii = {1}, .color = color}));
+	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = {bb.l, bb.b}, .p1 = {bb.l, bb.t}, .radii = {1}, .color = color}));
+	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = {bb.r, bb.b}, .p1 = {bb.r, bb.t}, .radii = {1}, .color = color}));
+}
+
+static DriftVec2 light_frame_center(DriftSpriteFrame frame){
+	DriftVec2 offset = {(s8)frame.anchor.x, (s8)frame.anchor.y};
+	offset.x = 1 - 2*offset.x/(frame.bounds.r - frame.bounds.l + 1);
+	offset.y = 1 - 2*offset.y/(frame.bounds.t - frame.bounds.b + 1);
+	return offset;
+}
+
+void DriftGameStateRender(DriftDraw* draw){
+	DriftGfxRenderer* renderer = draw->renderer;
+	DriftDrawShared* draw_shared = draw->shared;
+	
+	if(draw->ctx->debug.boost_ambient){
+		DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
+			.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0.5f, 0.5f, 0.5f, 0}},
+			.matrix = DriftAffineMul(draw->vp_inverse, (DriftAffine){4, 0, 0, 4, 0, 0}),
+		}));
+	}
 	
 	// Render the lightfield buffer.
 	uint light_count = DriftArrayLength(draw->lights);
 	DriftGfxBufferBinding light_instances_binding = DriftGfxRendererPushGeometry(draw->renderer, draw->lights, light_count*sizeof(*draw->lights)).binding;
-
 	for(uint pass = 0; pass < 2; pass++){
 		DriftGfxRendererPushBindTargetCommand(renderer, draw_shared->lightfield_target[pass], DRIFT_VEC4_CLEAR);
 		DriftGfxPipelineBindings* bindings = DriftDrawQuads(draw, draw_shared->light_pipeline[pass], light_count);
 		bindings->instance = light_instances_binding;
 	}
 
-	// Render the shadow buffer.
+	// Calculate conservative bounds for required occluders starting with the view bounds.
+	// TODO This should go into DriftDraw maybe?
+	DriftAffine vp_inv = draw->vp_inverse;
+	float hw = fabsf(vp_inv.a) + fabsf(vp_inv.c), hh = fabsf(vp_inv.b) + fabsf(vp_inv.d);
+	DriftAABB2 screen_bounds = {vp_inv.x - hw, vp_inv.y - hh, vp_inv.x + hw, vp_inv.y + hh};
+	DriftAABB2 shadow_bounds = screen_bounds;
+	
+	// Count shadowed lights and find bounds.
 	uint shadow_count = 0;
 	for(uint i = 0; i < light_count; i++){
-		// TODO perform culling here? (set shadow caster prop I suppose?)
-		if(draw->lights[i].shadow_caster) shadow_count++;
+		if(draw->lights[i].shadow_caster){
+			DriftAffine light_matrix = draw->lights[i].matrix;
+			
+			DriftVec2 center = light_frame_center(draw->lights[i].frame);
+			if(DriftAffineVisibility(DriftAffineMul(draw->vp_matrix, light_matrix), center, DRIFT_VEC2_ONE)){
+				// Expand the bounds to include the light + radius;
+				DriftVec2 origin = DriftAffineOrigin(light_matrix);
+				float radius = draw->lights[i].radius;
+				DriftAABB2 light_bounds = {origin.x - radius, origin.y - radius, origin.x + radius, origin.y + radius};
+				shadow_bounds = DriftAABB2Merge(shadow_bounds, light_bounds);
+				shadow_count++;
+				
+				// debug_bb(draw->state, light_bounds, DRIFT_RGBA8_YELLOW);
+				
+				// DriftAffine m_bound = draw->lights[i].matrix;
+				// m_bound.x += m_bound.a*center.x + m_bound.c*center.y;
+				// m_bound.y += m_bound.b*center.x + m_bound.d*center.y;
+				
+				// float hw = fabsf(m_bound.a) + fabsf(m_bound.c), hh = fabsf(m_bound.b) + fabsf(m_bound.d);
+				// DriftAABB2 bb = (DriftAABB2){m_bound.x - hw, m_bound.y - hh, m_bound.x + hw, m_bound.y + hh};
+				// debug_bb(draw->state, bb, DRIFT_RGBA8_YELLOW);
+			} else {
+				// Light is not visible, clear it's shadow flag.
+				draw->lights[i].shadow_caster = false;
+			}
+		}
 	}
-
-	// Push the shadow mask data.
-	uint shadow_mask_count = DriftArrayLength(draw->shadow_masks);
-	// DRIFT_LOG("shadows to render: %d, masks: %d", shadow_count, shadow_mask_count);
-	DriftGfxBufferBinding shadow_mask_instances = DriftGfxRendererPushGeometry(renderer, draw->shadow_masks, shadow_mask_count*sizeof(*draw->shadow_masks)).binding;
+	
+	// Prep shadow light render structs.
 	// + 1 to avoid 0 length VLAs.
 	DriftGfxBufferBinding shadow_uniform_bindings[shadow_count + 1];
 	DriftGfxBufferBinding light_instance_bindings[shadow_count + 1];
 	DriftAABB2 light_bounds[shadow_count + 1];
 	
-	DriftVec2 shadowfield_extent = DriftVec2Mul(draw->buffer_extent, 1.0/DRIFT_SHADOWFIELD_SCALE);
+	DriftVec2 shadowfield_extent = DriftVec2Mul(draw->internal_extent, 1.0/DRIFT_SHADOWFIELD_SCALE);
 	DriftAffine shadowfield_ortho = DriftAffineOrtho(0, shadowfield_extent.x, 0, shadowfield_extent.y);
-	DriftAffine shadowfield_matrix = DriftAffineMult(DriftAffineInverse(shadowfield_ortho), draw->vp_matrix);
+	DriftAffine shadowfield_matrix = DriftAffineMul(DriftAffineInverse(shadowfield_ortho), draw->vp_matrix);
 	
 	for(uint i = 0, j = 0; i < light_count; i++){
 		if(draw->lights[i].shadow_caster){
@@ -232,14 +283,12 @@ static void DriftGameStateRender(DriftGameState* state, DriftDraw* draw){
 			shadow_uniform_bindings[j] = DriftGfxRendererPushUniforms(renderer, &uniforms, sizeof(uniforms)).binding;
 			light_instance_bindings[j] = light_instances_binding;
 			
-			DriftAffine m_bound = DriftAffineMult(shadowfield_matrix, light_matrix);
-			DriftSpriteFrame frame = draw->lights[i].frame;
-			DriftVec2 offset = {(s8)frame.anchor.x, (s8)frame.anchor.y};
-			offset.x = 2*offset.x/(frame.bounds.r - frame.bounds.l) - 1;
-			offset.y = 2*offset.y/(frame.bounds.t - frame.bounds.b) - 1;
-			m_bound.x -= m_bound.a*offset.x + m_bound.c*offset.y;
-			m_bound.y -= m_bound.b*offset.x + m_bound.d*offset.y;
+			DriftAffine m_bound = DriftAffineMul(shadowfield_matrix, light_matrix);
+			DriftVec2 center = light_frame_center(draw->lights[i].frame);
+			m_bound.x += m_bound.a*center.x + m_bound.c*center.y;
+			m_bound.y += m_bound.b*center.x + m_bound.d*center.y;
 			
+			// TODO this is done a bunch, move to math?
 			float hw = fabsf(m_bound.a) + fabsf(m_bound.c), hh = fabsf(m_bound.b) + fabsf(m_bound.d);
 			light_bounds[j] = (DriftAABB2){m_bound.x - hw, m_bound.y - hh, m_bound.x + hw, m_bound.y + hh};
 			
@@ -249,7 +298,13 @@ static void DriftGameStateRender(DriftGameState* state, DriftDraw* draw){
 		// These are already buffered by the lightfield step, so it needs to skip over non-shadow lights.
 		light_instances_binding.offset += sizeof(DriftLight);
 	}
-
+	
+	DriftTerrainDrawShadows(draw, draw->state->terra, shadow_bounds);
+	
+	// Push the shadow mask data.
+	uint shadow_mask_count = DriftArrayLength(draw->shadow_masks);
+	DriftGfxBufferBinding shadow_mask_instances = DriftGfxRendererPushGeometry(renderer, draw->shadow_masks, shadow_mask_count*sizeof(*draw->shadow_masks)).binding;
+	
 	for(uint pass = 0; pass < 2; pass++){
 		DriftGfxRendererPushBindTargetCommand(renderer, draw_shared->shadowfield_target[pass], DRIFT_VEC4_CLEAR);
 		DriftDrawQuads(draw, draw_shared->light_blit_pipeline[pass], 1);
@@ -272,258 +327,80 @@ static void DriftGameStateRender(DriftGameState* state, DriftDraw* draw){
 	}
 
 	// Render the color buffer.
-	DriftGfxRendererPushBindTargetCommand(renderer, draw_shared->color_target[draw_shared->color_buffer_index & 1], DRIFT_VEC4_CLEAR);
-	// DriftGfxPipelineBindings* light_debug_bindings = DriftDrawQuads(draw, draw->debug_lightfield_pipeline, 1);
-
-	typedef struct {
-		DRIFT_ARRAY(void) arr;
-		DriftGfxPipeline* pipeline;
-		DriftGfxPipelineBindings* bindings;
-	} DriftDrawBatch;
-	
-	DriftGfxTexture* color_buffer = draw_shared->color_buffer[(draw_shared->color_buffer_index + 0) % 2];
-	draw->color_buffer_prev = draw_shared->color_buffer[(draw_shared->color_buffer_index + 1) % 2];
-	draw_shared->color_buffer_index++;
-	
-	DriftGfxPipelineBindings shared_bindings = {
-		.vertex = draw->quad_vertex_binding,
-		.uniforms[0] = draw->globals_binding,
-		.samplers[0] = draw_shared->nearest_sampler,
-		.samplers[1] = draw_shared->linear_sampler,
-		.textures[0] = draw_shared->atlas_texture,
-		.textures[5] = draw->color_buffer_prev,
-		.textures[6] = draw_shared->lightfield_buffer,
-		.textures[7] = draw_shared->shadowfield_buffer,
-	};
+	DriftGfxTexture* color_buffer = draw->color_buffer_curr;
 	
 	DriftGfxPipeline* terrain_pipeline = draw_shared->terrain_pipeline;
 	if(draw->ctx->debug.draw_terrain_sdf) terrain_pipeline = draw_shared->debug_terrain_pipeline;
-	DriftGfxPipelineBindings terrain_bindings = shared_bindings;
-	terrain_bindings.samplers[2] = draw_shared->terrain_sampler;
+	DriftGfxPipelineBindings terrain_bindings = draw->default_bindings;
+	terrain_bindings.samplers[2] = draw_shared->repeat_sampler;
 	terrain_bindings.textures[1] = draw_shared->terrain_tiles;
 	
-	DriftGfxPipelineBindings hud_bindings = shared_bindings;
-	hud_bindings.uniforms[0] = ui_binding;
+	DriftDrawBatch terrain_batch = {.arr = draw->terrain_chunks, .pipeline = terrain_pipeline, .bindings = &terrain_bindings};
+
+	// Draw at least the terrain into the previous frame buffer if it's undefined.
+	// Avoid crud on the first frame or after resizing/fullscreen swaps.
+	if(draw->prev_buffer_invalid){
+		DriftGfxRendererPushBindTargetCommand(renderer, draw->color_target_prev, DRIFT_VEC4_CLEAR);
+		DriftDrawBatches(draw, (DriftDrawBatch[]){terrain_batch, {}});
+	}
 	
-	DriftDrawBatch batches[] = {
-		{.arr = draw->terrain_chunks, .pipeline = terrain_pipeline, .bindings = &terrain_bindings},
-		{.arr = draw->bg_sprites, .pipeline = draw_shared->sprite_pipeline, .bindings = &shared_bindings},
-		{.arr = draw->bg_prims, .pipeline = draw_shared->primitive_pipeline, .bindings = &shared_bindings},
-		{.arr = draw->fg_sprites, .pipeline = draw_shared->sprite_pipeline, .bindings = &shared_bindings},
-		{.arr = draw->overlay_sprites, .pipeline = draw_shared->overlay_sprite_pipeline, .bindings = &shared_bindings},
-		{.arr = draw->hud_sprites, .pipeline = draw_shared->overlay_sprite_pipeline, .bindings = &hud_bindings},
-		{.arr = draw->overlay_prims, .pipeline = draw_shared->primitive_pipeline, .bindings = &shared_bindings},
-		{.arr = state->debug_prims, .pipeline = draw_shared->primitive_pipeline, .bindings = &shared_bindings},
+	DriftGfxRendererPushBindTargetCommand(renderer, draw->color_target_curr, DRIFT_VEC4_CLEAR);
+	DriftDrawBatches(draw, (DriftDrawBatch[]){
+		terrain_batch,
+		{.arr = draw->bg_sprites, .pipeline = draw_shared->sprite_pipeline, .bindings = &draw->default_bindings},
+		{.arr = draw->bg_prims, .pipeline = draw_shared->primitive_pipeline, .bindings = &draw->default_bindings},
+		{.arr = draw->fg_sprites, .pipeline = draw_shared->sprite_pipeline, .bindings = &draw->default_bindings},
 		{},
-	};
+	});
 	
-	for(uint i = 0; batches[i].arr; i++){
-		DriftDrawBatch* batch = batches + i;
-		DriftArray* header = DriftArrayHeader(batch->arr);
-		
-		DriftGfxPipelineBindings* bindings = DriftGfxRendererPushBindPipelineCommand(renderer, batch->pipeline);
-		*bindings = *batch->bindings;
-		bindings->instance = DriftGfxRendererPushGeometry(renderer, batch->arr, header->count*header->elt_size).binding;
-		DriftGfxRendererPushDrawIndexedCommand(renderer, draw->quad_index_binding, 6, header->count);
-	}
+	// Resolve HDR
+	DriftPlayerData* player = draw->state->players.data + DriftComponentFind(&draw->state->players.c, draw->ctx->player);
+	struct {
+		DriftVec4 scatter[4];
+		DriftVec4 transmit[4];
+		DriftVec4 effect_tint;
+		float effect_static;
+		float effect_heat;
+	} effects = {
+		.scatter = {
+			// [DRIFT_BIOME_LIGHT] = (DriftVec4){{0.14f, 0.05f, 0.00f, 0.25f}},
+			[DRIFT_BIOME_LIGHT] = (DriftVec4){{0.43f, 0.25f, 0.02f, 0.12f}},
+			[DRIFT_BIOME_CRYO ] = (DriftVec4){{0.24f, 0.35f, 0.41f, 0.41f}},
+			[DRIFT_BIOME_RADIO] = (DriftVec4){{0.25f, 0.32f, 0.09f, 0.26f}},
+			[DRIFT_BIOME_DARK ] = (DriftVec4){{0.22f, 0.01f, 0.07f, 0.25f}},
+			// [DRIFT_BIOME_SPACE] = (DriftVec4){{0.00f, 0.00f, 0.00f, 0.00f}},
+		},
+		.transmit = {
+			// [DRIFT_BIOME_LIGHT] = (DriftVec4){{0.96f, 0.89f, 0.79f, 0.00f}},// Linear
+			[DRIFT_BIOME_LIGHT] = (DriftVec4){{0.99f, 0.92f, 0.86f, 1.00f}},
+			[DRIFT_BIOME_CRYO ] = (DriftVec4){{0.79f, 0.87f, 0.96f, 0.00f}},
+			[DRIFT_BIOME_RADIO] = (DriftVec4){{0.92f, 0.98f, 0.91f, 0.00f}},
+			[DRIFT_BIOME_DARK ] = (DriftVec4){{0.98f, 0.73f, 0.88f, 0.00f}},
+			// [DRIFT_BIOME_SPACE] = (DriftVec4){{1.00f, 1.00f, 1.00f, 1.00f}},
+		},
+		.effect_tint = draw->screen_tint,
+		.effect_static = DriftSaturate(1 - player->energy/player->energy_cap),
+		.effect_heat = DriftSaturate(player->temp),
+	}; // TODO GL packing warning, wants 160 bytes
 	
-	// Blit to the screen.
-	DriftGfxRendererPushBindTargetCommand(renderer, NULL, DRIFT_VEC4_CLEAR);
-	DriftGfxPipelineBindings* blit_bindings = DriftDrawQuads(draw, draw_shared->present_pipeline, 1);
-	blit_bindings->textures[1] = color_buffer;
-}
-
-static const float UI_LINE_HEIGHT = 12;
-
-static void craft_ui(struct nk_context* nk, DriftGameContext* ctx){
-	nk_layout_row_dynamic(nk, 2*UI_LINE_HEIGHT, 1);
-	if(nk_button_label(nk, "cheaty cheater")){
-		ctx->inventory[DRIFT_ITEM_TYPE_ORE] += 100;
-		ctx->inventory[DRIFT_ITEM_TYPE_LUMIUM] += 100;
-		ctx->inventory[DRIFT_ITEM_TYPE_SCRAP] += 100;
-	}
+	DriftGfxRendererPushBindTargetCommand(renderer, draw_shared->resolve_target, DRIFT_VEC4_CLEAR);
+	DriftGfxPipelineBindings* resolve_bindings = DriftDrawQuads(draw, draw_shared->resolve_pipeline, 1);
+	resolve_bindings->textures[1] = color_buffer;
+	resolve_bindings->samplers[2] = draw_shared->repeat_sampler;
+	resolve_bindings->uniforms[1] = DriftGfxRendererPushUniforms(renderer, &effects, sizeof(effects)).binding;
 	
-	for(uint i = 0; i < _DRIFT_ITEM_TYPE_COUNT; i++){
-		const DriftCraftableItem* craftable = DRIFT_CRAFTABLES + i;
-		const char* name = DRIFT_ITEMS[i].name;
-		const DriftIngredient* ingredients = DRIFT_CRAFTABLES[i].ingredients;
-		// static const DriftIngredient ingredients[] = {
-		// 	{.type = DRIFT_ITEM_TYPE_ORE, .count = 0},
-		// 	{},
-		// };
-		
-		uint p_count = 0;
-		while(p_count < DRIFT_CRAFTABLE_MAX_INGREDIENTS){
-			if(ingredients[p_count].type == DRIFT_ITEM_TYPE_NONE) break;
-			p_count++;
-		}
-		
-		if(p_count > 0){
-			float panel_height = (1 + p_count)*UI_LINE_HEIGHT;
-			nk_layout_row_dynamic(nk, panel_height + 10, 1);
-			if(nk_group_begin(nk, name, NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)){
-				nk_layout_space_begin(nk, NK_STATIC, panel_height, 10);
-				
-				float line_cursor = 0;
-				nk_layout_space_push(nk, nk_rect(0, 0, 200, UI_LINE_HEIGHT)); line_cursor += UI_LINE_HEIGHT;
-				nk_labelf(nk, NK_TEXT_LEFT, "%-16s    (have %u)", name, ctx->inventory[i]);
-				bool can_craft = true;
-				
-				for(uint p = 0; p < p_count; p++){
-					uint p_type = ingredients[p].type;
-					const char* p_name = DRIFT_ITEMS[p_type].name;
-					uint have = ctx->inventory[p_type], need = ingredients[p].count;
-					bool enough = have >= need;
-					can_craft = can_craft && enough;
-					
-					static const struct nk_color green = {0x00, 0xFF, 0x00, 0xFF};
-					static const struct nk_color red = {0xFF, 0x00, 0x00, 0xFF};
-					struct nk_color color = enough ? green : red;
-					
-					nk_layout_space_push(nk, nk_rect(0, line_cursor, 200, UI_LINE_HEIGHT)); line_cursor += UI_LINE_HEIGHT;
-					nk_labelf_colored(nk, NK_TEXT_LEFT, color, "  %-16s %4d / %2d", p_name, have, need);
-				}
-				
-				float panel_width = nk_window_get_panel(nk)->clip.w;
-				struct nk_rect button_rect = {panel_width, 0, 50, 2*UI_LINE_HEIGHT};
-				button_rect.x -= button_rect.w;
-				button_rect.y += (panel_height - button_rect.h)/2;
-				nk_layout_space_push(nk, button_rect);
-				if(can_craft && nk_button_label(nk, "Craft")){
-					ctx->inventory[i] += 1;
-					for(uint p = 0; p < p_count; p++){
-						ctx->inventory[ingredients[p].type] -= ingredients[p].count;
-					}
-					
-					// TODO
-					DriftPlayerData* player = ctx->state.players.data + DriftComponentFind(&ctx->state.players.c, ctx->player);
-					if(i == DRIFT_ITEM_TYPE_RUSTY_CANNON) player->quickslots[3] = DRIFT_TOOL_GUN;
-					if(i == DRIFT_ITEM_TYPE_MINING_LASER) player->quickslots[2] = DRIFT_TOOL_DIG;
-				}
-				
-				nk_layout_space_end(nk);
-				nk_group_end(nk);
-			}
-		}
-	}
-}
-
-static void cargo_ui(struct nk_context* nk, DriftPlayerData* player){
-	struct nk_style_button button = nk->style.button;
-	struct nk_style_button green = button;
-	green.normal = nk_style_item_color(nk_rgb(45, 150, 69));
-	green.hover = nk_style_item_color(nk_rgb(45, 170, 69));
-	green.active = nk_style_item_color(nk_rgb(45, 190, 69));
+	DriftGfxPipelineBindings hud_bindings = draw->default_bindings;
+	hud_bindings.uniforms[0] = draw->ui_binding;
 	
-	static int popup_slot = -1;
-	if(popup_slot >= 0){
-		struct nk_rect r = nk_window_get_content_region(nk);
-		if(nk_popup_begin(nk, NK_POPUP_STATIC, "Choose Slot", NK_WINDOW_BORDER, nk_rect(0, -UI_LINE_HEIGHT, r.w, r.h + UI_LINE_HEIGHT))){
-			for(uint i = 0; i < _DRIFT_ITEM_TYPE_COUNT; i++){
-				if(i > 0 && !DRIFT_ITEMS[i].cargo) continue;
-				
-				nk_layout_row_dynamic(nk, 2*UI_LINE_HEIGHT, 3);
-				
-				nk->style.button = i ? green : button;
-				if(nk_button_label(nk, i ? DRIFT_ITEMS[i].name : "To Storage")){
-					player->cargo_slots[popup_slot].request = i;
-					nk_popup_close(nk);
-					popup_slot = -1;
-				}
-			}
-			nk->style.button = button;
-			
-			nk_popup_end(nk);
-		}
-	}
-	
-	for(uint i = 0; i < DRIFT_PLAYER_CARGO_SLOT_COUNT; i++){
-		DriftItemType type = player->cargo_slots[i].request;
-		nk_layout_row_dynamic(nk, 2*UI_LINE_HEIGHT, 2);
-		nk_labelf(nk, NK_TEXT_LEFT, "Slot %d type:", i);
-		
-		nk->style.button = type ? green : button;
-		if(nk_button_label(nk, type ? DRIFT_ITEMS[type].name : "To Storage")) popup_slot = i;
-	}
-	
-	nk->style.button = button;
-}
-
-static void equip_ui(struct nk_context* nk, DriftPlayerData* player){
-	static const char* names[] = {
-		"Headlight",
-		"Grabber",
-		"Laser Shovel",
-		"Laser Pick",
-		"Blaster",
-	};
-	uint count = 5;
-	
-	struct nk_style_button button = nk->style.button;
-	struct nk_style_button green = button;
-	green.normal = nk_style_item_color(nk_rgb(45, 150, 69));
-	green.hover = nk_style_item_color(nk_rgb(45, 170, 69));
-	green.active = nk_style_item_color(nk_rgb(45, 190, 69));
-	
-	nk_layout_row_dynamic(nk, 2*UI_LINE_HEIGHT, 3);
-	for(uint i = 0; i < count; i++){
-		const char* name = names[i];
-		nk_label(nk, name, NK_TEXT_LEFT);
-		nk_label(nk, "foobar", NK_TEXT_LEFT);
-		
-		static bool equipped = true;
-		nk->style.button = equipped ? green : button;
-		if(nk_button_label(nk, equipped ? "Unequip" : "Equip")){
-			equipped = !equipped;
-		}
-		
-		nk->style.button = button;
-	}
-}
-
-static void DriftGameContextTempUI(DriftUpdate* update, DriftDraw* draw){
-	DriftGameState* state = update->state;
-	struct nk_context* nk = &update->ctx->debug.ui->nk;
-	
-	DriftPlayerInput* input = &update->ctx->input.player;
-	input->ui_active ^= DriftInputButtonPress(input, DRIFT_INPUT_OPEN_UI);
-	if(!input->ui_active) return;
-	
-	struct nk_rect craft_rect = {.x = 256, .w = 300, .h = 512};
-	craft_rect.y = (draw->pixel_extent.y - craft_rect.h)/2;
-	if(nk_begin(nk, "TempUI", craft_rect, NK_WINDOW_TITLE | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE | NK_WINDOW_NO_SCROLLBAR)){
-		struct nk_vec2 wsize = nk_window_get_size(nk);
-		if(wsize.x < craft_rect.w) wsize.x = craft_rect.w;
-		if(wsize.y < craft_rect.h) wsize.y = craft_rect.h;
-		nk_window_set_size(nk, nk->current->name_string, wsize);
-		
-		struct nk_style_button button = nk->style.button;
-		struct nk_style_button tab_active = button;
-		struct nk_style_button tab_inactive = button;
-		tab_inactive.normal = nk_style_item_color(nk_rgb(40, 40, 40));
-		tab_inactive.hover = nk_style_item_color(nk_rgb(80, 80, 80));
-		
-		static uint tab = 0, TAB_COUNT = 2;
-		static const char* TABS[] = {"Craft", "Cargo", "Equip"};
-		nk_layout_row_dynamic(nk, 2*UI_LINE_HEIGHT, TAB_COUNT);
-		for(uint i = 0; i < TAB_COUNT; i++){
-			nk->style.button = tab == i ? tab_active : tab_inactive;
-			if(nk_button_label(nk, TABS[i])) tab = i;
-		}
-		nk->style.button = button;
-		
-		float panel_height = nk_window_get_content_region(nk).h - 2*UI_LINE_HEIGHT;
-		nk_layout_row_dynamic(nk, panel_height, 1);
-		if(nk_group_begin(nk, TABS[tab], 0)){
-			switch(tab){
-				case 0: craft_ui(nk, update->ctx); break;
-				case 1: cargo_ui(nk, state->players.data + 1); break;
-				case 2: equip_ui(nk, state->players.data + 1); break;
-				case 3: break;
-			}
-			nk_group_end(nk);
-		}
-	} nk_end(nk);
+	// Draw overlays and HUD
+	DriftDrawBatches(draw, (DriftDrawBatch[]){
+		{.arr = draw->state->debug.prims, .pipeline = draw_shared->overlay_primitive_pipeline, .bindings = &draw->default_bindings},
+		{.arr = draw->state->debug.sprites, .pipeline = draw_shared->overlay_sprite_pipeline, .bindings = &draw->default_bindings},
+		{.arr = draw->overlay_sprites, .pipeline = draw_shared->overlay_sprite_pipeline, .bindings = &draw->default_bindings},
+		{.arr = draw->overlay_prims, .pipeline = draw_shared->overlay_primitive_pipeline, .bindings = &draw->default_bindings},
+		{.arr = draw->hud_sprites, .pipeline = draw_shared->overlay_sprite_pipeline, .bindings = &hud_bindings},
+		{},
+	});
 }
 
 static void destroy_entities(DriftGameState* state, DriftEntity* list){
@@ -563,14 +440,15 @@ static void ResetHotComponents(DriftUpdate* update){
 }
 #endif
 
-static void DriftGameStateCleanup(tina_job* job){
-	DriftUpdate* update = tina_job_get_description(job)->user_data;
+static void DriftGameStateCleanup(DriftUpdate* update){
+	// DriftUpdate* update = tina_job_get_description(job)->user_data;
 	DriftGameState* state = update->state;
 	
-	DriftZoneMemRelease(update->zone);
-	DriftArrayHeader(state->debug_prims)->count = 0;
-	
 	destroy_entities(state, update->_dead_entities);
+	
+	DriftZoneMemRelease(update->mem);
+	DriftArrayHeader(state->debug.sprites)->count = 0;
+	DriftArrayHeader(state->debug.prims)->count = 0;
 	
 	static uint gc_cursor = 0;
 	DriftTable* table = &state->power_edges.t;
@@ -578,7 +456,6 @@ static void DriftGameStateCleanup(tina_job* job){
 	for(uint run = 0; table->row_count > 0 && run < 20;){
 		uint idx = gc_cursor % table->row_count;
 		DriftEntity e0 = edges[idx].e0, e1 = edges[idx].e1;
-		// TODO these should be cleared on removal.
 		if(DriftComponentFind(&state->power_nodes.c, e0) && DriftComponentFind(&state->power_nodes.c, e1)){
 		// if(DriftEntitySetCheck(&state->entities, e0) && DriftEntitySetCheck(&state->entities, e1)){
 			run++;
@@ -590,78 +467,191 @@ static void DriftGameStateCleanup(tina_job* job){
 	}
 }
 
-static void DriftHUD(DriftDraw* draw){
+static float toast_alpha(uint current_tick, DriftToast* toast){
+	return 1 - DriftSaturate((current_tick - toast->timestamp)/DRIFT_TICK_HZ - 4);
+}
+
+void DriftContextPushToast(DriftGameContext* ctx, const char* format, ...){
+	DriftToast toast = {.timestamp = ctx->current_tick, .count = 1};
+	
+	va_list arg;
+	va_start(arg, format);
+	char* end = toast.message + vsnprintf(toast.message, sizeof(toast.message), format, arg);
+	va_end(arg);
+	
+	// Find a matching toast and update it's count
+	uint i = 0;
+	while(i < DRIFT_MAX_TOASTS){
+		bool visible = toast_alpha(ctx->current_tick, ctx->toasts + i) > 0;
+		if(visible && strncmp(toast.message, ctx->toasts[i].message, sizeof(toast.message)) == 0){
+			toast.count += ctx->toasts[i].count;
+			break;
+		}
+		
+		i++;
+	}
+	
+	// Reuse last if no match.
+	if(i == DRIFT_MAX_TOASTS) i--;
+	
+	push_up:
+	for(; i; i--) ctx->toasts[i] = ctx->toasts[i - 1];
+	ctx->toasts[0] = toast;
+} 
+
+static void draw_hud(DriftDraw* draw){
 	TracyCZoneN(ZONE_HUD, "HUD", true);
 	DriftGameContext* ctx = draw->ctx;
 	DriftGameState* state = draw->state;
-	DriftPlayerData* player = state->players.data + 1; // TODO player
+	DriftPlayerData* player = ctx->state.players.data + DriftComponentFind(&ctx->state.players.c, ctx->player);
+	DriftVec2 screen_size = {roundf(draw->virtual_extent.x), roundf(draw->virtual_extent.y)};
 	
-	{ // Draw quickslots
-		DriftAffine t = {1, 0, 0, 1, 8, draw->screen_extent.y - 18};
-		t = DriftDrawText(draw, &draw->hud_sprites, t, "Tools:\n");
-		
-		const char* icons[] = {" ", "{@QUICKSLOT1}", "{@QUICKSLOT2}", "{@QUICKSLOT3}", "{@QUICKSLOT4}"};
-		for(uint i = 1; i < DRIFT_QUICKSLOT_COUNT; i++){
-			uint tool_idx = player->quickslots[i];
-			const char* tool_name = tool_idx ? DRIFT_TOOLS[tool_idx].name : "-";
-			const char* highlight = (player->quickslot_idx == i ? DRIFT_TEXT_GREEN : DRIFT_TEXT_WHITE);
-			t = DriftDrawTextF(draw, &draw->hud_sprites, t, DRIFT_TEXT_GRAY"%s %s%s\n", icons[i], highlight, tool_name);
+	{ // Draw controls
+		DriftAffine t = {1, 0, 0, 1, 8, screen_size.y - 18};
+		t = DriftDrawText(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "{@FIRE} Shoot\n"); t.y -= 3;
+		t = DriftDrawText(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "{@GRAB} Grab Object\n"); t.y -= 3;
+		t = DriftDrawText(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "{@DROP} Place Node\n"); t.y -= 3;
+		t = DriftDrawText(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "{@SCAN} Scan Object\n"); t.y -= 3;
+		if(state->inventory[DRIFT_ITEM_MINING_LASER]){
+			t = DriftDrawText(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "{@LASER} Laser\n"); t.y -= 3;
+		}
+		t = DriftDrawText(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "{@OPEN_MAP} Show Map\n"); t.y -= 3;
+		// t = DriftDrawText(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "{@LIGHT} Toggle Light\n"); t.y -= 3;
+		// if(ctx->input.player.ui_active ) t = DriftDrawText(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "{@CANCEL} Close Crafting\n");
+	}
+	
+	// Draw inventory
+	DriftAffine t = {1, 0, 0, 1, 8, screen_size.y - 110};
+	t = DriftDrawText(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "Cargo Hold:\n");
+	
+	for(uint i = 0; i < DRIFT_PLAYER_CARGO_SLOT_COUNT; i++){
+		DriftCargoSlot* slot = player->cargo_slots + i;
+		const char* name = DRIFT_ITEMS[slot->type].name;
+		if(slot->count || slot->request){
+			t = DriftDrawTextF(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "%2d "DRIFT_TEXT_GRAY"%s\n", slot->count, name);
+		} else {
+			t = DriftDrawText(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "--"DRIFT_TEXT_GRAY" (empty)\n");
 		}
 	}
 	
-	{ // Draw inventory
-		DriftAffine t = {1, 0, 0, 1, 8, draw->screen_extent.y - 100};
-		t = DriftDrawText(draw, &draw->hud_sprites, t, "Inventory: {@CARGO_PREV} | {@CARGO_NEXT}\n");
+	uint health_idx = DriftComponentFind(&state->health.c, ctx->player);
+	DriftHealth* health = state->health.data + health_idx;
+	
+	if(player->energy){ // Draw Heat
+		DriftAffine t = {1, 0, 0, 1, 256, screen_size.y - 18};
+		float value = DriftClamp(player->temp, -1, 1);
+		u8 r = 255 - (u8)fmaxf(0, -255*value);
+		u8 g = 255 - (u8)fmaxf(0,  255*value);
+		u8 b = 255 - (u8)fmaxf(0,  255*value);
+		DriftDrawTextF(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE, "Heat: {#%02X%02X%02XFF}%- d%", r, g, b, (uint)(100*value));
+	}
+	
+	DriftVec2 info_cursor = {screen_size.x/2, screen_size.y/3};
+	float info_flash = (fmodf(draw->tick/DRIFT_TICK_HZ, 1) < 0.9f ? 1 : 0.25);
+	
+	if(player->energy == 0){
+		const char* text = "THRUSTER POWER ONLY";
+		DriftAffine m = {1, 0, 0, 1, info_cursor.x - DriftDrawTextSize(text, 0, draw->input_icons).x/2, info_cursor.y};
+		DriftDrawText(draw, &draw->hud_sprites, m, DriftVec4Mul(DRIFT_VEC4_RED, info_flash), text);
+		info_cursor.y -= 10;
+	} else if(!player->is_powered){
+		const char* text = DriftSMPrintf(draw->mem, "CAPACITORS %2.0f%%", 100*player->energy/player->energy_cap);
+		DriftAffine m = {1, 0, 0, 1, info_cursor.x - DriftDrawTextSize(text, 0, draw->input_icons).x/2, info_cursor.y};
+		DriftDrawText(draw, &draw->hud_sprites, m, DriftVec4Mul(DRIFT_VEC4_ORANGE, info_flash), text);
+		info_cursor.y -= 10;
+	}
+	
+	float shield = health->value/health->maximum;
+	if(shield <= 0.5f){
+		const char* text = shield > 0 ? DRIFT_TEXT_ORANGE"SHIELDS LOW" : DRIFT_TEXT_RED"SHIELDS DOWN";
+		DriftAffine m = {1, 0, 0, 1, info_cursor.x - DriftDrawTextSize(text, 0, draw->input_icons).x/2, info_cursor.y};
+		DriftDrawText(draw, &draw->hud_sprites, m, DriftVec4Mul(DRIFT_VEC4_WHITE, info_flash), text);
+		info_cursor.y -= 10;
+	}
+	
+	if(player->is_overheated){
+		const char* text = "OVERHEAT";
+		DriftAffine m = {1, 0, 0, 1, info_cursor.x - DriftDrawTextSize(text, 0, draw->input_icons).x/2, info_cursor.y};
+		DriftDrawText(draw, &draw->hud_sprites, m, DriftVec4Mul(DRIFT_VEC4_RED, info_flash), text);
+		info_cursor.y -= 10;
+	} else if(fabsf(player->temp) > 0.25){
+		const char* text = "TEMPERATURE";
+		DriftAffine m = {1, 0, 0, 1, info_cursor.x - DriftDrawTextSize(text, 0, draw->input_icons).x/2, info_cursor.y};
+		DriftDrawText(draw, &draw->hud_sprites, m, DriftVec4Mul(DRIFT_VEC4_ORANGE, info_flash), text);
+		info_cursor.y -= 10;
+	}
+	
+	// Draw toasts
+	DriftVec2 toast_cursor = {15, draw->internal_extent.y/3};
+	for(uint i = 0; i < DRIFT_MAX_TOASTS; i++){
+		DriftToast* toast = ctx->toasts + i;
+		float alpha = toast_alpha(draw->tick, toast);
+		if(alpha > 0){
+			DriftVec4 fade = {{alpha, alpha, alpha, alpha}};
+			const char* message = toast->message;
+			
+			if(toast->count > 1) message = DriftSMPrintf(draw->mem, "%s "DRIFT_TEXT_GRAY"x%d", toast->message, toast->count);
+			DriftDrawTextF(draw, &draw->hud_sprites, (DriftAffine){1, 0, 0, 1, toast_cursor.x, toast_cursor.y}, fade, "%s", message);
+			toast_cursor.y -= 10;
+		}
+	}
+	
+	DriftVec2 player_pos = DriftAffineOrigin(state->transforms.matrix[DriftComponentFind(&state->transforms.c, ctx->player)]);
+	
+	if(!player->is_powered){
+		float nearest_dist = INFINITY;
+		DriftVec2 nearest_pos = DRIFT_VEC2_ZERO;
 		
-		for(uint i = 0; i < DRIFT_PLAYER_CARGO_SLOT_COUNT; i++){
-			const char* name = DRIFT_ITEMS[player->cargo_slots[i].type].name;
-			uint count = player->cargo_slots[i].count;
-			if(name && count){
-				const char* highlight = (player->cargo_idx == i ? DRIFT_TEXT_GREEN : DRIFT_TEXT_GRAY);
-				t = DriftDrawTextF(draw, &draw->hud_sprites, t, "%2d %s%s\n", count, highlight, name);
-			} else {
-				t = DriftDrawText(draw, &draw->hud_sprites, t, "--"DRIFT_TEXT_GRAY" (empty)\n");
+		DRIFT_COMPONENT_FOREACH(&state->power_nodes.c, node_idx){
+			if(!state->power_nodes.active[node_idx]) continue;
+			
+			DriftVec2 pos = state->power_nodes.position[node_idx];
+			float dist = DriftVec2Distance(pos, player_pos);
+			if(dist < nearest_dist){
+				nearest_dist = dist;
+				nearest_pos = pos;
 			}
 		}
 		
-		t = DriftDrawText(draw, &draw->hud_sprites, t, "\nPress {@OPEN_UI} to craft.\n");
-		t = DriftDrawText(draw, &draw->hud_sprites, t, "Toggle light with {@HEADLIGHT}.");
+		float anim = DriftSaturate((draw->tick - player->power_timestamp)/(0.15f*DRIFT_TICK_HZ));
+		DriftVec4 color = {{0, anim, anim, anim}};
+		DriftRGBA8 color8 = DriftRGBA8FromColor(color);
+		float wobble = 4*fabsf(sinf(draw->tick/15.0f)), r = 8 + wobble;
+		DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = nearest_pos, .p1 = nearest_pos, .radii = {r, r - 1}, .color = color8}));
+		
+		DriftVec2 dir = DriftVec2Normalize(DriftVec2Sub(nearest_pos, player_pos));
+		DriftVec2 chevron_pos = DriftVec2FMA(player_pos, dir, 96 - wobble);
+		float scale = DriftLogerp(4, 1, anim);
+		DriftAffine m = {scale, 0, 0, scale, chevron_pos.x, chevron_pos.y};
+		
+		DriftAffine m_chev = DriftAffineMul(m, (DriftAffine){dir.x, dir.y, -dir.y, dir.x, 0, 0});
+
+		DriftVec2 p[] = {
+			DriftAffinePoint(m_chev, (DriftVec2){0, -4}),
+			DriftAffinePoint(m_chev, (DriftVec2){2,  0}),
+			DriftAffinePoint(m_chev, (DriftVec2){0,  4}),
+		};
+		DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = p[0], .p1 = p[1], .radii = {1.5f*scale}, .color = color8}));
+		DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = p[1], .p1 = p[2], .radii = {1.5f*scale}, .color = color8}));
+		
+		const char* text = "POWER";
+		DriftAABB2 text_bounds = DriftDrawTextBounds(text, 0, draw->input_icons);
+		DriftVec2 text_center = DriftAABB2Center(text_bounds), text_extents = DriftAABB2Extents(text_bounds);
+		DriftVec2 text_offset = DriftVec2FMA(text_center, dir, fminf((text_extents.x + 2)/fabsf(dir.x), (text_extents.y + 3)/fabsf(dir.y)));
+		DriftDrawText(draw, &draw->overlay_sprites, DriftAffineMul(m, (DriftAffine){1, 0, 0, 1, -text_offset.x, -text_offset.y}), color , text);
 	}
 	
-	{ // Draw Health
-		uint health_idx = DriftComponentFind(&state->health.c, ctx->player);
-		DriftHealth* health = state->health.data + health_idx;
-		DriftAffine t = {1, 0, 0, 1, 128, draw->screen_extent.y - 18};
-		float percent = health->value/health->maximum;
-		const char* color = percent > 0.3f ? DRIFT_TEXT_GREEN : DRIFT_TEXT_RED;
-		DriftDrawTextF(draw, &draw->hud_sprites, t, "Health: %s%d%%", color, (uint)(100*percent));
-	}
-	
-	{ // Draw Power
-		uint health_idx = DriftComponentFind(&state->health.c, ctx->player);
-		DriftHealth* health = state->health.data + health_idx;
-		DriftAffine t = {1, 0, 0, 1, 256, draw->screen_extent.y - 18};
-		float percent = player->power_reserve/player->power_capacity;
-		const char* color = DRIFT_TEXT_GREEN;
-		if(percent < 1) color = "{#FF8000FF}";
-		if(percent < 0.3f) color = DRIFT_TEXT_RED;
-		DriftDrawTextF(draw, &draw->hud_sprites, t, "Power: %s%d%%", color, (uint)(100*percent));
-	}
-	
-	// TODO Temporary message area.
-	DriftAffine t1 = {1, 0, 0, 1, 8, 2*10 + 8};
-	if(ctx->message) DriftDrawText(draw, &draw->hud_sprites, t1, ctx->message);
 	TracyCZoneEnd(ZONE_HUD);
 }
 
 static const char* DRIFT_FRAME_TRACY = "DRIFT_FRAME_TRACY";
 
-void DriftGameContextPresent(tina_job* job){
+static void DriftGameContextPresent(tina_job* job){
 	static const char* FRAME_PRESENT = "Present";
 	TracyCFrameMarkStart(FRAME_PRESENT);
 	DriftDraw* draw = tina_job_get_description(job)->user_data;
 	DriftAppPresentFrame(draw->shared->app, draw->renderer);
-	DriftZoneMemRelease(draw->zone);
+	DriftZoneMemRelease(draw->mem);
 	TracyCFrameMarkEnd(FRAME_PRESENT);
 }
 
@@ -693,13 +683,34 @@ void DriftGameContextLoop(tina_job* job){
 	SDL_GetWindowDisplayMode(app->shell_window, &display_mode);
 	for(uint i = 0; i < 3; i++) x[i] = y[i] = 1.0/display_mode.refresh_rate;
 	
-	// ctx->debug.show_ui = true;
+	ctx->debug.show_ui = true;
+	ctx->debug.ui->show_info = true;
+	ctx->script.debug_skip = true;
+	ctx->debug.godmode = true;
 	// ctx->debug.pause = true;
 	// ctx->debug.paint = true;
 	// ctx->debug.draw_terrain_sdf = true;
+	// ctx->debug.hide_terrain_decals = true;
+	
+	if(ctx->debug.godmode){
+		state->inventory[DRIFT_ITEM_VIRIDIUM] = 100;
+		state->inventory[DRIFT_ITEM_LUMIUM] = 100;
+		state->inventory[DRIFT_ITEM_SCRAP] = 100;
+		state->inventory[DRIFT_ITEM_POWER_SUPPLY] = 100;
+		state->inventory[DRIFT_ITEM_OPTICS] = 100;
+		state->inventory[DRIFT_ITEM_POWER_NODE] = 100;
+		
+		state->inventory[DRIFT_ITEM_HEADLIGHT] = 1;
+		state->inventory[DRIFT_ITEM_CANNON] = 1;
+		state->inventory[DRIFT_ITEM_AUTOCANNON] = 1;
+		state->inventory[DRIFT_ITEM_MINING_LASER] = 1;
+
+		for(uint i = 0; i < _DRIFT_SCAN_COUNT; i++) state->scan_progress[i] = 1;
+	}
 	
 	DriftAffine prev_vp_matrix = DRIFT_AFFINE_IDENTITY;
-	state->debug_prims = DRIFT_ARRAY_NEW(DriftSystemMem, 0, DriftPrimitive);
+	state->debug.sprites = DRIFT_ARRAY_NEW(DriftSystemMem, 0, DriftSprite);
+	state->debug.prims = DRIFT_ARRAY_NEW(DriftSystemMem, 0, DriftPrimitive);
 	
 	float debug_zoom = 1;
 	DriftVec2 debug_pan = DRIFT_VEC2_ZERO;
@@ -709,13 +720,10 @@ void DriftGameContextLoop(tina_job* job){
 	while(!ctx->input.quit && !app->shell_restart){
 		DRIFT_ASSERT_WARN(tina_job_switch_queue(job, DRIFT_JOB_QUEUE_MAIN) == DRIFT_JOB_QUEUE_MAIN, "Main thread is on the wrong queue?");
 		
-		// Update the time.
-		u64 prev_nanos = ctx->clock_nanos;
-		ctx->clock_nanos = DriftTimeNanos();
-		
-		double unfiltered_nanos = ctx->clock_nanos - prev_nanos;
+		double unfiltered_nanos = DriftGameContextUpdateNanos(ctx);
 		double filtered_nanos = iir_filter(unfiltered_nanos, 3, x, y, filter_b, filter_a);
 		double variance = iir_filter(pow(unfiltered_nanos - filtered_nanos, 2), 3, var_x, var_y, filter_b, filter_a);
+		DRIFT_ASSERT(variance >= 0, "negative variance?");
 		bool interval_quality = sqrt(fmax(0, variance))/filtered_nanos < 0.125;
 		
 		double time_scale = expf(-4*ctx->time_scale_log);
@@ -731,32 +739,38 @@ void DriftGameContextLoop(tina_job* job){
 		}
 		
 		TracyCZoneN(INPUT_ZONE, "Input", true);
-		DriftInputEventsPoll(app, ctx, job, ctx->debug.ui, DriftAffineInverse(prev_vp_matrix));
+		DriftInputEventsPoll(ctx, DriftAffineInverse(prev_vp_matrix));
+		if(DriftInputButtonPress(&ctx->input.player, DRIFT_INPUT_OPEN_MAP)) DriftGameContextMapLoop(ctx, job, prev_vp_matrix, DRIFT_UI_STATE_NONE, 0);
+		if(DriftInputButtonPress(&ctx->input.player, DRIFT_INPUT_PAUSE)) DriftPauseLoop(ctx, job, prev_vp_matrix);
 		TracyCZoneEnd(INPUT_ZONE);
 		
-		DriftZoneMem* zone = DriftZoneMemAquire(app->zone_heap, "UpdateMem");
 		DriftUpdate update = {
-			.ctx = ctx, .job = job, .state = state, .audio = ctx->audio,
-			.scheduler = app->scheduler, .zone = zone, .mem = DriftZoneMemWrap(zone),
+			.ctx = ctx, .job = job, .state = state, .audio = app->audio,
+			.scheduler = app->scheduler, .mem = DriftZoneMemAquire(app->zone_heap, "UpdateMem"),
+			.frame = ctx->current_frame, .tick = ctx->current_tick,
 			.dt = update_nanos/1e9f, .tick_dt = 1/DRIFT_TICK_HZ, .prev_vp_matrix = prev_vp_matrix,
 		};
-		
 		update._dead_entities = DRIFT_ARRAY_NEW(update.mem, 256, DriftEntity);
+		
+		DriftScript* script = &ctx->script;
+		script->update = &update;
 		
 		TracyCZoneN(UPDATE_ZONE, "Update", true);
 		if(update_nanos > 0){
 			DriftSystemsUpdate(&update);
 			
-			if(ctx->script.coro && !ctx->script.coro->completed){
-				tina_resume(ctx->script.coro, 0);
+			if(script->coro && !script->coro->completed){
+				tina_resume(script->coro, 0);
 			} else {
-				ctx->script.coro = NULL;
+				script->coro = NULL;
 			}
 		}
 		TracyCZoneEnd(UPDATE_ZONE);
 		
 		u64 tick_dt_nanos = (u64)(1e9f/DRIFT_TICK_HZ);
 		while(ctx->tick_nanos < ctx->update_nanos){
+			update.tick = ctx->current_tick = ctx->_tick_counter;
+			
 			TracyCZoneN(ZONE_TICK, "Tick", true);
 			DriftSystemsTick(&update);
 			TracyCZoneEnd(ZONE_TICK);
@@ -767,7 +781,7 @@ void DriftGameContextLoop(tina_job* job){
 			TracyCZoneEnd(ZONE_PHYSICS);
 			
 			ctx->tick_nanos += tick_dt_nanos;
-			ctx->current_tick++;
+			ctx->_tick_counter++;
 		}
 		
 		float dt_since_tick = (ctx->tick_nanos - ctx->update_nanos)/-1e9f;
@@ -778,17 +792,18 @@ void DriftGameContextLoop(tina_job* job){
 		TracyCZoneEnd(INTERPOLATE_ZONE);
 		
 		TracyCZoneN(DRAW_ZONE, "Draw", true);
+		TracyCZoneN(DRAW_ZONE_DRAW_SETUP, "Draw Setup", true);
+		DriftVec2 prev_origin = DriftAffineOrigin(DriftAffineInverse(prev_vp_matrix));
+		DriftAffine v_matrix = {1, 0, 0, 1, -prev_origin.x, -prev_origin.y};
 		
-		TracyCZoneN(DRAW_ZONE_CAMERA, "Camera Setup", true);
 		uint transform_idx = DriftComponentFind(&state->transforms.c, ctx->player);
-		DriftVec2 camera_pos = {state->transforms.matrix[transform_idx].x, state->transforms.matrix[transform_idx].y};
+		if(transform_idx){
+			DriftVec2 player_pos = {state->transforms.matrix[transform_idx].x, state->transforms.matrix[transform_idx].y};
+			DriftTerrainUpdateVisibility(state->terra, player_pos);
+			v_matrix = (DriftAffine){1, 0, 0, 1, -player_pos.x, -player_pos.y};
+		}
 		
-		DriftDraw* draw = DriftDrawCreate(ctx, job);
-		draw->v_matrix = (DriftAffine){1, 0, 0, 1, -camera_pos.x, -camera_pos.y};
-		draw->p_matrix = DriftAffineOrtho(-0.5f*draw->buffer_extent.x, 0.5f*draw->buffer_extent.x, -0.5f*draw->buffer_extent.y, 0.5f*draw->buffer_extent.y);
-		draw->dt = update.dt;
-		draw->dt_since_tick = dt_since_tick;
-		
+		DriftDraw* draw = DriftDrawBegin(ctx, job, update.dt, dt_since_tick, v_matrix, prev_vp_matrix);
 		if(ctx->debug.pause){
 			debug_zoom = DriftClamp(debug_zoom*exp2f(-0.5f*ctx->input.mouse_wheel), 1/256.0f, 4);
 			float zoom = powf(debug_view.a/debug_zoom, expf(-15.0f*delta_nanos/1e9f) - 1);
@@ -798,75 +813,119 @@ void DriftGameContextLoop(tina_job* job){
 			DriftVec2 pan = DriftAffineDirection(p_inv, DriftVec2Sub(ctx->input.mouse_pos_clip, debug_pan));
 			debug_pan = ctx->input.mouse_pos_clip;
 			if(!ctx->input.mouse_state[DRIFT_MOUSE_MIDDLE]) pan = DRIFT_VEC2_ZERO;
-			debug_view = DriftAffineMult((DriftAffine){1.0f, 0, 0, 1.0f, -pivot.x, -pivot.y}, debug_view);
-			debug_view = DriftAffineMult((DriftAffine){zoom, 0, 0, zoom,    pan.x,    pan.y}, debug_view);
-			debug_view = DriftAffineMult((DriftAffine){1.0f, 0, 0, 1.0f, +pivot.x, +pivot.y}, debug_view);
-			draw->v_matrix = DriftAffineMult(debug_view, draw->v_matrix);
+			debug_view = DriftAffineMul((DriftAffine){1.0f, 0, 0, 1.0f, -pivot.x, -pivot.y}, debug_view);
+			debug_view = DriftAffineMul((DriftAffine){zoom, 0, 0, zoom,    pan.x,    pan.y}, debug_view);
+			debug_view = DriftAffineMul((DriftAffine){1.0f, 0, 0, 1.0f, +pivot.x, +pivot.y}, debug_view);
+			draw->v_matrix = DriftAffineMul(debug_view, draw->v_matrix);
+			draw->vp_matrix = DriftAffineMul(draw->p_matrix, draw->v_matrix);
+			draw->vp_inverse = DriftAffineInverse(draw->vp_matrix);
 		} else {
 			debug_zoom = 1;
 			debug_view = DRIFT_AFFINE_IDENTITY;
 		}
-		
-		draw->vp_matrix = DriftAffineMult(draw->p_matrix, draw->v_matrix);
-		draw->vp_inverse = DriftAffineInverse(draw->vp_matrix);
-		draw->reproj_matrix = DriftAffineMult(prev_vp_matrix, draw->vp_inverse);
 		prev_vp_matrix = draw->vp_matrix;
-		tina_group draw_jobs = {};
-		TracyCZoneEnd(DRAW_ZONE_CAMERA);
+		DriftDrawBindGlobals(draw);
+		TracyCZoneEnd(DRAW_ZONE_DRAW_SETUP);
 			
-		DriftTerrainDraw(draw);
+		DriftTerrainDrawTiles(draw, debug_zoom > 1);
 		DriftSystemsDraw(draw);
-		DriftHUD(draw);
-
-		DriftAffine t = {1, 0, 0, 1, draw->screen_extent.x - 64, 32};
-		char short_sha[] = DRIFT_GIT_SHA;
-		short_sha[8] = 0;
-		DriftDrawTextF(draw, &draw->hud_sprites, t,"%s%6.2f Hz\n {#80404080}v%d.%d {#80808080}DEV\n {#40408080}%8s",
-			interval_quality ? "{#00FF00FF}" : "{#FF0000FF}", 1e9/delta_nanos, DRIFT_VERSION_MAJOR, DRIFT_VERSION_MINOR, short_sha
-		);
 		
-		tina_job_wait(job, &draw_jobs, 0);
+		if(script->draw) script->draw(draw, script);
+		
+		if(!ctx->debug.hide_hud){
+			if(DriftEntitySetCheck(&state->entities, ctx->player)){
+				if(state->status.show_hud) draw_hud(draw);
+			} else {
+				DriftVec2 ssize = draw->virtual_extent;
+				{
+					DriftAffine m = {ssize.x/2, 0, 0, ssize.y/2, ssize.x/4, ssize.y/4};
+					DRIFT_ARRAY_PUSH(draw->hud_sprites, ((DriftSprite){.color = {0x00, 0x00, 0x00, 0x80}, .matrix = m}));
+				}{
+					const char* message = DRIFT_TEXT_RED "Mining Pod Destroyed";
+					float width = DriftDrawTextSize(message, 0, draw->input_icons).x;
+					DriftAffine m = {1, 0, 0, 1, -width/2, 0};
+					m = DriftAffineMul((DriftAffine){2, 0, 0, 2, draw->virtual_extent.x/2, draw->virtual_extent.y/2}, m);
+					DriftDrawText(draw, &draw->hud_sprites, m, DRIFT_VEC4_WHITE, message);
+				}{
+					const char* message = "Press {@ACCEPT} to Reconstruct";
+					float width = DriftDrawTextSize(message, 0, draw->input_icons).x;
+					DriftAffine m = {1, 0, 0, 1, (draw->virtual_extent.x - width)/2, draw->virtual_extent.y/3};
+					DriftDrawText(draw, &draw->hud_sprites, m, DRIFT_VEC4_WHITE, message);
+				}
+			}
+			
+			DriftAffine t = {1, 0, 0, 1, roundf(draw->virtual_extent.x) - 64, 16};
+			char short_sha[6] = {};
+			for(uint i = 0; i < 5; i++){
+				uint c = DRIFT_GIT_SHA[i];
+				if(c - (uint)'a' <= 'f' - 'a') c += 'A' - 'a';
+				short_sha[i] = c;
+			}
+			DriftDrawTextF(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE,"{#80808080}DEV {#40408080}%s",
+				/*DRIFT_VERSION_MAJOR, DRIFT_VERSION_MINOR,*/ short_sha
+			);
+		}
+		
+		TracyCZoneN(DEBUG_UI_ZONE, "Debug UI", true);
+		DriftDebugUI(&update, draw);
+		TracyCZoneEnd(DEBUG_UI_ZONE);
 		TracyCZoneEnd(DRAW_ZONE);
 		
-		TracyCZoneN(UI_ZONE, "UI", true);
-		void DriftGameContextDebugUI(DriftUpdate* update, DriftDraw* draw);
-		DriftGameContextDebugUI(&update, draw);
-		DriftGameContextTempUI(&update, draw);
-		TracyCZoneEnd(UI_ZONE);
-		
 		TracyCZoneN(RENDER_ZONE, "Render", true);
-		DriftGameStateRender(draw->state, draw);
+		DriftGameStateRender(draw);
+		
+		DriftUIBegin(draw);
+		switch(ctx->ui_state){
+			case DRIFT_UI_STATE_SCAN: DriftScanUI(draw, &ctx->ui_state, ctx->last_scan); break;
+			case DRIFT_UI_STATE_CRAFT: DriftCraftUI(draw, &ctx->ui_state); break;
+			default: break;
+		}
+		DriftUIPresent(draw);
+		
+		// Present to the screen.
+		DriftGfxRendererPushBindTargetCommand(draw->renderer, NULL, DRIFT_VEC4_CLEAR);
+		DriftGfxPipelineBindings* present_bindings = DriftDrawQuads(draw, ctx->draw_shared->present_pipeline, 1);
+		present_bindings->textures[1] = ctx->draw_shared->resolve_buffer;
+		
+		TracyCZoneN(DEBUG_UI_RENDER_ZONE, "Debug UI Draw", true);
 		DriftNuklearDraw(ctx->debug.ui, draw);
+		TracyCZoneEnd(DEBUG_UI_RENDER_ZONE);
 		TracyCZoneEnd(RENDER_ZONE);
 		
 		// Cleanup and render in parallel.
-		tina_scheduler_enqueue(app->scheduler, "JobGameStateCleanup", DriftGameStateCleanup, &update, 0, DRIFT_JOB_QUEUE_WORK, &cleanup_jobs);
+		// tina_scheduler_enqueue(app->scheduler, "JobGameStateCleanup", DriftGameStateCleanup, &update, 0, DRIFT_JOB_QUEUE_WORK, &cleanup_jobs);
 		tina_job_wait(job, &present_jobs, 0);
-		tina_scheduler_enqueue(app->scheduler, "JobGameContextPresent", DriftGameContextPresent, draw, 0, DRIFT_JOB_QUEUE_GFX, &present_jobs);
-		tina_job_wait(job, &cleanup_jobs, 0);
+		tina_scheduler_enqueue(app->scheduler, DriftGameContextPresent, draw, 0, DRIFT_JOB_QUEUE_GFX, &present_jobs);
+		// tina_job_wait(job, &cleanup_jobs, 0);
 		
 	#if DRIFT_MODULES
-		if(ctx->input.request_hotload && DriftAppModuleRequestReload(app, job)){
-			DriftAudioPause(ctx->audio, true);
+		if(ctx->input.request_hotload) DriftModuleRequestReload(app, job);
+		ctx->input.request_hotload = false;
+		
+		if(app->module_status == DRIFT_MODULE_READY){
+			DriftContextPushToast(ctx, DRIFT_TEXT_GREEN"<HOTLOAD>");
+			DriftAudioPause(app->audio, true);
 
-			// Reset hot components.
 			ResetHotComponents(&update);
+			DriftZoneMemRelease(update.mem);
 			
 			// TODO alias callbacks?
 			
-			ctx->input.request_hotload = false;
 			tina_job_switch_queue(job, DRIFT_JOB_QUEUE_GFX);
 			app->gfx_driver->free_all(app->gfx_driver);
 			return;
 		}
 	#endif
+	
+		TracyCZoneN(CLEANUP_ZONE, "Cleanup", true);
+		DriftGameStateCleanup(&update);
+		TracyCZoneEnd(CLEANUP_ZONE);
 		
 		TracyCFrameMark;
-		// TracyCFrameMarkNamed("Update");
-		ctx->current_frame++;
+		ctx->current_frame = ++ctx->_frame_counter;
 		
 		// Yield to other tasks on the main queue.
-		TracyCZoneN(YIELD_ZONE, "YIELD", true);
+		TracyCZoneN(YIELD_ZONE, "Yield", true);
 		tina_job_yield(job);
 		TracyCZoneEnd(YIELD_ZONE);
 	}
@@ -874,6 +933,4 @@ void DriftGameContextLoop(tina_job* job){
 	tina_job_wait(job, &present_jobs, 0);
 	
 	DriftAppHaltScheduler(app);
-	DriftAudioCloseDevice(ctx->audio);
-	ctx->audio_ready = false;
 }

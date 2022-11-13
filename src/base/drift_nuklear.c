@@ -1,16 +1,11 @@
 #include <limits.h>
+#include <stddef.h>
+#include <string.h>
 
 #include "tina/tina_jobs.h"
 #include "SDL.h"
 
-#include "drift_types.h"
-#include "drift_util.h"
-#include "drift_math.h"
-#include "drift_mem.h"
-#include "drift_gfx.h"
-#include "drift_app.h"
-#include "drift_sprite.h"
-#include "drift_draw.h"
+#include "drift_game.h"
 
 #define NK_IMPLEMENTATION
 #include "drift_nuklear.h"
@@ -93,16 +88,16 @@ void DriftNuklearSetupGFX(DriftNuklear* ctx, DriftDrawShared* draw_shared){
 	nk_style_set_font(&ctx->nk, &ctx->font);
 	
 	static const DriftGfxShaderDesc nk_pipeline_desc = {
-		.vertex[0] = {.type = DRIFT_TYPE_FLOAT32_2, .offset = offsetof(DriftNuklearVertex, position)},
-		.vertex[1] = {.type = DRIFT_TYPE_FLOAT32_2, .offset = offsetof(DriftNuklearVertex, uv)},
-		.vertex[2] = {.type = DRIFT_TYPE_UNORM8_4, .offset = offsetof(DriftNuklearVertex, color)},
+		.vertex[0] = {.type = DRIFT_GFX_TYPE_FLOAT32_2, .offset = offsetof(DriftNuklearVertex, position)},
+		.vertex[1] = {.type = DRIFT_GFX_TYPE_FLOAT32_2, .offset = offsetof(DriftNuklearVertex, uv)},
+		.vertex[2] = {.type = DRIFT_GFX_TYPE_UNORM8_4, .offset = offsetof(DriftNuklearVertex, color)},
 		.vertex_stride = sizeof(DriftNuklearVertex),
 		.uniform[0] = "DriftGlobals",
 		.sampler[0] = "DriftNearest",
 		.texture[1] = "Texture",
 	};
 	DriftGfxShader* nk_shader = driver->load_shader(driver, "nuklear", &nk_pipeline_desc);
-	ctx->pipeline = driver->new_pipeline(driver, (DriftGfxPipelineOptions){.shader = nk_shader, .blend = &DriftGfxBlendModeAlpha});
+	ctx->pipeline = driver->new_pipeline(driver, (DriftGfxPipelineOptions){.shader = nk_shader, .blend = &DriftGfxBlendModeAlpha, .target = NULL});
 	
 	static struct nk_draw_vertex_layout_element layout[] = {
 		{NK_VERTEX_POSITION, NK_FORMAT_FLOAT, offsetof(DriftNuklearVertex, position)},
@@ -210,9 +205,9 @@ void DriftNuklearDraw(DriftNuklear* ctx, DriftDraw* draw){
 		bindings->vertex = vertexes.binding;
 		
 		struct nk_rect rect = cmd->clip_rect;
-		DriftGfxRendererPushScissorCommand(renderer, (DriftAABB2){
-			.l = rect.x, .b = rect.y, .r = rect.x + rect.w, .t = rect.y + rect.h,
-		});
+		// DriftGfxRendererPushScissorCommand(renderer, (DriftAABB2){
+		// 	.l = rect.x, .b = rect.y, .r = rect.x + rect.w, .t = rect.y + rect.h,
+		// });
 		
 		DriftGfxRendererPushDrawIndexedCommand(renderer, indexes.binding, cmd->elem_count, 1);
 		indexes.binding.offset += cmd->elem_count*sizeof(nk_draw_index);
@@ -223,10 +218,10 @@ void DriftNuklearDraw(DriftNuklear* ctx, DriftDraw* draw){
 	nk_buffer_clear(&ctx->commands);
 }
 
-#if DRIFT_DEBUG
-	#include "nuklear/demo/overview.c"
-#else
+// #if DRIFT_DEBUG
+// 	#include "nuklear/demo/overview.c"
+// #else
 	static void overview(struct nk_context *ctx){}
-#endif
+// #endif
 
 void DriftNuklearOverview(struct nk_context *ctx){overview(ctx);}

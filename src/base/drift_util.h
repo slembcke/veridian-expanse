@@ -13,8 +13,8 @@ size_t DriftVSNFormat(char* buffer, size_t size, const char* format, va_list* ar
 
 void DriftLogf(const char *format, const char *file, uint line, const char *message, ...);
 void DriftLog(const char *format, const char *file, uint line, const char *message, ...);
-void DriftBreakpoint();
-_Noreturn void DriftAbort();
+void DriftBreakpoint(void);
+_Noreturn void DriftAbort(void);
 
 typedef enum {DRIFT_ASSERT_WARN, DRIFT_ASSERT_ERROR, DRIFT_ASSERT_HARD} DriftAssertType;
 void DriftAssertHelper(const char *condition, const char *file, uint line, DriftAssertType type, const char *message, ...);
@@ -76,11 +76,6 @@ typedef struct {
 	size_t size;
 } DriftData;
 
-typedef struct {
-	const void* data;
-	size_t length;
-} DriftConstData;
-
 typedef struct DriftIO DriftIO;
 typedef void DriftIOFunc(DriftIO* io);
 
@@ -99,8 +94,13 @@ size_t DriftIOSize(DriftIOFunc* io_func, void* user_ptr);
 bool DriftIOFileRead(const char* filename, DriftIOFunc* io_func, void* user_ptr);
 void DriftIOFileWrite(const char* filename, DriftIOFunc* io_func, void* user_ptr);
 
-const DriftConstData* DriftAssetGet(const char* filename);
+typedef struct DriftMem DriftMem;
 void DriftAssetsReset(void);
+DriftData DriftAssetLoad(DriftMem* mem, const char* format, ...);
+
+typedef struct {uint w, h; void* pixels;} DriftImage;
+DriftImage DriftAssetLoadImage(DriftMem* mem, const char* format, ...);
+void DriftImageFree(DriftMem* mem, DriftImage img);
 
 uint DriftLog2Ceil(u64 n);
 u64 DriftNextPOT(u64 n);
@@ -109,10 +109,17 @@ static inline bool DriftIsPOT(uint n){return n == DriftNextPOT(n);}
 #define DRIFT_MIN(a, b) ({typeof(a) _a = a; typeof(b) _b = b; _a < _b ? _a : _b;})
 #define DRIFT_MAX(a, b) ({typeof(a) _a = a; typeof(b) _b = b; _a > _b ? _a : _b;})
 
+typedef struct {
+	u64 rand, sum;
+} DriftSelectionContext;
+
+bool DriftSelectWeight(DriftSelectionContext* ctx, u64 weight);
+
 #if DRIFT_DEBUG
 void unit_test_util(void);
 void unit_test_math(void);
 void unit_test_entity(void);
 void unit_test_map(void);
 void unit_test_component(void);
+void unit_test_rtree(void);
 #endif

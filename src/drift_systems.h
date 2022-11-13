@@ -4,6 +4,11 @@ typedef struct DriftUpdate DriftUpdate;
 typedef struct {
 	DriftComponent c;
 	DriftEntity* entity;
+} DriftComponentTag;
+
+typedef struct {
+	DriftComponent c;
+	DriftEntity* entity;
 	DriftAffine* matrix;
 } DriftComponentTransform;
 
@@ -43,21 +48,24 @@ typedef struct {
 	DriftComponent c;
 	DriftEntity* entity;
 	DriftItemType* type;
-} DriftComponentPickup;
-
-typedef struct {
-	s16 x, y;
-} DriftPowerNode;
+} DriftComponentItem;
 
 typedef struct {
 	DriftComponent c;
 	DriftEntity* entity;
-	DriftPowerNode* node;
+	DriftScanType* type;
+} DriftComponentScan;
+
+typedef struct {
+	DriftComponent c;
+	DriftEntity* entity;
+	DriftVec2* position;
+	bool* active;
 } DriftComponentPowerNode;
 
 typedef struct {
 	DriftEntity e0, e1;
-	s16 x0, y0, x1, y1;
+	DriftVec2 p0, p1;
 } DriftPowerNodeEdge;
 
 typedef struct {
@@ -68,14 +76,15 @@ typedef struct {
 
 typedef struct {
 	DriftEntity next;
-	float root_dist, next_dist;
-} DriftFlowMapNode;
+	uint mark;
+	float dist;
+} DriftFlowNode;
 
 typedef struct {
 	DriftComponent c;
-	DriftName name;
 	DriftEntity* entity;
-	DriftFlowMapNode* node;
+	DriftFlowNode* flow;
+	bool* current;
 } DriftComponentFlowMap;
 
 typedef struct {
@@ -92,6 +101,23 @@ typedef struct {
 typedef struct {
 	DriftComponent c;
 	DriftEntity* entity;
+	
+	DriftEnemyType* type;
+	u16* aggro_ticks;
+} DriftComponentEnemy;
+
+typedef struct {
+	DriftComponent c;
+	DriftEntity* entity;
+
+	float* speed;
+	float* accel;
+	DriftVec2* forward_bias;
+} DriftComponentBugNav;
+
+typedef struct {
+	DriftComponent c;
+	DriftEntity* entity;
 	DriftVec2* origin;
 	DriftVec2* velocity;
 	u32* tick0;
@@ -100,6 +126,7 @@ typedef struct {
 
 typedef struct {
 	float value, maximum;
+	uint damage_timestamp, damage_timeout;
 	DriftItemType drop;
 } DriftHealth;
 
@@ -131,31 +158,39 @@ typedef struct {
 
 PlayerCannonTransforms CalculatePlayerCannonTransforms(float cannon_anim);
 
-typedef struct DriftPlayerData {
-	bool local;
+typedef struct {
+	float angle[3];
+	DriftVec2 current;
+} DriftArmPose;
 
+typedef struct DriftPlayerData {
 	DriftVec2 desired_velocity, desired_rotation;
 	float thrusters[5];
-	DriftAudioSampler thruster_sampler;
 	
-	float power_reserve, power_capacity;
-	
-	DriftToolType quickslots[DRIFT_QUICKSLOT_COUNT];
-	uint quickslot_idx;
+	float temp, energy, energy_cap;
+	bool is_overheated, is_powered;
+	// TODO should store connected pnode instead of bool
+	uint power_timestamp, shield_timestamp;
 	
 	bool headlight;
 	float nacelle_l, nacelle_r;
 	DriftPlayerAnimState anim_state;
+	DriftArmPose arm_l, arm_r;
 	
 	DriftVec2 reticle;
 	bool is_digging;
 	DriftVec2 dig_pos;
 	DriftEntity grabbed_entity;
 	DriftItemType grabbed_type;
-	bool cargo_hatch_open;
+	DriftEntity scanned_entity;
+	
+	struct {
+		uint frame;
+		DriftVec2 pos;
+	} last_valid_drop;
 	
 	DriftCargoSlot cargo_slots[DRIFT_PLAYER_CARGO_SLOT_COUNT];
-	uint cargo_idx;
+	DriftToolType tool_idx;
 } DriftPlayerData;
 
 DriftCargoSlot* DriftPlayerGetCargoSlot(DriftPlayerData* player, DriftItemType type);
@@ -183,29 +218,39 @@ void DriftSystemsUpdate(DriftUpdate* update);
 void DriftSystemsTick(DriftUpdate* update);
 void DriftSystemsDraw(DriftDraw* draw);
 
-typedef struct DriftPhysics DriftPhysics;
-bool DriftCollisionFilter(DriftCollisionType a, DriftCollisionType b);
-void DriftPhysicsSyncTransforms(DriftUpdate* update, float dt_diff);
-void DriftPhysicsTick(DriftUpdate* update);
-void DriftPhysicsSubstep(DriftUpdate* update);
+void DriftDrawPowerMap(DriftDraw* draw, float scale);
 
 typedef struct {
 	DriftEntity e;
 	DriftVec2 pos;
-	bool valid;
+	// If this node can be connected to by another node.
+	bool node_can_connect;
+	// If this node can be connected to by a player.
+	bool player_can_connect;
+	// Node is too close to allow connection.
 	bool is_too_close;
+	// Node raycast blocked at t=.
 	float blocked_at;
 } DriftNearbyNodeInfo;
 
 typedef struct {
 	DriftVec2 pos;
-	bool valid_node;
-	bool valid_power;
+	bool node_can_connect;
+	bool node_can_reach;
+	bool player_can_connect;
+	uint too_close_count;
 	DRIFT_ARRAY(DriftNearbyNodeInfo) nodes;
 } DriftNearbyNodesInfo;
 
-DriftNearbyNodesInfo DriftSystemPowerNodeNearby(DriftGameState* state, DriftVec2 pos, DriftMem* mem);
+DriftNearbyNodesInfo DriftSystemPowerNodeNearby(DriftGameState* state, DriftVec2 pos, DriftMem* mem, float beam_radius);
 
 DriftEntity DriftDroneMake(DriftGameState* state, DriftVec2 pos);
 
 void DriftHealthApplyDamage(DriftUpdate* update, DriftEntity entity, float amount);
+
+bool DriftCheckSpawn(DriftUpdate* update, DriftVec2 pos, float terrain_dist);
+
+void FireProjectile(DriftUpdate* update, DriftVec2 pos, DriftVec2 vel);
+void MakeBlast(DriftUpdate* update, DriftVec2 position);
+
+DriftEntity DriftTempPlayerInit(DriftGameState* state, DriftEntity e, DriftVec2 position);

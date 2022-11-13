@@ -86,7 +86,7 @@ typedef struct {
 
 struct DriftGfxRenderer {
 	DriftGfxVTable vtable;
-	DriftZoneMem* mem;
+	DriftMem* mem;
 	
 	DriftVec2 default_extent;
 	
@@ -101,4 +101,4 @@ struct DriftGfxRenderer {
 
 void DriftGfxRendererInit(DriftGfxRenderer* renderer, DriftGfxVTable vtable);
 void DriftRendererExecuteCommands(DriftGfxRenderer* renderer);
-void DriftGfxRendererPrepare(DriftGfxRenderer* renderer, DriftVec2 default_framebuffer_size, DriftZoneMem* mem);
+void DriftGfxRendererPrepare(DriftGfxRenderer* renderer, DriftVec2 default_framebuffer_size, DriftMem* mem);

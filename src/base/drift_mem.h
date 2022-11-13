@@ -18,38 +18,32 @@ extern DriftMem* const DriftSystemMem;
 
 // MARK: Linear Memory Allocator.
 
-typedef struct DriftLinearMem DriftLinearMem;
-DriftLinearMem* DriftLinearMemInit(void* buffer, size_t capacity);
-void* DriftLinearMemAlloc(DriftLinearMem* mem, size_t size);
+DriftMem* DriftLinearMemInit(void* buffer, size_t capacity, const char* label);
 
 
 // MARK: Zone Memory Allocator.
 
 typedef struct DriftZoneMemHeap DriftZoneMemHeap;
-DriftZoneMemHeap* DriftZoneMemHeapNew(const char* name, DriftMem* mem, size_t block_size, size_t max_blocks, size_t initial_blocks);
-void DriftZoneMemHeapFree(DriftZoneMemHeap* heap);
+DriftZoneMemHeap* DriftZoneMemHeapNew(DriftMem* mem, const char* label);
+// void DriftZoneMemHeapFree(DriftZoneMemHeap* heap);
 
-typedef struct DriftZoneMem DriftZoneMem;
-DriftZoneMem* DriftZoneMemAquire(DriftZoneMemHeap* heap, const char* name);
-void DriftZoneMemRelease(DriftZoneMem* zone);
-void* DriftZoneMemAlloc(DriftZoneMem* zone, size_t size);
-
-DriftMem* DriftZoneMemWrap(DriftZoneMem* zone);
+DriftMem* DriftZoneMemAquire(DriftZoneMemHeap* heap, const char* label);
+void DriftZoneMemRelease(DriftMem* zone);
 
 
 // MARK: Buddy Block Memory allocator.
-
+/*
 typedef struct DriftBuddyMem DriftBuddyMem;
-DriftBuddyMem* DriftBuddyMemInit(const char* name, void* buffer, size_t size);
+DriftBuddyMem* DriftBuddyMemInit(const char* label, void* buffer, size_t size);
 void* DriftBuddyMemAlloc(DriftBuddyMem* mem, size_t size);
 void* DriftBuddyMemRealloc(DriftBuddyMem* mem, void* ptr, size_t osize, size_t nsize);
 void DriftBuddyMemDealloc(DriftBuddyMem* mem, void* ptr, size_t size);
-
+*/
 
 // MARK: Strings
 
-const char* DriftSMPrintf(DriftMem* mem, const char* format, ...);
-const char* DriftSMFormat(DriftMem* mem, const char* format, ...);
+char* DriftSMPrintf(DriftMem* mem, const char* format, ...);
+char* DriftSMFormat(DriftMem* mem, const char* format, ...);
 
 // MARK: Stretchy Buffers.
 
@@ -68,8 +62,10 @@ typedef struct {
 #define DRIFT_ARRAY(type) type*
 
 void* _DriftArrayNew(DriftMem* mem, size_t capacity, size_t elt_size);
-#define DRIFT_ARRAY_NEW(mem, capacity, type) (type*)_DriftArrayNew(mem, capacity, sizeof(type))
+void* _DriftArrayGrow(void* ptr, size_t n_elt);
+void _DriftArrayShiftUp(void* ptr, unsigned idx);
 
+#define DRIFT_ARRAY_NEW(mem, capacity, type) (type*)_DriftArrayNew(mem, capacity, sizeof(type))
 void DriftArrayFree(void* ptr);
 
 static inline DriftArray* DriftArrayHeader(void* ptr){
@@ -82,15 +78,22 @@ static inline size_t DriftArrayLength(void* ptr){
 	return DriftArrayHeader(ptr)->count;
 }
 
-void* _DriftArrayGrow(void* ptr, size_t n_elt);
+static inline size_t DriftArraySize(void* ptr){
+	DriftArray* header = DriftArrayHeader(ptr);
+	return header->count*header->elt_size;
+}
+
 static inline void* _DriftArrayEnsure(void* ptr, size_t n_elt){
 	DriftArray* header = DriftArrayHeader(ptr);
 	return header->count + n_elt > header->capacity ? _DriftArrayGrow(ptr, n_elt) : ptr;
 }
 
-#define DRIFT_ARRAY_PUSH(ptr, elt) (ptr = _DriftArrayEnsure(ptr, 1), (ptr)[DriftArrayHeader(ptr)->count++] = elt)
+#define DRIFT_ARRAY_PUSH(_ptr_, _elt_) (_ptr_ = _DriftArrayEnsure(_ptr_, 1), (_ptr_)[DriftArrayHeader(_ptr_)->count++] = _elt_)
+#define DRIFT_ARRAY_POP(_ptr_) ({DriftArray* arr = DriftArrayHeader(_ptr_); arr->count ? _ptr_[--arr->count] : NULL;})
+#define DRIFT_ARRAY_INSERT(_ptr_, _idx_, _elt_) (_ptr_ = _DriftArrayEnsure(_ptr_, 1), _DriftArrayShiftUp(_ptr_, _idx_), (ptr)[_idx_] = _elt_)
+void DriftArrayTruncate(void* ptr, size_t len);
 
-#define DRIFT_ARRAY_RANGE(ptr, n_elt) ((ptr) = _DriftArrayEnsure(ptr, n_elt), (ptr) + DriftArrayHeader(ptr)->count)
+#define DRIFT_ARRAY_RANGE(_ptr_, _n_elt_) (_ptr_ = _DriftArrayEnsure(_ptr_, _n_elt_), (_ptr_) + DriftArrayHeader(_ptr_)->count)
 void DriftArrayRangeCommit(void* ptr, void* cursor);
 
 #define DRIFT_ARRAY_FOREACH(_arr_, _ptr_) \

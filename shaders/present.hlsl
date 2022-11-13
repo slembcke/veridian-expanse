@@ -6,33 +6,26 @@ struct VertInput {
 
 struct FragInput {
 	float4 position : SV_POSITION;
-	float2 uv0;
+	float2 uv;
 };
 
 void VShader(in VertInput IN, out FragInput FRAG){
-	FRAG.position = float4(2*IN.uv.xy - 1, 0, 1);
-	
-	// float2 ratio = DRIFT_SCREEN_EXTENTS/DRIFT_BUFFER_EXTENTS;
-	FRAG.uv0 = IN.uv;//*ratio;
+	float2 clip_coord = 2*IN.uv - 1;
+	FRAG.position = float4(clip_coord, 0, 1);
+	FRAG.uv = (IN.uv*DRIFT_VIRTUAL_EXTENTS + round(0.5*(DRIFT_INTERNAL_EXTENTS - DRIFT_VIRTUAL_EXTENTS)))/DRIFT_INTERNAL_EXTENTS;
 }
 
 Texture2D _texture : DRIFT_TEX1;
 
 float4 FShader(in FragInput FRAG) : SV_TARGET0 {
-	float3 color = _texture.Sample(DriftNearest, FRAG.uv0);
-	float3 bl = saturate(_texture.Sample(DriftLinear, FRAG.uv0));
+	// TODO minor... present size doesn't seem to match raw size during resizing?
+	// Visualise pixel offset error.
+	// return float4(2*abs(0.5 - frac(FRAG.uv.xy*DRIFT_INTERNAL_EXTENTS)), 0, 1);
 	
+	float3 color = _texture.Sample(DriftNearest, FRAG.uv);
+	float3 bl = saturate(_texture.Sample(DriftLinear, FRAG.uv));
 	// Apply unsharp mask
 	color += color - bl;
 	
-	// Temporary haze
-	float3 light = DriftLightfield.Sample(DriftLinear, float3(FRAG.uv0, 0));
-	float3 shadow =  DriftShadowfield.Sample(DriftLinear, float3(FRAG.uv0, 0));
-	color = float3(1)*color + float3(0.6, 0.3, 0.0)*lerp(light, shadow, 0.3); // Light biome
-	// color = float3(1)*color + float3(0.6, 0.6, 0.0)*lerp(light, shadow, 0.3); // Radio biome
-	// color = float3(1)*color + float3(0.6, 0.7, 0.8)*lerp(light, shadow, 0.3); // Cryo biome
-	
-	// TODO bother with triangle noise or something?
-	float dither = frac(dot(FRAG.position.xy, float2(0.7548776662, 0.56984029)))/128;
-	return float4(color.rgb + dither, 1);
+	return float4(color.rgb, 1);
 }

@@ -3,6 +3,7 @@
 #include <stdatomic.h>
 
 #include <SDL.h>
+#include <tracy/TracyC.h>
 
 #undef alloca
 #define STB_VORBIS_NO_PUSHDATA_API
@@ -16,10 +17,10 @@
 
 // https://www.gcaudio.com/tips-tricks/the-relationship-of-voltage-loudness-power-and-decibels/
 
-float dB_to_power(float db){return powf(10, db/10);}
-float dB_to_gain(float db){return powf(10, db/20);}
+static float dB_to_power(float db){return powf(10, db/10);}
+static float dB_to_gain(float db){return powf(10, db/20);}
 
-float vol_to_gain(float vol){
+static float vol_to_gain(float vol){
 	// 1.661 = log(10)/log(4) -> 10x voltage means 4x loudness.
 	return powf(vol, 1.661f);
 }
@@ -155,32 +156,31 @@ static void audio_callback(DriftAudioContext* ctx, void* stream, int stream_len)
 	}
 }
 
-DriftAudioContext* DriftAudioContextCreate(void){
+DriftAudioContext* DriftAudioContextNew(void){
 	DriftAudioContext* ctx = DriftAlloc(DriftSystemMem, sizeof(*ctx));
 	mtx_init(&ctx->sources.mutex, mtx_plain);
 	ctx->sources.pool.cursor = 1;
 	
-	return ctx;
-}
-
-void DriftAudioOpenDevice(DriftAudioContext* ctx){
 	DRIFT_ASSERT(ctx->id == 0, "Audio device already open.");
 	ctx->id = SDL_OpenAudioDevice(NULL, 0, &(SDL_AudioSpec){
 		.freq = 44100, .format = AUDIO_F32SYS, .channels = 2, .samples = 1024,
 		.callback = (SDL_AudioCallback)audio_callback, .userdata = ctx,
 	}, &ctx->spec, 0);
 	DRIFT_ASSERT_WARN(ctx->id, "Failed to initialize audio: %s", SDL_GetError());
+	
+	return ctx;
 }
 
-void DriftAudioCloseDevice(DriftAudioContext* ctx){
-	SDL_CloseAudioDevice(ctx->id);
-	ctx->id = 0;
-}
+// void DriftAudioContextFree(DriftAudioContext* ctx){
+// 	SDL_CloseAudioDevice(ctx->id);
+// 	DriftDealloc(DriftSystemMem, ctx, sizeof(*ctx));
+// }
 
 void DriftAudioStartMusic(DriftAudioContext* ctx){
-	const DriftConstData* music_data = DriftAssetGet("music/AutomatedBalance.ogg");
+	// TODO leak.
+	DriftData music_data = DriftAssetLoad(DriftSystemMem, "music/AutomatedBalance.ogg");
 	
-	SDL_LockAudioDevice(ctx->id);
+	// SDL_LockAudioDevice(ctx->id);
 	size_t sample_seek = 0;
 	if(ctx->music){
 		sample_seek = stb_vorbis_get_sample_offset(ctx->music);
@@ -188,11 +188,11 @@ void DriftAudioStartMusic(DriftAudioContext* ctx){
 	}
 
 	int err = 0;
-	ctx->music = stb_vorbis_open_memory(music_data->data, music_data->length, &err, NULL);
+	ctx->music = stb_vorbis_open_memory(music_data.ptr, music_data.size, &err, NULL);
 	DRIFT_ASSERT(ctx->music, "stb_vorbis failed to open music. %d", err);
 	
 	stb_vorbis_seek(ctx->music, sample_seek);
-	SDL_UnlockAudioDevice(ctx->id);
+	// SDL_UnlockAudioDevice(ctx->id);
 }
 
 void DriftAudioPause(DriftAudioContext* ctx, bool state){
@@ -208,12 +208,13 @@ void DriftAudioSetParams(DriftAudioContext* ctx, float master_volume, float musi
 	ctx->music_gain = vol_to_gain(music_volume);
 }
 
-// TODO this leaks samples when hot loading. Not sure if I care.
+// TODO this leaks samples when hot loading I guess?
 static void load_sample(tina_job* job){
+	TracyCZoneN(ZONE_LOAD, "Load Sample", true);
 	DriftAudioContext* ctx = tina_job_get_description(job)->user_data;
 	uint idx = tina_job_get_description(job)->user_idx;
 	
-	static const char* names[_DRIFT_SFX_COUNT] = {
+	static const char* NAMES[_DRIFT_SFX_COUNT] = {
 		[DRIFT_SFX_ENGINE] = "sfx/engine.ogg",
 		[DRIFT_SFX_PING] = "sfx/ping.ogg",
 		[DRIFT_SFX_HORNS] = "sfx/ominous_horns.ogg",
@@ -224,11 +225,11 @@ static void load_sample(tina_job* job){
 		[DRIFT_SFX_EXPLODE] = "sfx/explode.ogg",
 	};
 	
-	const DriftConstData* data = DriftAssetGet(names[idx]);
-	DRIFT_ASSERT(data, "no sample");
+	DriftData data = DriftAssetLoad(DriftSystemMem, NAMES[idx]);
+	DRIFT_ASSERT(data.ptr, "no sample");
 	
 	int err = 0;
-	stb_vorbis* v = stb_vorbis_open_memory(data->data, data->length, &err, NULL);
+	stb_vorbis* v = stb_vorbis_open_memory(data.ptr, data.size, &err, NULL);
 	DRIFT_ASSERT(v, "bad samples");
 	DRIFT_ASSERT(v->channels == 1, "bad channels");
 	DRIFT_ASSERT(v->sample_rate == 44100, "bad rate");
@@ -239,6 +240,7 @@ static void load_sample(tina_job* job){
 	DRIFT_ASSERT(sample_count == decoded, "wrong length");
 	
 	ctx->sample_bank[idx] = (DriftAudioSample){.samples = samples, .length = sample_count};
+	TracyCZoneEnd(ZONE_LOAD);
 }
 
 void DriftAudioLoadSamples(DriftAudioContext* ctx, tina_job* job){

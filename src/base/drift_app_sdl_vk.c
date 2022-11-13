@@ -17,11 +17,13 @@
 #include "drift_gfx_internal.h"
 #include "drift_app.h"
 
-const char* VALIDATION_LAYERS[] = {"VK_LAYER_KHRONOS_validation"};
-const u32 VALIDATION_LAYERS_COUNT = sizeof(VALIDATION_LAYERS)/sizeof(*VALIDATION_LAYERS);
+#define DRIFT_VULKAN_VALIDATE 0
 
-const char* REQUIRED_EXTENSIONS[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_MAINTENANCE1_EXTENSION_NAME};
-const u32 REQUIRED_EXTENSIONS_COUNT = sizeof(REQUIRED_EXTENSIONS)/sizeof(*REQUIRED_EXTENSIONS);
+static const char* VALIDATION_LAYERS[] = {"VK_LAYER_KHRONOS_validation"};
+static const u32 VALIDATION_LAYERS_COUNT = sizeof(VALIDATION_LAYERS)/sizeof(*VALIDATION_LAYERS);
+
+static const char* REQUIRED_EXTENSIONS[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_MAINTENANCE1_EXTENSION_NAME};
+static const u32 REQUIRED_EXTENSIONS_COUNT = sizeof(REQUIRED_EXTENSIONS)/sizeof(*REQUIRED_EXTENSIONS);
 
 #define DRIFT_VK_STAGING_BUFFER_SIZE (1024*1024)
 #define DRIFT_VK_STAGING_JOB_COUNT 32
@@ -244,15 +246,13 @@ static VkExtent2D DriftVkCreateSwapChain(DriftVkContext* ctx, DriftVec2 fb_exten
 		.minImageCount = capabilities.minImageCount,
 		.imageFormat = ctx->swap_chain.format.format,
 		.imageColorSpace = ctx->swap_chain.format.colorSpace,
-		.imageExtent = extent,
-		.imageArrayLayers = 1,
+		.imageExtent = extent, .imageArrayLayers = 1,
 		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 		.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.preTransform = capabilities.currentTransform,
 		.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
 		.presentMode = ctx->swap_chain.present_mode,
-		.clipped = VK_TRUE,
-		.oldSwapchain = VK_NULL_HANDLE,
+		.clipped = VK_TRUE, .oldSwapchain = VK_NULL_HANDLE,
 	};
 	
 	u32 queue_indices[] = {ctx->queue_families.graphics_idx, ctx->queue_families.present_idx};
@@ -464,6 +464,9 @@ static void DriftVkRendererBindPipeline(const DriftGfxRenderer* renderer, const 
 	VkBuffer vbuffer = _renderer->buffer.buffer;
 	vkCmdBindVertexBuffers(_renderer->command_buffer, 0, 2, (VkBuffer[]){vbuffer, vbuffer}, (u64[]){bindings->vertex.offset, bindings->instance.offset});
 	
+	const DriftGfxBlendMode* blend = _pipeline->base.options.blend;
+	if(blend && blend->enable_blend_color) vkCmdSetBlendConstants(_renderer->command_buffer, (float*)&bindings->blend_color);
+	
 	state->pipeline = _command->pipeline;
 }
 
@@ -530,23 +533,22 @@ static DriftVkContext* DriftVkCreateContext(DriftApp* app){
 	success = SDL_Vulkan_GetInstanceExtensions(app->shell_window, &extensions_count, extensions);
 	DRIFT_ASSERT_HARD(success, "Failed to recieve Vulkan extensions from SDL");
 	
-#if DRIFT_DEBUG
-	DRIFT_LOG("Vulkan validation enabled");
-	extensions[extensions_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
-#endif
+	if(DRIFT_DEBUG) extensions[extensions_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 	
 	VkInstanceCreateInfo create_info = {
 		.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
 		.pApplicationInfo = &(VkApplicationInfo){
 			.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-			.pApplicationName = "Project Drift", .pEngineName = "Drift",
+			.pApplicationName = "Veridian Expanse", .pEngineName = "Drift",
 			.applicationVersion = VK_MAKE_VERSION(0, 0, 1), .apiVersion = VK_API_VERSION_1_0,
 		},
 		.ppEnabledExtensionNames = extensions, .enabledExtensionCount = extensions_count,
-#if DRIFT_DEBUG
+#if DRIFT_VULKAN_VALIDATE
 		.ppEnabledLayerNames = VALIDATION_LAYERS, .enabledLayerCount = VALIDATION_LAYERS_COUNT,
 #endif
 	};
+	
+	if(DRIFT_VULKAN_VALIDATE) DRIFT_LOG("Vulkan validation enabled.");
 	
 	VkResult result = vkCreateInstance(&create_info, NULL, &ctx->instance);
 	AssertSuccess(result, "Failed to create Vulkan instance.");
@@ -698,6 +700,9 @@ static void DriftVkRendererExecute(DriftVkRenderer* renderer){
 	});
 	AssertSuccess(result, "Failed to begin Vulkan command buffer.");
 	
+	// Set initial blend color.
+	vkCmdSetBlendConstants(renderer->command_buffer, (float[]){0, 0, 0, 0});
+	
 	renderer->current_pass = 0;
 	DriftRendererExecuteCommands(&renderer->base);
 	
@@ -818,10 +823,8 @@ struct {
 	VkFormat format;
 	uint bpp;
 } DriftVkFormatMap[_DRIFT_GFX_TEXTURE_FORMAT_COUNT] = {
-	[DRIFT_GFX_TEXTURE_FORMAT_R8] = {VK_FORMAT_R8_UNORM, 1},
 	[DRIFT_GFX_TEXTURE_FORMAT_RGBA8] = {VK_FORMAT_R8G8B8A8_UNORM, 4},
 	[DRIFT_GFX_TEXTURE_FORMAT_RGBA16F] = {VK_FORMAT_R16G16B16A16_SFLOAT, 8},
-	[DRIFT_GFX_TEXTURE_FORMAT_R8U] = {VK_FORMAT_R8_UINT, 1},
 };
 
 static void DriftVkTextureFree(const DriftGfxDriver* driver, void* obj){
@@ -840,8 +843,8 @@ static DriftGfxTexture* DriftVkTextureNew(const DriftGfxDriver* driver, uint wid
 	if(options.layers == 0) options.layers = 1;
 	
 	static const VkImageType image_types[] = {
-		[DRIFT_GFX_TEXTURE_TYPE_2D] = VK_IMAGE_TYPE_2D,
-		[DRIFT_GFX_TEXTURE_TYPE_2D_ARRAY] = VK_IMAGE_TYPE_2D,
+		[DRIFT_GFX_TEXTURE_2D] = VK_IMAGE_TYPE_2D,
+		[DRIFT_GFX_TEXTURE_2D_ARRAY] = VK_IMAGE_TYPE_2D,
 	};
 	
 	DriftVkTexture *texture = DriftAlloc(DriftSystemMem, sizeof(*texture));
@@ -873,8 +876,8 @@ static DriftGfxTexture* DriftVkTextureNew(const DriftGfxDriver* driver, uint wid
 	NameObject(ctx, VK_OBJECT_TYPE_DEVICE_MEMORY, (u64)texture->memory, "%s mem", options.name);
 	
 	static const VkImageViewType view_types[] = {
-		[DRIFT_GFX_TEXTURE_TYPE_2D] = VK_IMAGE_VIEW_TYPE_2D,
-		[DRIFT_GFX_TEXTURE_TYPE_2D_ARRAY] = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+		[DRIFT_GFX_TEXTURE_2D] = VK_IMAGE_VIEW_TYPE_2D,
+		[DRIFT_GFX_TEXTURE_2D_ARRAY] = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
 	};
 	
 	result = vkCreateImageView(ctx->device, &(VkImageViewCreateInfo){
@@ -937,14 +940,14 @@ void DriftVkLoadTextureLayer(const DriftGfxDriver* driver, DriftGfxTexture* text
 }
 
 static VkShaderModule DriftVkShaderModule(DriftVkContext* ctx, const char* shader_name, const char* extension){
-	char filename[64];
-	snprintf(filename, sizeof(filename), "shaders/%s%s", shader_name, extension);
-	const DriftConstData* spirv = DriftAssetGet(filename);
+	u8 buffer[64*1024];
+	DriftMem* mem = DriftLinearMemInit(buffer, sizeof(buffer), "Shader Mem");
+	DriftData spirv = DriftAssetLoad(mem, "shaders/%s%s", shader_name, extension);
 	
 	VkShaderModule module;
 	VkResult result = vkCreateShaderModule(ctx->device, &(VkShaderModuleCreateInfo){
 		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-		.pCode = spirv->data, .codeSize = spirv->length,
+		.pCode = spirv.ptr, .codeSize = spirv.size,
 	}, NULL, &module);
 	AssertSuccess(result, "Failed to create Vulkan shader module.");
 	
@@ -973,17 +976,17 @@ static DriftGfxShader* DriftVkShaderLoad(const DriftGfxDriver* driver, const cha
 }
 
 
-VkFormat DriftGfxTypeMap[_DRIFT_TYPE_COUNT] = {
-	[DRIFT_TYPE_U8] = VK_FORMAT_R8_UINT,
-	[DRIFT_TYPE_U8_2] = VK_FORMAT_R8G8_UINT,
-	[DRIFT_TYPE_U8_4] = VK_FORMAT_R8G8B8A8_UINT,
-	[DRIFT_TYPE_UNORM8_2] = VK_FORMAT_R8G8_UNORM,
-	[DRIFT_TYPE_UNORM8_4] = VK_FORMAT_R8G8B8A8_UNORM,
-	[DRIFT_TYPE_U16] = VK_FORMAT_R16_UINT,
-	[DRIFT_TYPE_FLOAT32] = VK_FORMAT_R32_SFLOAT,
-	[DRIFT_TYPE_FLOAT32_2] = VK_FORMAT_R32G32_SFLOAT,
-	[DRIFT_TYPE_FLOAT32_3] = VK_FORMAT_R32G32B32_SFLOAT,
-	[DRIFT_TYPE_FLOAT32_4] = VK_FORMAT_R32G32B32A32_SFLOAT,
+VkFormat DriftGfxTypeMap[_DRIFT_GFX_TYPE_COUNT] = {
+	[DRIFT_GFX_TYPE_U8] = VK_FORMAT_R8_UINT,
+	[DRIFT_GFX_TYPE_U8_2] = VK_FORMAT_R8G8_UINT,
+	[DRIFT_GFX_TYPE_U8_4] = VK_FORMAT_R8G8B8A8_UINT,
+	[DRIFT_GFX_TYPE_UNORM8_2] = VK_FORMAT_R8G8_UNORM,
+	[DRIFT_GFX_TYPE_UNORM8_4] = VK_FORMAT_R8G8B8A8_UNORM,
+	[DRIFT_GFX_TYPE_U16] = VK_FORMAT_R16_UINT,
+	[DRIFT_GFX_TYPE_FLOAT32] = VK_FORMAT_R32_SFLOAT,
+	[DRIFT_GFX_TYPE_FLOAT32_2] = VK_FORMAT_R32G32_SFLOAT,
+	[DRIFT_GFX_TYPE_FLOAT32_3] = VK_FORMAT_R32G32B32_SFLOAT,
+	[DRIFT_GFX_TYPE_FLOAT32_4] = VK_FORMAT_R32G32B32A32_SFLOAT,
 };
 
 static const VkBlendFactor DriftGfxBlendFactorToVk[] = {
@@ -998,6 +1001,7 @@ static const VkBlendFactor DriftGfxBlendFactorToVk[] = {
 	[DRIFT_GFX_BLEND_FACTOR_DST_ALPHA] = VK_BLEND_FACTOR_DST_ALPHA,
 	[DRIFT_GFX_BLEND_FACTOR_ONE_MINUS_DST_ALPHA] = VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,
 	[DRIFT_GFX_BLEND_FACTOR_SRC_ALPHA_SATURATE] = VK_BLEND_FACTOR_SRC_ALPHA_SATURATE,
+	[DRIFT_GFX_BLEND_FACTOR_CONSTANT_COLOR] = VK_BLEND_FACTOR_CONSTANT_COLOR,
 };
 
 static const VkBlendOp DriftGfxBlendOpToVk[_DRIFT_GFX_BLEND_OP_COUNT] = {
@@ -1055,7 +1059,7 @@ static DriftGfxPipeline* DriftVkPipelineNew(const DriftGfxDriver* driver, DriftG
 	const DriftGfxVertexAttrib* attribs = desc->vertex;
 	for(int i = 0; i < DRIFT_GFX_VERTEX_ATTRIB_COUNT; i++){
 		DriftGfxVertexAttrib attr = attribs[i];
-		if(attr.type != _DRIFT_TYPE_NONE){
+		if(attr.type != _DRIFT_GFX_TYPE_NONE){
 			DRIFT_ASSERT(DriftGfxTypeMap[attr.type], "Invalid format.");
 			vk_attribs[attrib_count++] = (VkVertexInputAttributeDescription){
 				.location = i, .binding = !!attr.instanced, .format = DriftGfxTypeMap[attr.type], .offset = attr.offset
@@ -1092,7 +1096,7 @@ static DriftGfxPipeline* DriftVkPipelineNew(const DriftGfxDriver* driver, DriftG
 
 	VkPipelineDynamicStateCreateInfo dynamic_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-		.pDynamicStates = (VkDynamicState[]){VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR}, .dynamicStateCount = 2,
+		.pDynamicStates = (VkDynamicState[]){VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS}, .dynamicStateCount = 3,
 	};
 	
 	VkPipelineViewportStateCreateInfo viewport_info = {
@@ -1302,6 +1306,7 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 	
 	switch(event){
 		case DRIFT_SHELL_START:{
+			TracyCZoneN(ZONE_INIT, "SDL Init", true);
 			SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
 			int err = SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER);
 			DRIFT_ASSERT(err == 0, "SDL_Init() error: %s", SDL_GetError());
@@ -1309,10 +1314,14 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 			SDL_version sdl_version;
 			SDL_GetVersion(&sdl_version);
 			DRIFT_LOG("Using SDL v%d.%d.%d", sdl_version.major, sdl_version.minor, sdl_version.patch);
+			TracyCZoneEnd(ZONE_INIT);
 			
+			TracyCZoneN(ZONE_VOLK, "Volk Init", true);
 			VkResult result = volkInitialize();
 			AssertSuccess(result, "Failed to initialize Volk.");
+			TracyCZoneEnd(ZONE_VOLK);
 			
+			TracyCZoneN(ZONE_WINDOW, "Open Window", true);
 			if(app->window_w == 0){
 				app->window_x = SDL_WINDOWPOS_CENTERED;
 				app->window_y = SDL_WINDOWPOS_CENTERED;
@@ -1323,14 +1332,31 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 			u32 window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;
 			if(app->fullscreen) window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 			
-			app->shell_window = SDL_CreateWindow("Drift SDL Vulkan", app->window_x, app->window_y, app->window_w, app->window_h, window_flags);
+			app->shell_window = SDL_CreateWindow("Veridian Expanse", app->window_x, app->window_y, app->window_w, app->window_h, window_flags);
 			DRIFT_ASSERT_HARD(app->shell_window, "Failed to create SDL Vulkan window.");
+			TracyCZoneEnd(ZONE_WINDOW);
 			
 			SDL_PumpEvents();
 			SDL_SetWindowPosition(app->shell_window, app->window_x, app->window_y);
 			
+			{
+				u8 mem_buf[64*1024];
+				DriftMem* mem = DriftLinearMemInit(mem_buf, sizeof(mem_buf), "cursor memory");
+				DriftImage img = DriftAssetLoadImage(mem, "gfx/cursor.qoi");
+				
+				SDL_Surface* cursor_surface = SDL_CreateRGBSurfaceWithFormatFrom(img.pixels, img.w, img.h, 32, img.w*4, SDL_PIXELFORMAT_RGBA32);
+				DRIFT_ASSERT(cursor_surface, "surface error: %s", SDL_GetError());
+				SDL_Cursor* cursor = SDL_CreateColorCursor(cursor_surface, 1, 1);
+				DRIFT_ASSERT(cursor, "create cursor error: %s", SDL_GetError());
+				SDL_SetCursor(cursor);
+			}
+			
+			TracyCZoneN(ZONE_CONTEXT, "Context", true);
 			ctx = DriftVkCreateContext(app);
+			TracyCZoneEnd(ZONE_CONTEXT);
+			TracyCZoneN(ZONE_SWAP, "Swap Chain", true);
 			VkExtent2D extent = DriftVkCreateSwapChain(ctx, drawable_size(app));
+			TracyCZoneEnd(ZONE_SWAP);
 			
 			DriftVkSwapChain* swap = &ctx->swap_chain;
 			DRIFT_LOG("Swapchain created, count: %d, format: %d, colorspace: %d, extent: (%d, %d), present mode: %d",
@@ -1413,9 +1439,6 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 		case DRIFT_SHELL_PRESENT_FRAME:{
 			DriftVkRenderer* renderer = shell_value;
 			
-			int fb_width, fb_height;
-			SDL_Vulkan_GetDrawableSize(app->shell_window, &fb_width, &fb_height);
-
 			TracyCZoneN(ZONE_AQUIRE, "VkAquire", true);
 			VkExtent2D fb_extent = DriftVkAquireImage(app->shell_context, drawable_size(app));
 			renderer->base.default_extent = (DriftVec2){fb_extent.width, fb_extent.height};

@@ -12,6 +12,8 @@
 #include "drift_app.h"
 
 #define QOI_IMPLEMENTATION
+#define QOI_MALLOC(mem, size) DriftAlloc(mem, size);
+#define QOI_FREE(mem, ptr, size) DriftDealloc(mem, ptr, size);
 #include "qoi/qoi.h"
 
 
@@ -53,26 +55,18 @@ DriftGfxBlendMode DriftGfxBlendModeMultiply = {
 	.alpha_op = DRIFT_GFX_BLEND_OP_ADD, .alpha_src_factor = DRIFT_GFX_BLEND_FACTOR_DST_COLOR, .alpha_dst_factor = DRIFT_GFX_BLEND_FACTOR_ZERO,
 };
 
-DriftGfxPipeline* DriftGfxRendererTempPipeline(DriftGfxRenderer* renderer, DriftGfxPipeline pipeline){
-	DriftGfxPipeline* temp_pipeline = DriftZoneMemAlloc(renderer->mem, sizeof(DriftGfxPipeline));
-	(*temp_pipeline) = pipeline;
-	return temp_pipeline;
-}
-
 void DriftGfxRendererInit(DriftGfxRenderer* renderer, DriftGfxVTable vtable){
 	(*renderer) = (DriftGfxRenderer){.vtable = vtable};
 }
 
-void DriftGfxRendererPrepare(DriftGfxRenderer* renderer, DriftVec2 default_extent, DriftZoneMem* mem){
+void DriftGfxRendererPrepare(DriftGfxRenderer* renderer, DriftVec2 default_extent, DriftMem* mem){
+	DRIFT_ASSERT(mem, "'mem' is NULL.");
 	renderer->default_extent = default_extent;
 	
 	// Reset cursors.
 	renderer->first_command = NULL;
 	renderer->command_cursor = &renderer->first_command;
 	renderer->cursor = renderer->ptr;
-	
-	// TODO Move this to right after flushing a renderer?
-	DRIFT_ASSERT(mem, "Renderer's allocator is null?");
 	renderer->mem = mem;
 }
 
@@ -97,7 +91,7 @@ DriftGfxBufferSlice DriftGfxRendererPushIndexes(DriftGfxRenderer* renderer, cons
 }
 
 
-DriftGfxBufferSlice DriftGfxRendererPushUniforms(DriftGfxRenderer* renderer, void* ptr, size_t size){
+DriftGfxBufferSlice DriftGfxRendererPushUniforms(DriftGfxRenderer* renderer, const void* ptr, size_t size){
 	void* cursor = renderer->cursor.uniform;
 	DriftGfxBufferBinding binding = {.offset = cursor - renderer->ptr.uniform, .size = -(-size & -renderer->uniform_alignment)};
 	renderer->cursor.uniform += binding.size;
@@ -114,11 +108,10 @@ static void DriftGfxRendererPushCommand(DriftGfxRenderer* renderer, DriftGfxComm
 DriftGfxPipelineBindings* DriftGfxRendererPushBindPipelineCommand(DriftGfxRenderer* renderer, DriftGfxPipeline* pipeline){
 	DRIFT_ASSERT(pipeline, "Pipeline cannot be NULL");
 	
-	// TODO useful to allow static bindings to be passed in as well?
-	DriftGfxPipelineBindings* bindings = DriftZoneMemAlloc(renderer->mem, sizeof(DriftGfxPipelineBindings));
+	DriftGfxPipelineBindings* bindings = DriftAlloc(renderer->mem, sizeof(DriftGfxPipelineBindings));
 	(*bindings) = (DriftGfxPipelineBindings){};
 	
-	DriftGfxCommandPipeline* command = DriftZoneMemAlloc(renderer->mem, sizeof(*command));
+	DriftGfxCommandPipeline* command = DriftAlloc(renderer->mem, sizeof(*command));
 	(*command) = (DriftGfxCommandPipeline){.base.func = renderer->vtable.bind_pipeline, .pipeline = pipeline, .bindings = bindings};
 	DriftGfxRendererPushCommand(renderer, &command->base);
 	
@@ -128,7 +121,7 @@ DriftGfxPipelineBindings* DriftGfxRendererPushBindPipelineCommand(DriftGfxRender
 void DriftGfxRendererPushDrawIndexedCommand(DriftGfxRenderer* renderer, DriftGfxBufferBinding index_binding, u32 index_count, u32 instance_count){
 	DRIFT_ASSERT(index_binding.offset <= DRIFT_GFX_INDEX_BUFFER_SIZE, "Invalid index array pointer.");
 	
-	DriftGfxCommandDraw* command = DriftZoneMemAlloc(renderer->mem, sizeof(*command));
+	DriftGfxCommandDraw* command = DriftAlloc(renderer->mem, sizeof(*command));
 	(*command) = (DriftGfxCommandDraw){
 		.base.func = renderer->vtable.draw_indexed,
 		.index_binding = index_binding, .index_count = index_count, .instance_count = instance_count,
@@ -138,7 +131,7 @@ void DriftGfxRendererPushDrawIndexedCommand(DriftGfxRenderer* renderer, DriftGfx
 }
 
 void DriftGfxRendererPushBindTargetCommand(DriftGfxRenderer* renderer, 	DriftGfxRenderTarget* rt, DriftVec4 clear_color){
-	DriftGfxCommandTarget* command = DriftZoneMemAlloc(renderer->mem, sizeof(*command));
+	DriftGfxCommandTarget* command = DriftAlloc(renderer->mem, sizeof(*command));
 	(*command) = (DriftGfxCommandTarget){
 		.base.func = renderer->vtable.bind_target,
 		.rt = rt, .clear_color = clear_color,
@@ -148,7 +141,7 @@ void DriftGfxRendererPushBindTargetCommand(DriftGfxRenderer* renderer, 	DriftGfx
 }
 
 void DriftGfxRendererPushScissorCommand(DriftGfxRenderer* renderer, DriftAABB2 bounds){
-	DriftGfxCommandScissor* command = DriftZoneMemAlloc(renderer->mem, sizeof(*command));
+	DriftGfxCommandScissor* command = DriftAlloc(renderer->mem, sizeof(*command));
 	(*command) = (DriftGfxCommandScissor){.base.func = renderer->vtable.set_scissor, .bounds = bounds};
 	DriftGfxRendererPushCommand(renderer, &command->base);
 }

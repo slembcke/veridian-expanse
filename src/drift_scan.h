@@ -1,0 +1,26 @@
+typedef enum {
+	DRIFT_SCAN_NONE,
+	DRIFT_SCAN_VIRIDIUM,
+	DRIFT_SCAN_LUMIUM,
+	DRIFT_SCAN_SCRAP,
+	DRIFT_SCAN_GLOW_BUG,
+	DRIFT_SCAN_HIVE_WORKER,
+	DRIFT_SCAN_FACTORY,
+	DRIFT_SCAN_CRASHED_SHIP,
+	DRIFT_SCAN_POWER_NODE,
+	DRIFT_SCAN_OPTICS,
+	DRIFT_SCAN_HEADLIGHT,
+	DRIFT_SCAN_AUTOCANNON,
+	DRIFT_SCAN_LASER,
+	_DRIFT_SCAN_COUNT,
+} DriftScanType;
+
+typedef struct {
+	const char* name;
+	const char* description;
+	float radius;
+	DriftVec2 offset;
+	bool interactive;
+} DriftScan;
+
+extern const DriftScan DRIFT_SCANS[_DRIFT_SCAN_COUNT];

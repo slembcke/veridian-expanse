@@ -43,22 +43,24 @@
 
 #include "drift_base.h"
 
-void DriftThrottledParallelFor(tina_job* job, const char* name, tina_job_func func, void* user_data, uint count){
+void DriftThrottledParallelFor(tina_job* job, tina_job_func func, void* user_data, uint count){
 	tina_scheduler* sched = tina_job_get_scheduler(job);
 	tina_group jobs = {};
 	for(uint idx = 0; idx < count; idx++){
 		tina_job_wait(job, &jobs, DRIFT_APP_MAX_THREADS);
-		tina_scheduler_enqueue(sched, name, func, user_data, idx, DRIFT_JOB_QUEUE_WORK, &jobs);
+		tina_scheduler_enqueue(sched, func, user_data, idx, DRIFT_JOB_QUEUE_WORK, &jobs);
 	}
 	tina_job_wait(job, &jobs, 0);
 }
 
+void DriftParallelFor(tina_job* job, tina_job_func func, void* user_data, uint count){
+	tina_group group = {};
+	tina_scheduler_enqueue_n(tina_job_get_scheduler(job), func, user_data, count, DRIFT_JOB_QUEUE_WORK, &group);
+	tina_job_wait(job, &group, 0);
+}
+
 #if DRIFT_MODULES
-static void DriftAppModuleLoad(tina_job* job){
-	DriftApp* app = tina_job_get_description(job)->user_data;
-	
-	app->module_status = DRIFT_APP_MODULE_READY;
-	tina_job_wait(job, &app->module_entrypoint_jobs, 0);
+static void DriftModuleLoad(DriftApp* app){
 	SDL_UnloadObject(app->module);
 	
 	char libname[256];
@@ -81,38 +83,38 @@ static void DriftAppModuleLoad(tina_job* job){
 		getchar();
 	}
 	
-	tina_job_func* init = SDL_LoadFunction(app->module, app->module_entrypoint);
-	DRIFT_ASSERT_HARD(init, "Failed to find init function. (%s)", SDL_GetError());
-	
-	app->module_status = DRIFT_APP_MODULE_IDLE;
-	tina_scheduler_enqueue(app->scheduler, "JobAppModuleInit", init, app, 0, DRIFT_JOB_QUEUE_MAIN, &app->module_entrypoint_jobs);
+	DriftAssetsReset();
 }
 
-tina_job_func* DriftAppModuleStart = DriftAppModuleLoad;
-
-static void ModuleRebuild(tina_job* job){
+void DriftModuleRun(tina_job* job){
 	DriftApp* app = tina_job_get_description(job)->user_data;
-	while(system(app->module_build_command)){
-		app->module_status = DRIFT_APP_MODULE_ERROR;
-		DRIFT_LOG("Build failed. Press any key to try again.");
-		getchar();
-	}
+	tina_job_func* entrypoint = SDL_LoadFunction(app->module, app->module_entrypoint);
+	DRIFT_ASSERT_HARD(entrypoint, "Failed to find entrypoint function. (%s)", SDL_GetError());
 	
-	tina_scheduler_enqueue(app->scheduler, "JobAppModuleLoad", DriftAppModuleLoad, app, 0, DRIFT_JOB_QUEUE_WORK, NULL);
+	app->module_status = DRIFT_MODULE_RUNNING;
+	tina_scheduler_enqueue(app->scheduler, entrypoint, app, 0, DRIFT_JOB_QUEUE_MAIN, &app->module_entrypoint_jobs);
 }
 
-bool DriftAppModuleRequestReload(DriftApp* app, tina_job* job){
-	switch(app->module_status){
-		case DRIFT_APP_MODULE_IDLE:
-			app->module_status = DRIFT_APP_MODULE_BUILDING;
-			tina_scheduler_enqueue(app->scheduler, "JobModuleRebuild", ModuleRebuild, app, 0, DRIFT_JOB_QUEUE_WORK, &app->module_rebuild_jobs);
-			return false;
-		case DRIFT_APP_MODULE_ERROR:
-			tina_job_wait(job, &app->module_rebuild_jobs, 0);
-			return false;
-		case DRIFT_APP_MODULE_READY:
-			return true;
-		default: return false;
+static void module_reload(tina_job* job){
+	DriftApp* app = tina_job_get_description(job)->user_data;
+	
+	// Rebuild the module
+	if(system(app->module_build_command)){
+		app->module_status = DRIFT_MODULE_ERROR;
+	} else {
+		app->module_status = DRIFT_MODULE_READY;
+		
+		// Wait for the previous entrypoint to exit.
+		tina_job_wait(job, &app->module_entrypoint_jobs, 0);
+		DriftModuleLoad(app);
+		DriftModuleRun(job);
+	}
+}
+
+void DriftModuleRequestReload(DriftApp* app, tina_job* job){
+	if(app->module_status == DRIFT_MODULE_RUNNING || app->module_status == DRIFT_MODULE_ERROR){
+		app->module_status = DRIFT_MODULE_BUILDING;
+		tina_scheduler_enqueue(app->scheduler, module_reload, app, 0, DRIFT_JOB_QUEUE_WORK, &app->module_rebuild_jobs);
 	}
 }
 #endif
@@ -200,9 +202,14 @@ static void DriftThreadInit(DriftThread* thread, DriftApp* app, uint id, uint qu
 	thrd_create(&thread->thread, DriftAppWorkerThreadBody, thread);
 }
 
+void DriftPrefsIO(DriftIO* io){
+	DriftPreferences* prefs = io->user_ptr;
+	DriftIOBlock(io, "prefs", prefs, sizeof(*prefs));
+}
+
 int DriftMain(DriftApp* app){
-	DriftStopwatch sw = DRIFT_STOPWATCH_START("App init");
-	
+	TracyCZoneN(ZONE_STARTUP, "Startup", true);
+	TracyCZoneN(ZONE_JOBS, "Jobs", true);
 	// Setup jobs.
 	uint cpu_count = DriftAppGetCPUCount();
 	app->thread_count = DRIFT_MAX(DRIFT_MIN(cpu_count + 1u, DRIFT_APP_MAX_THREADS), 3u);
@@ -219,16 +226,39 @@ int DriftMain(DriftApp* app){
 		const char* name = DriftSMPrintf(DriftSystemMem, "DriftWorkerThread %d", i);
 		DriftThreadInit(app->threads + i, app, i, DRIFT_JOB_QUEUE_WORK, name);
 	}
-	DRIFT_STOPWATCH_MARK(sw, "jobs");
+	TracyCZoneEnd(ZONE_JOBS);
 	
 	// Setup memory.
-	app->zone_heap = DriftZoneMemHeapNew("Global", DriftSystemMem, 1 << 20, 256, 8);
-	DRIFT_STOPWATCH_MARK(sw, "mem");
+	app->zone_heap = DriftZoneMemHeapNew(DriftSystemMem, "Global");
+	
+	TracyCZoneN(ZONE_RESOURCES, "Resources", true);
+	DriftAssetsReset();
+	TracyCZoneEnd(ZONE_RESOURCES);
+	
+	// Start terrain loading before opening the shell since it takes a long time.
+#if DRIFT_MODULES
+	DriftModuleLoad(app);
+	void (*DriftTerrainLoadBase)(tina_scheduler* sched) = SDL_LoadFunction(app->module, "DriftTerrainLoadBase");
+#else
+	void DriftTerrainLoadBase(tina_scheduler* sched);
+#endif
+	DriftTerrainLoadBase(app->scheduler);
 	
 	// Start shell and module.
+	TracyCZoneN(ZONE_START, "Start", true)
 	app->shell_func(app, DRIFT_SHELL_START, NULL);
-	tina_scheduler_enqueue(app->scheduler, "JobAppInit", app->init_func, app, 0, DRIFT_JOB_QUEUE_MAIN, NULL);
-	// DRIFT_STOPWATCH_STOP(sw, "shell");
+	
+	app->prefs = (DriftPreferences){.master_volume = 1, .music_volume = 0.5f};
+	DriftIOFileRead(TMP_PREFS_FILENAME, DriftPrefsIO, &app->prefs);
+	
+	TracyCZoneN(ZONE_OPEN_AUDIO, "Open Audio", true);
+	app->audio = DriftAudioContextNew();
+	DriftAudioSetParams(app->audio, app->prefs.master_volume, app->prefs.music_volume);
+	TracyCZoneEnd(ZONE_OPEN_AUDIO);
+		
+	tina_scheduler_enqueue(app->scheduler, app->entry_func, app, 0, DRIFT_JOB_QUEUE_MAIN, NULL);
+	TracyCZoneEnd(ZONE_START);
+	TracyCZoneEnd(ZONE_STARTUP);
 	
 	// Run the main queue until shutdown.
 	tina_scheduler_run(app->scheduler, DRIFT_JOB_QUEUE_MAIN, false);
@@ -244,6 +274,7 @@ int DriftMain(DriftApp* app){
 		app->shell_restart = NULL;
 		return DriftMain(app);
 	} else {
+		DriftDealloc(DriftSystemMem, sched_buffer, sched_size);
 		return EXIT_SUCCESS;
 	}
 }
@@ -259,9 +290,9 @@ void DriftAppHaltScheduler(DriftApp* app){
 	tina_scheduler_interrupt(app->scheduler, DRIFT_JOB_QUEUE_GFX);
 }
 
-DriftGfxRenderer* DriftAppBeginFrame(DriftApp* app, DriftZoneMem* zone){
+DriftGfxRenderer* DriftAppBeginFrame(DriftApp* app, DriftMem* mem){
 	DriftAppAssertMainThread();
-	return app->shell_func(app, DRIFT_SHELL_BEGIN_FRAME, zone);
+	return app->shell_func(app, DRIFT_SHELL_BEGIN_FRAME, mem);
 }
 
 void DriftAppPresentFrame(DriftApp* app, DriftGfxRenderer* renderer){

@@ -2,9 +2,8 @@
 
 typedef struct DriftAudioContext DriftAudioContext;
 
-DriftAudioContext* DriftAudioContextCreate(void);
-void DriftAudioOpenDevice(DriftAudioContext* ctx);
-void DriftAudioCloseDevice(DriftAudioContext* ctx);
+DriftAudioContext* DriftAudioContextNew(void);
+// void DriftAudioContextFree(DriftAudioContext* ctx);
 
 void DriftAudioSetParams(DriftAudioContext* ctx, float master_volume, float music_volume);
 

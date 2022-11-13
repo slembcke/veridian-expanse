@@ -2,16 +2,18 @@
 #include <string.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+unsigned char * stbi_zlib_compress(unsigned char *data, int data_len, int *out_len, int quality);
+unsigned char *stbi_write_png_to_mem(const unsigned char *pixels, int stride_bytes, int x, int y, int n, int *out_len);
 #include <stb/stb_image_write.h>
 
 #include "drift_game.h"
 
-float perlin_grad(int ix, int iy, float x, float y) {
+static float perlin_grad(int ix, int iy, float x, float y) {
 	float random = 2920.f * sinf(ix * 21942.f + iy * 171324.f + 8912.f) * cosf(ix * 23157.f * iy * 217832.f + 9758.f);
 	return (x - ix)*cosf(random) + (y - iy)*sinf(random);
 }
 
-float perlin(float x, float y) {
+static float perlin(float x, float y) {
 	int ix = (int)x;
 	int iy = (int)y;
 	float fx = x - ix;
@@ -113,24 +115,24 @@ static void encode_tile(tina_job* job){
 	}
 }
 
-void DriftTerrainGen(tina_job* job){
+static void DriftTerrainGen(tina_job* job){
 	MAP_SIZE = DRIFT_TERRAIN_TILE_SIZE*DRIFT_TERRAIN_TILEMAP_SIZE;
 	VALUES = DriftAlloc(DriftSystemMem, MAP_SIZE*MAP_SIZE*sizeof(*VALUES));
-	DriftThrottledParallelFor(job, "generate_row", generate_row, NULL, MAP_SIZE);
+	DriftThrottledParallelFor(job, generate_row, NULL, MAP_SIZE);
 	puts("");
 	
 	CELLS0 = DriftAlloc(DriftSystemMem, MAP_SIZE*MAP_SIZE*sizeof(*CELLS0));
 	CELLS1 = DriftAlloc(DriftSystemMem, MAP_SIZE*MAP_SIZE*sizeof(*CELLS1));
-	DriftThrottledParallelFor(job, "init_job", init_job, NULL, MAP_SIZE);
+	DriftThrottledParallelFor(job, init_job, NULL, MAP_SIZE);
 	
-	DriftThrottledParallelFor(job, "flood_job", flood_job, &(FloodContext){.dst = CELLS1, .src = CELLS0, .r = 1}, MAP_SIZE/ROWS_PER_JOB);
+	DriftThrottledParallelFor(job, flood_job, &(FloodContext){.dst = CELLS1, .src = CELLS0, .r = 1}, MAP_SIZE/ROWS_PER_JOB);
 	puts("");
-	DriftThrottledParallelFor(job, "flood_job", flood_job, &(FloodContext){.dst = CELLS0, .src = CELLS1, .r = 1}, MAP_SIZE/ROWS_PER_JOB);
+	DriftThrottledParallelFor(job, flood_job, &(FloodContext){.dst = CELLS0, .src = CELLS1, .r = 1}, MAP_SIZE/ROWS_PER_JOB);
 	puts("");
 	for(uint r = SDF_MAX_DIST/2; r > 0; r >>= 1){
-		DriftThrottledParallelFor(job, "flood_job", flood_job, &(FloodContext){.dst = CELLS1, .src = CELLS0, .r = r}, MAP_SIZE/ROWS_PER_JOB);
+		DriftThrottledParallelFor(job, flood_job, &(FloodContext){.dst = CELLS1, .src = CELLS0, .r = r}, MAP_SIZE/ROWS_PER_JOB);
 		puts("");
-		DriftThrottledParallelFor(job, "flood_job", flood_job, &(FloodContext){.dst = CELLS0, .src = CELLS1, .r = r}, MAP_SIZE/ROWS_PER_JOB);
+		DriftThrottledParallelFor(job, flood_job, &(FloodContext){.dst = CELLS0, .src = CELLS1, .r = r}, MAP_SIZE/ROWS_PER_JOB);
 		puts("");
 	}
 	
@@ -143,12 +145,12 @@ void DriftTerrainGen(tina_job* job){
 	puts("  encode");
 	size_t density_size = DRIFT_TERRAIN_TILEMAP_SIZE_SQ*sizeof(DriftTerrainDensity);
 	DriftTerrainDensity* density = DriftAlloc(DriftSystemMem, density_size);
-	DriftThrottledParallelFor(job, "encode_tile", encode_tile, density, DRIFT_TERRAIN_TILEMAP_SIZE_SQ);
+	DriftThrottledParallelFor(job, encode_tile, density, DRIFT_TERRAIN_TILEMAP_SIZE_SQ);
 	DriftDealloc(DriftSystemMem, VALUES, 0);
 	
 	puts("  write");
-	size_t len = density_size/DRIFT_TERRAIN_FILE_SPLITS;
-	for(uint i = 0; i < DRIFT_TERRAIN_FILE_SPLITS; i++){
+	size_t len = density_size/DRIFT_TERRAIN_FILE_CHUNKS;
+	for(uint i = 0; i < DRIFT_TERRAIN_FILE_CHUNKS; i++){
 		char filename[64];
 		snprintf(filename, sizeof(filename), "../bin/terrain%d.bin", i);
 		

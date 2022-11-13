@@ -34,38 +34,28 @@ void VShader(in VertInput IN, out FragInput FRAG){
 SamplerState _repeat : DRIFT_SAMP2;
 Texture2DArray _tiles : DRIFT_TEX1;
 
-const float3 BIOME_TINT[] = {
+const float4 BIOME_TINT[] = {
 	{1.0, 1.0, 0.5},
 	{0.5, 1.0, 0.5},
 	{0.5, 1.0, 1.0},
 	{1.0, 0.5, 0.5},
 };
 
-float4 FShader(in FragInput FRAG) : SV_TARGET0{
-	// Calculate density values.
-	float4 gather4 = _tiles.Load(float4(FRAG.uv_sdf, 0));
-	float2 density_blend = frac(FRAG.uv_sdf.xy);
-	float2 density_deriv = lerp(gather4.zy - gather4.ww, gather4.xx - gather4.yz, density_blend.yx);
-	float2 gather2 = lerp(gather4.yw, gather4.xz, density_blend.x);
-	float density = lerp(gather2.y, gather2.x, density_blend.y);
-	
-	float4 color = density.rrrr;
-	// color = gather4.rrrr;
-	color.rg += 0.01*lerp(float2(-3,0), float2(9,0), step(color.a, 0.5));
+#define SDF_MAX_DIST (32/4)
 
+float4 FShader(in FragInput FRAG) : SV_TARGET0{
+	float4 gather4 = _tiles.Load(float4(FRAG.uv_sdf, 0));
+	float2 gather2 = lerp(gather4.yw, gather4.xz, frac(FRAG.uv_sdf.x));
+	float sdf = lerp(gather2.y, gather2.x, frac(FRAG.uv_sdf.y));
+	
 	float4 biome = DriftAtlas.Sample(DriftLinear, FRAG.uv_biome);
-	// float err = 10*(dot(biome, float4(1)) - 1);
-	// return float4(-err, +err, 0, 1);
+	float3 color = biome[0]*BIOME_TINT[0] + biome[1]*BIOME_TINT[1] + biome[2]*BIOME_TINT[2] + biome[3]*BIOME_TINT[3];
+	// Fog of War
+	color *= smoothstep(0, 1, DriftAtlas.Sample(DriftLinear, float3(FRAG.uv_biome.xy, DRIFT_ATLAS_VISIBILITY)).r);
+	// Solid terrain.
+	color *= smoothstep(0, fwidth(FRAG.uv_sdf.x), DRIFT_SDF_MAX_DIST*(sdf - 0.5));
+	// Shading
+	color *= smoothstep(-1, 1, 2*sdf - 1);
 	
-	float terrain_mask = biome.r + biome.g + biome.b + biome.a;
-	float4 biome_rb_ga = lerp(float4(0, 2, biome.rb), float4(1, 3, biome.ga), step(biome.rb, biome.ga).xyxy);
-	float biome_idx = lerp(biome_rb_ga.x, biome_rb_ga.y, step(biome_rb_ga.z, biome_rb_ga.w));
-	color.rgb *= BIOME_TINT[biome_idx]*terrain_mask;
-	
-	// Draw contour
-	color.rgb *= smoothstep(0, fwidth(density), abs(density - 0.5));
-	
-	float2 grid = step(fwidth(FRAG.uv_sdf), FRAG.uv_sdf);
-	color.rgb *= (grid.x*grid.y);
-	return color;
+	return float4(color, sdf);
 }

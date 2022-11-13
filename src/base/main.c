@@ -3,20 +3,17 @@
 
 #include "drift_base.h"
 
-#if DRIFT_DEBUG
-static void unit_tests(){
-	unit_test_util();
-	unit_test_math();
-	unit_test_entity();
-	unit_test_map();
-	unit_test_component();
-	
-	// DRIFT_ASSERT(DriftTrackedMemorySize(NULL) == 0, "Memory leak detected in unit tests.");
-}
-#endif
-
 int main(int argc, const char* argv[argc+1]){
 	DriftUtilInit();
+
+#if DRIFT_DEBUG
+	// unit_test_util();
+	// unit_test_math();
+	// unit_test_entity();
+	// unit_test_map();
+	// unit_test_component();
+	// unit_test_rtree();
+#endif
 
 	DriftApp app = {};
 	
@@ -24,10 +21,10 @@ int main(int argc, const char* argv[argc+1]){
 	app.module_libname = "libdrift-game";
 	app.module_entrypoint = "DriftGameContextStart";
 	app.module_build_command = "ninja drift-game resources.zip";
-	app.init_func = DriftAppModuleStart;
+	app.entry_func = DriftModuleRun;
 #else
 	extern tina_job_func DriftGameContextStart;
-	app.init_func = DriftGameContextStart;
+	app.entry_func = DriftGameContextStart;
 #endif
 
 	app.shell_func = DriftShellSDLVk;
@@ -48,7 +45,7 @@ int main(int argc, const char* argv[argc+1]){
 #endif
 
 #if DRIFT_DEBUG
-		if(strcmp(argv[i], "--test") == 0) unit_tests();
+		if(strcmp(argv[i], "--test-only") == 0) exit(0);
 #endif
 	}
 	

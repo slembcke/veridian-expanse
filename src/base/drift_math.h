@@ -12,8 +12,8 @@ static inline float DriftHermite3(float x){return (3 - 2*x)*x*x;}
 static inline float DriftHermite5(float x){return ((6*x - 15)*x + 10)*x*x*x;}
 
 typedef struct {float x, y;} DriftVec2;
-static const DriftVec2 DRIFT_VEC2_ZERO = {0, 0};
-static const DriftVec2 DRIFT_VEC2_ONE = {1, 1};
+#define DRIFT_VEC2_ZERO ((DriftVec2){0, 0})
+#define DRIFT_VEC2_ONE ((DriftVec2){1, 1})
 
 static inline DriftVec2 DriftVec2Add(DriftVec2 v1, DriftVec2 v2){return (DriftVec2){v1.x + v2.x, v1.y + v2.y};}
 static inline DriftVec2 DriftVec2Sub(DriftVec2 v1, DriftVec2 v2){return (DriftVec2){v1.x - v2.x, v1.y - v2.y};}
@@ -41,10 +41,11 @@ static inline bool DriftAABB2Overlap(DriftAABB2 a, DriftAABB2 b){return (a.l < b
 static inline bool DriftAABB2Contains(DriftAABB2 a, DriftAABB2 b){return a.l <= b.l && b.r <= a.r && a.b <= b.b && b.t <= a.t;}
 static inline bool DriftAABB2Test(DriftAABB2 a, DriftVec2 p){return a.l <= p.x && p.x <= a.r && a.b <= p.y && p.y <= a.t;}
 static inline DriftAABB2 DriftAABB2Merge(DriftAABB2 a, DriftAABB2 b){return (DriftAABB2){fminf(a.l, b.l), fminf(a.b, b.b), fmaxf(a.r, b.r), fmaxf(a.t, b.t)};}
-static DriftVec2 DriftAABB2Center(DriftAABB2 bb){return (DriftVec2){(bb.l + bb.r)/2, (bb.b + bb.t)/2};}
+static DriftVec2 DriftAABB2Center(DriftAABB2 bb){return (DriftVec2){(bb.r + bb.l)/2, (bb.t + bb.b)/2};}
+static DriftVec2 DriftAABB2Extents(DriftAABB2 bb){return (DriftVec2){(bb.r - bb.l)/2, (bb.t - bb.b)/2};}
 
-static const DriftAABB2 DRIFT_AABB2_ALL = {-INFINITY, -INFINITY, INFINITY, INFINITY};
-static const DriftAABB2 DRIFT_AABB2_UNIT = {-1, -1, 1, 1};
+#define DRIFT_AABB2_ALL ((DriftAABB2){-INFINITY, -INFINITY, INFINITY, INFINITY})
+#define DRIFT_AABB2_UNIT ((DriftAABB2){-1, -1, 1, 1})
 
 typedef union {
 	struct {float x, y, z;};
@@ -65,51 +66,54 @@ typedef union {
 	struct {float r, g, b, a;};
 } DriftVec4;
 
-static const DriftVec4 DRIFT_VEC4_ZERO    = {{0, 0, 0, 0}};
-static const DriftVec4 DRIFT_VEC4_ONE     = {{1, 1, 1, 1}};
+#define DRIFT_VEC4_ZERO    ((DriftVec4){{0, 0, 0, 0}})
+#define DRIFT_VEC4_ONE     ((DriftVec4){{1, 1, 1, 1}})
 
-static const DriftVec4 DRIFT_VEC4_CLEAR   = {{0, 0, 0, 0}};
-static const DriftVec4 DRIFT_VEC4_BLACK   = {{0, 0, 0, 1}};
-static const DriftVec4 DRIFT_VEC4_WHITE   = {{1, 1, 1, 1}};
-static const DriftVec4 DRIFT_VEC4_RED     = {{1, 0, 0, 1}};
-static const DriftVec4 DRIFT_VEC4_YELLOW  = {{1, 1, 0, 1}};
-static const DriftVec4 DRIFT_VEC4_GREEN   = {{0, 1, 0, 1}};
-static const DriftVec4 DRIFT_VEC4_CYAN    = {{0, 1, 1, 1}};
-static const DriftVec4 DRIFT_VEC4_BLUE    = {{0, 0, 1, 1}};
-static const DriftVec4 DRIFT_VEC4_MAGENTA = {{1, 0, 1, 1}};
+#define DRIFT_VEC4_CLEAR   ((DriftVec4){{0, 0, 0, 0}})
+#define DRIFT_VEC4_BLACK   ((DriftVec4){{0, 0, 0, 1}})
+#define DRIFT_VEC4_WHITE   ((DriftVec4){{1, 1, 1, 1}})
+#define DRIFT_VEC4_RED     ((DriftVec4){{1, 0, 0, 1}})
+#define DRIFT_VEC4_YELLOW  ((DriftVec4){{1, 1, 0, 1}})
+#define DRIFT_VEC4_GREEN   ((DriftVec4){{0, 1, 0, 1}})
+#define DRIFT_VEC4_CYAN    ((DriftVec4){{0, 1, 1, 1}})
+#define DRIFT_VEC4_BLUE    ((DriftVec4){{0, 0, 1, 1}})
+#define DRIFT_VEC4_MAGENTA ((DriftVec4){{1, 0, 1, 1}})
+#define DRIFT_VEC4_ORANGE  ((DriftVec4){{1, 0.5, 0, 1}})
 
+static inline DriftVec4 DriftVec4Add(DriftVec4 v1, DriftVec4 v2){return (DriftVec4){{v1.x + v2.x, v1.y + v2.y, v1.z + v2.z, v1.w + v2.w}};}
 static inline DriftVec4 DriftVec4Mul(DriftVec4 v, float s){return (DriftVec4){{v.x*s, v.y*s, v.z*s, v.w*s}};}
 
 typedef struct {u8 r, g, b, a;} DriftRGBA8;
 static inline DriftRGBA8 DriftRGBA8FromColor(DriftVec4 color){return (DriftRGBA8){
-		(u8)(color.r*255),
-		(u8)(color.g*255),
-		(u8)(color.b*255),
-		(u8)(color.a*255),
+		(u8)(DriftSaturate(color.r)*255),
+		(u8)(DriftSaturate(color.g)*255),
+		(u8)(DriftSaturate(color.b)*255),
+		(u8)(DriftSaturate(color.a)*255),
 	};
 }
 
-static const DriftRGBA8 DRIFT_RGBA8_CLEAR   = {0x00, 0x00, 0x00, 0x00};
-static const DriftRGBA8 DRIFT_RGBA8_BLACK   = {0x00, 0x00, 0x00, 0xFF};
-static const DriftRGBA8 DRIFT_RGBA8_WHITE   = {0xFF, 0xFF, 0xFF, 0xFF};
-static const DriftRGBA8 DRIFT_RGBA8_RED     = {0xFF, 0x00, 0x00, 0xFF};
-static const DriftRGBA8 DRIFT_RGBA8_ORANGE  = {0xFF, 0x80, 0x00, 0xFF};
-static const DriftRGBA8 DRIFT_RGBA8_YELLOW  = {0xFF, 0xFF, 0x00, 0xFF};
-static const DriftRGBA8 DRIFT_RGBA8_GREEN   = {0x00, 0xFF, 0x00, 0xFF};
-static const DriftRGBA8 DRIFT_RGBA8_CYAN    = {0x00, 0xFF, 0xFF, 0xFF};
-static const DriftRGBA8 DRIFT_RGBA8_BLUE    = {0x00, 0x00, 0xFF, 0xFF};
-static const DriftRGBA8 DRIFT_RGBA8_MAGENTA = {0xFF, 0x00, 0xFF, 0xFF};
+#define DRIFT_RGBA8_CLEAR   ((DriftRGBA8){0x00, 0x00, 0x00, 0x00})
+#define DRIFT_RGBA8_BLACK   ((DriftRGBA8){0x00, 0x00, 0x00, 0xFF})
+#define DRIFT_RGBA8_GREY    ((DriftRGBA8){0x80, 0x80, 0x80, 0xFF})
+#define DRIFT_RGBA8_WHITE   ((DriftRGBA8){0xFF, 0xFF, 0xFF, 0xFF})
+#define DRIFT_RGBA8_RED     ((DriftRGBA8){0xFF, 0x00, 0x00, 0xFF})
+#define DRIFT_RGBA8_ORANGE  ((DriftRGBA8){0xFF, 0x80, 0x00, 0xFF})
+#define DRIFT_RGBA8_YELLOW  ((DriftRGBA8){0xFF, 0xFF, 0x00, 0xFF})
+#define DRIFT_RGBA8_GREEN   ((DriftRGBA8){0x00, 0xFF, 0x00, 0xFF})
+#define DRIFT_RGBA8_CYAN    ((DriftRGBA8){0x00, 0xFF, 0xFF, 0xFF})
+#define DRIFT_RGBA8_BLUE    ((DriftRGBA8){0x00, 0x00, 0xFF, 0xFF})
+#define DRIFT_RGBA8_MAGENTA ((DriftRGBA8){0xFF, 0x00, 0xFF, 0xFF})
 
 typedef struct {float a, b, c, d, x, y;} DriftAffine;
 
-static const DriftAffine DRIFT_AFFINE_ZERO = {0, 0, 0, 0, 0, 0};
-static const DriftAffine DRIFT_AFFINE_IDENTITY = {1, 0, 0, 1, 0, 0};
+#define DRIFT_AFFINE_ZERO ((DriftAffine){0, 0, 0, 0, 0, 0})
+#define DRIFT_AFFINE_IDENTITY ((DriftAffine){1, 0, 0, 1, 0, 0})
 
 static inline DriftAffine DriftAffineMakeTranspose(float a, float c, float x, float b, float d, float y){
 	return (DriftAffine){a, b, c, d, x, y};
 }
 
-static inline DriftAffine DriftAffineMult(DriftAffine m1, DriftAffine m2){
+static inline DriftAffine DriftAffineMul(DriftAffine m1, DriftAffine m2){
   return DriftAffineMakeTranspose(
     m1.a*m2.a + m1.c*m2.b, m1.a*m2.c + m1.c*m2.d, m1.a*m2.x + m1.c*m2.y + m1.x,
     m1.b*m2.a + m1.d*m2.b, m1.b*m2.c + m1.d*m2.d, m1.b*m2.x + m1.d*m2.y + m1.y
@@ -178,6 +182,8 @@ static inline bool DriftAffineVisibility(DriftAffine mvp, DriftVec2 center, Drif
 	// Check the bounds against the clip space viewport.
 	return ((fabsf(csc.x) - cshw < 1) && (fabsf(csc.y) - cshh < 1));
 }
+
+#define DRIFT_PHI 1.618033988749895
 
 // http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/
 static inline DriftVec2 DriftNoiseR2(u32 i){

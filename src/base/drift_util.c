@@ -6,6 +6,7 @@
 
 #include "tina/tina.h"
 #include "miniz/miniz.h"
+#include "qoi/qoi.h"
 
 #include "drift_types.h"
 #include "drift_math.h"
@@ -127,12 +128,21 @@ static bool format_vec3(format_cursor* curs, va_list* args){
 	return opts != NULL;
 }
 
+static bool format_vec4(format_cursor* curs, va_list* args){
+	const char* opts = format_match(curs, "v4:");
+	if(opts){
+		DriftVec4 v = va_arg(*args, DriftVec4);
+		format_sprintf(curs, opts, "(%@f, %@f, %@f, %@f)", v.x, v.y, v.z, v.w);
+	}
+	
+	return opts != NULL;
+}
+
 typedef bool format_func(format_cursor* curs, va_list* args);
 static format_func* FORMAT_FUNCS[] = {
 	format_int,
 	format_float,
-	format_vec2,
-	format_vec3,
+	format_vec2, format_vec3, format_vec4,
 	NULL,
 };
 
@@ -266,7 +276,7 @@ void DriftIOBlock(DriftIO* io, const char* label, void* ptr, size_t size){
 	if(size) tina_yield(io->_coro, &data);
 }
 
-void* io_body(tina* coro, void* value){
+static void* io_body(tina* coro, void* value){
 	DriftIO* io = coro->user_data;
 	io->_io_func(io);
 	return false;
@@ -315,58 +325,80 @@ void DriftIOFileWrite(const char* filename, DriftIOFunc* io_func, void* user_ptr
 
 static mz_zip_archive ZipHandles[DRIFT_APP_MAX_THREADS];
 static const char* ResourcesZipName = "resources.zip";
-static mtx_t DriftAssetMutex;
-static DriftLinearMem* DriftAssetMem;
-static char ASSET_BUFFER[256*1024*1024];
+// static mtx_t DriftAssetMutex;
+// static DriftMem* DriftAssetMem;
+// static char ASSET_BUFFER[256*1024*1024];
 
 static const char* zip_error(mz_zip_archive* zip){return mz_zip_get_error_string(mz_zip_get_last_error(zip));}
 
-const DriftConstData* DriftAssetGet(const char* filename){
+static DriftData load_asset(DriftMem* mem, const char* format, va_list args){
+	char filename[256];
+	// va_list args; va_start(args, format);
+	vsnprintf(filename, sizeof(filename), format, args);
+	// va_end(args);
+	
 	mz_zip_archive* zip = ZipHandles + DriftAppGetThreadID();
 	
 	int idx = mz_zip_reader_locate_file(zip, filename, NULL, 0);
-	DRIFT_ASSERT_HARD(idx >= 0, "Asset '%s/%s' not found.", ResourcesZipName, filename);
-	if(idx < 0) return NULL;
+	DRIFT_ASSERT_WARN(idx >= 0, "Asset '%s/%s' not found.", ResourcesZipName, filename);
+	if(idx < 0) return (DriftData){};
 	
 	mz_zip_archive_file_stat stat;
 	bool success = mz_zip_reader_file_stat(zip, idx, &stat);
 	DRIFT_ASSERT_HARD(success, "mz_zip_reader_file_stat() failed: %s", zip_error(zip));
 	size_t size = stat.m_uncomp_size;
 	
-	mtx_lock(&DriftAssetMutex);
-	void* buffer = DriftLinearMemAlloc(DriftAssetMem, size);
-	DriftConstData* asset = DriftLinearMemAlloc(DriftAssetMem, sizeof(*asset));
-	DRIFT_ASSERT_HARD(buffer && asset, "Ran out of asset memory.");
-	(*asset) = (DriftConstData){.data = buffer, .length = size};
-	mtx_unlock(&DriftAssetMutex);
-	
 	u8 tmp[64*1024];
+	void* buffer = DriftAlloc(mem, size);
 	success = mz_zip_reader_extract_to_mem_no_alloc(zip, idx, buffer, size, 0, tmp, sizeof(tmp));
 	DRIFT_ASSERT_HARD(success, "Failed to extract '%s/%s': %s", ResourcesZipName, filename, zip_error(zip));
 	
-	return asset;
+	return (DriftData){.ptr = buffer, .size = size};
+}
+
+DriftData DriftAssetLoad(DriftMem* mem, const char* format, ...){
+	va_list args; va_start(args, format);
+	DriftData data = load_asset(mem, format, args);
+	va_end(args);
+	return data;
+}
+
+DriftImage DriftAssetLoadImage(DriftMem* mem, const char* format, ...){
+	va_list args; va_start(args, format);
+	DriftData data = load_asset(mem, format, args);
+	va_end(args);
+	
+	int w = 0, h = 0;
+	void* pixels = qoi_decode(mem, data.ptr, data.size, &w, &h, 4);
+	DriftDealloc(mem, data.ptr, data.size);
+	
+	return (DriftImage){.w = w, .h = h, .pixels = pixels};
+}
+
+void DriftImageFree(DriftMem* mem, DriftImage img){
+	DriftDealloc(mem, img.pixels, img.w*img.h*4);
 }
 
 void DriftAssetsReset(void){
-	mtx_destroy(&DriftAssetMutex);
-	mtx_init(&DriftAssetMutex, mtx_plain);
-	DriftAssetMem = DriftLinearMemInit(ASSET_BUFFER, sizeof(ASSET_BUFFER));
+	static void* RESOURCES_BUFFER;
+	static size_t RESOURCES_SIZE;
+	if(RESOURCES_BUFFER) DriftDealloc(DriftSystemMem, RESOURCES_BUFFER, RESOURCES_SIZE);
 	
 	FILE* file = fopen(ResourcesZipName, "rb");
 	DRIFT_ASSERT_HARD(file, "Failed to open '%s'", ResourcesZipName);
 	DRIFT_ASSERT_HARD(fseek(file, 0, SEEK_END) == 0, "Failed to get '%s' size.", ResourcesZipName);
-	size_t resources_size = ftell(file);
+	RESOURCES_SIZE = ftell(file);
 	
-	void* resource_buffer = DriftLinearMemAlloc(DriftAssetMem, resources_size);
-	DRIFT_ASSERT_HARD(resource_buffer, "Failed to allocate for '%s'.", ResourcesZipName);
+	RESOURCES_BUFFER = DriftAlloc(DriftSystemMem, RESOURCES_SIZE);
+	DRIFT_ASSERT_HARD(RESOURCES_BUFFER, "Failed to allocate for '%s'.", ResourcesZipName);
 	
 	DRIFT_ASSERT_HARD(fseek(file, 0, SEEK_SET) == 0, "Failed to get '%s' size.", ResourcesZipName);
-	DRIFT_ASSERT_HARD(fread(resource_buffer, resources_size, 1, file), "Failed to read '%s'.", ResourcesZipName);
+	DRIFT_ASSERT_HARD(fread(RESOURCES_BUFFER, RESOURCES_SIZE, 1, file), "Failed to read '%s'.", ResourcesZipName);
 	fclose(file);
 	
 	mz_zip_archive* zip = ZipHandles + 0;
 	if(zip->m_pState) mz_zip_reader_end(zip);
-	bool success = mz_zip_reader_init_mem(zip, resource_buffer, resources_size, 0);
+	bool success = mz_zip_reader_init_mem(zip, RESOURCES_BUFFER, RESOURCES_SIZE, 0);
 	DRIFT_ASSERT_HARD(success, "Failed to load '%s': %s.", ResourcesZipName, zip_error(zip));
 	
 	// Copy handles so each thread gets it's own error handles and whatnot.
@@ -384,22 +416,22 @@ u64 DriftNextPOT(u64 n){
 	return n + 1;
 }
 
-uint DriftFindFirstBit(u64 bits){
-	uint idx = 0, shift = 32;
-	u64 mask = 0xFFFFFFFF;
+// uint DriftFindFirstBit(u64 bits){
+// 	uint idx = 0, shift = 32;
+// 	u64 mask = 0xFFFFFFFF;
 
-	while((bits & 1) == 0){
-		if((bits & mask) == 0){
-			bits >>= shift;
-			idx += shift;
-		}
+// 	while((bits & 1) == 0){
+// 		if((bits & mask) == 0){
+// 			bits >>= shift;
+// 			idx += shift;
+// 		}
 		
-		shift >>= 1;
-		mask >>= shift;
-	}
+// 		shift >>= 1;
+// 		mask >>= shift;
+// 	}
 
-	return idx;
-}
+// 	return idx;
+// }
 
 uint DriftLog2Ceil(u64 n){
 	n -= 1;
@@ -430,6 +462,18 @@ u64 DriftTimeNanos(void){
 	#error Unhandled platform
 	return 0;
 #endif
+}
+
+bool DriftSelectWeight(DriftSelectionContext* ctx, u64 weight){
+	ctx->sum += weight;
+	ctx->rand *= ctx->sum;
+	if(ctx->rand <= weight*RAND_MAX){
+		ctx->rand /= weight;
+		return true;
+	} else {
+		ctx->rand = (ctx->rand - weight*RAND_MAX)/(ctx->sum - weight);
+		return false;
+	}
 }
 
 #if DRIFT_DEBUG

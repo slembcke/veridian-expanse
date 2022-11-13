@@ -7,18 +7,18 @@
 #define DRIFT_GFX_RENDER_TARGET_COUNT 6
 
 typedef enum {
-	_DRIFT_TYPE_NONE,
-	DRIFT_TYPE_U8,
-	DRIFT_TYPE_U8_2,
-	DRIFT_TYPE_U8_4,
-	DRIFT_TYPE_U16,
-	DRIFT_TYPE_UNORM8_2,
-	DRIFT_TYPE_UNORM8_4,
-	DRIFT_TYPE_FLOAT32,
-	DRIFT_TYPE_FLOAT32_2,
-	DRIFT_TYPE_FLOAT32_3,
-	DRIFT_TYPE_FLOAT32_4,
-	_DRIFT_TYPE_COUNT,
+	_DRIFT_GFX_TYPE_NONE,
+	DRIFT_GFX_TYPE_U8,
+	DRIFT_GFX_TYPE_U8_2,
+	DRIFT_GFX_TYPE_U8_4,
+	DRIFT_GFX_TYPE_U16,
+	DRIFT_GFX_TYPE_UNORM8_2,
+	DRIFT_GFX_TYPE_UNORM8_4,
+	DRIFT_GFX_TYPE_FLOAT32,
+	DRIFT_GFX_TYPE_FLOAT32_2,
+	DRIFT_GFX_TYPE_FLOAT32_3,
+	DRIFT_GFX_TYPE_FLOAT32_4,
+	_DRIFT_GFX_TYPE_COUNT,
 } DriftGfxType;
 
 typedef enum {
@@ -33,6 +33,7 @@ typedef enum {
 	DRIFT_GFX_BLEND_FACTOR_DST_ALPHA,
 	DRIFT_GFX_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,
 	DRIFT_GFX_BLEND_FACTOR_SRC_ALPHA_SATURATE,
+	DRIFT_GFX_BLEND_FACTOR_CONSTANT_COLOR,
 	_DRIFT_GFX_BLEND_FACTOR_COUNT,
 } DriftGfxBlendFactor;
 
@@ -46,18 +47,14 @@ typedef enum {
 } DriftGfxBlendOp;
 
 typedef enum {
-	DRIFT_GFX_TEXTURE_TYPE_2D,
-	DRIFT_GFX_TEXTURE_TYPE_2D_ARRAY,
-	_DRIFT_GFX_TEXTURE_TYPE_COUNT,
+	DRIFT_GFX_TEXTURE_2D,
+	DRIFT_GFX_TEXTURE_2D_ARRAY,
+	_DRIFT_GFX_TEXTURE_COUNT,
 } DriftGfxTextureType;
 
 typedef enum {
-	DRIFT_GFX_TEXTURE_FORMAT_SRGBA8,
-	DRIFT_GFX_TEXTURE_FORMAT_R8,
-	DRIFT_GFX_TEXTURE_FORMAT_RG8,
 	DRIFT_GFX_TEXTURE_FORMAT_RGBA8,
 	DRIFT_GFX_TEXTURE_FORMAT_RGBA16F,
-	DRIFT_GFX_TEXTURE_FORMAT_R8U,
 	_DRIFT_GFX_TEXTURE_FORMAT_COUNT,
 } DriftGfxTextureFormat;
 
@@ -143,6 +140,7 @@ typedef struct DriftGfxBlendMode {
 	DriftGfxBlendOp color_op, alpha_op;
 	DriftGfxBlendFactor color_src_factor, color_dst_factor;
 	DriftGfxBlendFactor alpha_src_factor, alpha_dst_factor;
+	bool enable_blend_color;
 } DriftGfxBlendMode;
 
 extern DriftGfxBlendMode DriftGfxBlendModeAlpha;
@@ -167,6 +165,7 @@ typedef struct {
 	DriftGfxBufferBinding uniforms[DRIFT_GFX_UNIFORM_BINDING_COUNT];
 	DriftGfxSampler const* samplers[DRIFT_GFX_SAMPLER_BINDING_COUNT];
 	DriftGfxTexture const* textures[DRIFT_GFX_TEXTURE_BINDING_COUNT];
+	DriftVec4 blend_color;
 } DriftGfxPipelineBindings;
 
 typedef struct {
@@ -189,7 +188,7 @@ DriftVec2 DriftGfxRendererDefaultExtent(DriftGfxRenderer* renderer);
 
 DriftGfxBufferSlice DriftGfxRendererPushGeometry(DriftGfxRenderer* renderer, const void* ptr, size_t length);
 DriftGfxBufferSlice DriftGfxRendererPushIndexes(DriftGfxRenderer* renderer, const void* ptr, size_t length);
-DriftGfxBufferSlice DriftGfxRendererPushUniforms(DriftGfxRenderer* renderer, void* ptr, size_t size);
+DriftGfxBufferSlice DriftGfxRendererPushUniforms(DriftGfxRenderer* renderer, const void* ptr, size_t size);
 
 void DriftGfxRendererPushBindTargetCommand(DriftGfxRenderer* renderer, 	DriftGfxRenderTarget* rt, DriftVec4 clear_color);
 // Push DRIFT_AABB2_ALL to disable scissor.

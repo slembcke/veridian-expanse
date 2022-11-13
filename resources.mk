@@ -1,18 +1,22 @@
+.SECONDEXPANSION:
+
 wildcard_strip = $(patsubst $(1)/%,%,$(wildcard $(1)/$(2)))
 RESOURCES = $(VPATH)/resources
 
 ATLAS = \
 	resources/gfx/ATLAS_INPUT.ase \
 	resources/gfx/ATLAS_LIGHTS.ase \
-	resources/gfx/ATLAS_PLAYER.ase \
-	resources/gfx/ATLAS_PLAYER_FX.ase \
-	resources/gfx/ATLAS_TEXT.ase \
+	resources/gfx/ATLAS_MISC.ase \
+	resources/gfx/ATLAS_MISC_FX.ase \
+	resources/gfx/ATLAS_UI.ase \
 	resources/gfx/ATLAS_BG_LIGHT.ase \
 	resources/gfx/ATLAS_BG_LIGHT_FX.ase \
 	resources/gfx/ATLAS_BG_RADIO.ase \
 	resources/gfx/ATLAS_BG_RADIO_FX.ase \
 	resources/gfx/ATLAS_BG_CRYO.ase \
 	resources/gfx/ATLAS_BG_CRYO_FX.ase \
+	resources/gfx/ATLAS_BG_DARK.ase \
+	resources/gfx/ATLAS_BG_DARK_FX.ase \
 
 ART_ASE = \
 	$(subst $(VPATH),resources,$(wildcard $(VPATH)/art/*.ase)) \
@@ -22,9 +26,9 @@ SHADER_INCLUDES = \
 	shaders/lighting.hlsl \
 
 SHADERS = \
-	resources/shaders/present.hlsl \
 	resources/shaders/primitive.hlsl \
 	resources/shaders/terrain.hlsl \
+	resources/shaders/terrain_map.hlsl \
 	resources/shaders/sprite.hlsl \
 	resources/shaders/overlay_sprite.hlsl \
 	resources/shaders/light0.hlsl \
@@ -39,21 +43,29 @@ SHADERS = \
 	resources/shaders/debug_lightfield.hlsl \
 	resources/shaders/debug_terrain.hlsl \
 	resources/shaders/debug_delta.hlsl \
+	resources/shaders/resolve.hlsl \
+	resources/shaders/pause_blit.hlsl \
+	resources/shaders/map_blit.hlsl \
+	resources/shaders/present.hlsl \
+
+SCANS = $(subst $(VPATH),resources,$(wildcard $(VPATH)/gfx/scans/*.png))
 
 FILES = \
+	$(SCANS:.png=.qoi) \
 	$(subst $(VPATH),resources,$(wildcard $(VPATH)/bin/*.bin)) \
+	$(subst $(VPATH),resources,$(wildcard $(VPATH)/bin/*.txt)) \
 	$(subst $(VPATH),resources,$(wildcard $(VPATH)/sfx/*.ogg)) \
 	$(subst $(VPATH),resources,$(wildcard $(VPATH)/music/*.ogg)) \
 	$(SHADERS:%.hlsl=%.vert.spv) $(SHADERS:%.hlsl=%.frag.spv) \
 	$(SHADERS:%.hlsl=%.vert) $(SHADERS:%.hlsl=%.frag) \
+	resources/gfx/cursor.qoi \
 
 drift-game-assets: resources.zip
-
-.SECONDEXPANSION:
-.PHONY: clean drift-game-assets
+.PHONY: drift-game-assets
 
 clean:
 	-rm -r *.o resources resources.zip qoiconv packer atlas
+.PHONY: clean
 
 resources.zip: $(FILES) $(ATLAS:%.ase=%.qoi) atlas
 	cd resources && zip -qr $(ZIP_FLAGS) ../resources.zip $(FILES:resources/%=%) gfx/*.qoi
@@ -61,6 +73,11 @@ resources.zip: $(FILES) $(ATLAS:%.ase=%.qoi) atlas
 %/.dir:
 	"$(CMAKE_COMMAND)" -E make_directory $(@D)
 	"$(CMAKE_COMMAND)" -E touch $@
+.PRECIOUS: %/.dir
+
+resources/gfx/scans%.qoi: gfx/scans%.png qoiconv $$(@D)/.dir
+	pngquant --quality 80 --nofs -f --output $(@:.qoi=.png) $<
+	./qoiconv $(@:.qoi=.png) $@
 
 resources/%: % $$(@D)/.dir
 	"$(CMAKE_COMMAND)" -E copy $< $@
@@ -98,12 +115,12 @@ qoiconv: ext/qoi/qoiconv.c
 	./qoiconv $< $@
 
 resources/%.vert.spv: %.hlsl $(SHADER_INCLUDES) $$(@D)/.dir
-	"$(GLSLANG)" -D -V -S vert -e VShader -o $@ $< > $(NULL)
-	"$(SPIRV_OPT)" -Os $@ -o $@
+	"$(GLSLANG)" -D -V -S vert -e VShader -o $@ $<
+	"$(SPIRV_OPT)" -Oconfig="$(VPATH)/shaders/spirv-opt-gl.cfg" $@ -o $@
 
 resources/%.frag.spv: %.hlsl $(SHADER_INCLUDES) $$(@D)/.dir
-	"$(GLSLANG)" -D -V -S frag -e FShader -o $@ $< > $(NULL)
-	"$(SPIRV_OPT)" -Os $@ -o $@
+	"$(GLSLANG)" -D -V -S frag -e FShader -o $@ $<
+	"$(SPIRV_OPT)" -Oconfig="$(VPATH)/shaders/spirv-opt-gl.cfg" $@ -o $@
 
 %.vert: SPV=$(@:.vert=-gl.vert.spv)
 resources/%.vert $(SPV): %.hlsl $(SHADER_INCLUDES) $$(@D)/.dir

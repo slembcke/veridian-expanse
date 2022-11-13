@@ -14,7 +14,7 @@ typedef struct {
 	DriftSpriteFrame frame;
 	DriftRGBA8 color;
 	DriftAffine matrix;
-	float z, _;
+	float z, shiny;
 } DriftSprite;
 
 typedef struct {
@@ -54,11 +54,12 @@ static inline void DriftLightPush(DriftLight* arr[], bool shadows, uint frame, D
 void DriftGradientMap(u8* pixels, uint image_w, uint image_h, uint layer);
 
 enum {
-	DRIFT_ATLAS_TEXT,
+	DRIFT_ATLAS_UI,
 	DRIFT_ATLAS_INPUT,
 	DRIFT_ATLAS_LIGHTS,
-	DRIFT_ATLAS_PLAYER,
-	DRIFT_ATLAS_PLAYERG,
+	DRIFT_ATLAS_MISC,
+	DRIFT_ATLAS_MISCG,
+	DRIFT_ATLAS_VISIBILITY,
 	DRIFT_ATLAS_BIOME,
 	DRIFT_ATLAS_LIGHT,
 	DRIFT_ATLAS_LIGHTG,
@@ -66,15 +67,21 @@ enum {
 	DRIFT_ATLAS_RADIOG,
 	DRIFT_ATLAS_CRYO,
 	DRIFT_ATLAS_CRYOG,
+	DRIFT_ATLAS_DARK,
+	DRIFT_ATLAS_DARKG,
+	DRIFT_ATLAS_BLUE,
 	DRIFT_ATLAS0,
 	DRIFT_ATLAS0_FX,
 	DRIFT_ATLAS1,
 	DRIFT_ATLAS1_FX,
+	DRIFT_ATLAS_SCAN,
 	_DRIFT_ATLAS_COUNT,
 };
 
 typedef enum {
+	DRIFT_SPRITE_NONE,
 	#include "sprite_enums.inc"
+	DRIFT_SPRITE_SCAN_IMAGE,
 	_DRIFT_SPRITE_COUNT,
 } DriftSpriteEnum;
 

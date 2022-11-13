@@ -13,7 +13,7 @@ struct FragInput {
 };
 
 void VShader(in VertInput IN, out FragInput FRAG){
-	FRAG.position = float4(2*IN.position/DRIFT_PIXEL_EXTENTS - 1, 0, 1);
+	FRAG.position = float4(2*IN.position/DRIFT_RAW_EXTENTS - 1, 0, 1);
 	FRAG.position.y *= -1;
 	
 	FRAG.uv = float3(IN.uv, 0);

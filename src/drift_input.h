@@ -8,13 +8,13 @@ typedef struct DriftInputIcon {
 extern const char* DRIFT_INPUT_ICON_MULTI;
 
 typedef enum {
-	DRIFT_INPUT_SET_TYPE_MOUSE_KEYBOARD,
-	DRIFT_INPUT_SET_TYPE_XBOX,
-	DRIFT_INPUT_SET_TYPE_PLAYSTATION,
-	_DRIFT_INPUT_SET_TYPE_COUNT,
+	DRIFT_INPUT_SET_MOUSE_KEYBOARD,
+	DRIFT_INPUT_SET_XBOX,
+	DRIFT_INPUT_SET_PLAYSTATION,
+	_DRIFT_INPUT_SET_COUNT,
 } DriftInputIconSetType;
 
-extern const DriftInputIcon* DRIFT_INPUT_ICON_SETS[_DRIFT_INPUT_SET_TYPE_COUNT];
+extern const DriftInputIcon* DRIFT_INPUT_ICON_SETS[_DRIFT_INPUT_SET_COUNT];
 
 const DriftInputIcon* DriftInputIconFind(const DriftInputIcon* icons, const char* label);
 
@@ -23,23 +23,24 @@ enum {
 	DRIFT_INPUT_AXIS_MOVE_Y,
 	DRIFT_INPUT_AXIS_LOOK_X,
 	DRIFT_INPUT_AXIS_LOOK_Y,
-	DRIFT_INPUT_AXIS_ACTION1,
-	DRIFT_INPUT_AXIS_ACTION2,
+	DRIFT_INPUT_AXIS_FIRE,
+	DRIFT_INPUT_AXIS_ALT,
 	_DRIFT_INPUT_AXIS_COUNT,
 	
-	DRIFT_INPUT_ACCEPT = 0x0001,
-	DRIFT_INPUT_CANCEL = 0x0002,
-	DRIFT_INPUT_TOGGLE_HEADLIGHT = 0x0004,
-	DRIFT_INPUT_OPEN_UI = 0x0008,
-	DRIFT_INPUT_ACTION1 = 0x0010,
-	DRIFT_INPUT_ACTION2 = 0x0020,
-	DRIFT_INPUT_CARGO_PREV = 0x0040,
-	DRIFT_INPUT_CARGO_NEXT = 0x0080,
-	DRIFT_INPUT_QUICK_SLOT1 = 0x1000,
-	DRIFT_INPUT_QUICK_SLOT2 = 0x2000,
-	DRIFT_INPUT_QUICK_SLOT3 = 0x4000,
-	DRIFT_INPUT_QUICK_SLOT4 = 0x8000,
-	DRIFT_INPUT_QUICK_SLOTS = 0xF000,
+	DRIFT_INPUT_ACCEPT = (1<<0),
+	DRIFT_INPUT_CANCEL = (1<<1),
+	DRIFT_INPUT_PAUSE = (1<<2),
+	DRIFT_INPUT_OPEN_MAP = (1<<3),
+	DRIFT_INPUT_PREV = (1<<4),
+	DRIFT_INPUT_NEXT = (1<<5),
+	
+	DRIFT_INPUT_LIGHT = (1<<6),
+	DRIFT_INPUT_FIRE = (1<<7),
+	DRIFT_INPUT_ALT = (1<<8),
+	DRIFT_INPUT_GRAB = (1<<9),
+	DRIFT_INPUT_SCAN = (1<<10),
+	DRIFT_INPUT_DROP = (1<<11),
+	DRIFT_INPUT_LASER = (1<<12),
 };
 
 enum {
@@ -57,15 +58,12 @@ typedef struct {
 	
 	float _digital_axis[_DRIFT_INPUT_AXIS_COUNT];
 	float _analog_axis[_DRIFT_INPUT_AXIS_COUNT];
-	
-	bool ui_active;
 } DriftPlayerInput;
 
 typedef struct {
 	DriftPlayerInput player;
 	
-	DriftVec2 mouse_pos_clip, mouse_pos;
-	DriftVec2 mouse_rel_clip, mouse_rel;
+	DriftVec2 mouse_pos_clip, mouse_pos_world, mouse_rel;
 	bool mouse_up[_DRIFT_MOUSE_COUNT], mouse_down[_DRIFT_MOUSE_COUNT], mouse_state[_DRIFT_MOUSE_COUNT];
 	float mouse_wheel;
 	
@@ -85,11 +83,11 @@ static inline DriftVec2 DriftInputJoystick(DriftPlayerInput* player, uint x, uin
 	DriftVec2 v = {player->axes[x], -player->axes[y]};
 	float len = DriftVec2Length(v);
 	// TODO hardcoded deadzone
-	return (len < 0.25f ? DRIFT_VEC2_ZERO : (len < 1 ? v : DriftVec2Mul(v, 1/len)));
+	return (len < 0.15f ? DRIFT_VEC2_ZERO : (len < 1 ? v : DriftVec2Mul(v, 1/len)));
 }
 
 typedef struct DriftGameContext DriftGameContext;
 typedef struct DriftNuklear DriftNuklear;
+typedef struct mu_Context mu_Context;
 
-// TODO this one's a real mouthful.
-void DriftInputEventsPoll(DriftApp* app, DriftGameContext* ctx, tina_job* job, DriftNuklear* nk, DriftAffine vp_inverse);
+void DriftInputEventsPoll(DriftGameContext* ctx, DriftAffine vp_inverse);

@@ -3,6 +3,9 @@
 #include <string.h>
 #include <stdio.h>
 
+#define LIFFT_IMPLEMENTATION
+#define LIFFT_FLOAT_TYPE float
+#include "lifft/lifft.h"
 #include "tracy/TracyC.h"
 
 #include "drift_game.h"
@@ -14,47 +17,84 @@ static inline uint tile_index(DriftTerrain* terra, DriftTerrainTileCoord coord){
 	if(coord.x < max && coord.y < max){
 		return mip_base(coord.level) + coord.x + coord.y*(DRIFT_TERRAIN_TILEMAP_SIZE >> coord.level);
 	} else {
-		return UINT_MAX;
+		return 0;
 	}
 }
+
+static const float Q_VALUES[64] = {9704.0, 2198.0, 2237.0, 1883.0, 1796.0, 1241.0, 1124.0, 817.0, 657.0, 599.0, 522.0, 456.0, 501.0, 539.0, 498.0, 695.0, 501.0, 529.0, 491.0, 595.0, 565.0, 588.0, 623.0, 844.0, 844.0, 908.0, 867.0, 929.0, 992.0, 1290.0, 1430.0, 1374.0, 1262.0, 1269.0, 1136.0, 1258.0, 1019.0, 1213.0, 1046.0, 857.0, 897.0, 972.0, 889.0, 789.0, 753.0, 863.0, 900.0, 827.0, 623.0, 702.0, 707.0, 656.0, 624.0, 724.0, 653.0, 744.0, 585.0, 656.0, 659.0, 622.0, 960.0, 777.0, 697.0};
 
 static void encode_tile(tina_job* job){
 	DriftTerrainDensity* density_base = tina_job_get_description(job)->user_data;
 	uint idx = tina_job_get_description(job)->user_idx;
+	uint tx = idx % DRIFT_TERRAIN_TILEMAP_SIZE, ty = idx / DRIFT_TERRAIN_TILEMAP_SIZE;
 	
 	u8* samples = density_base[idx].samples;
-	for(uint i = DRIFT_TERRAIN_TILE_SIZE_SQ - 1; i > DRIFT_TERRAIN_TILE_SIZE; i--){
-		int a = samples[i - 1*DRIFT_TERRAIN_TILE_SIZE - 1];
-		int b = samples[i - 1*DRIFT_TERRAIN_TILE_SIZE - 0];
-		int c = samples[i - 0*DRIFT_TERRAIN_TILE_SIZE - 1];
-		samples[i] -= c + b - a;
-		samples[i] ^= 0x80;
+	float values[DRIFT_TERRAIN_TILE_SIZE_SQ];
+	for(uint i = 0; i < DRIFT_TERRAIN_TILE_SIZE_SQ; i++) values[i] = samples[i];
+	LIFFT_APPLY_2D(lifft_forward_dct, values, values, DRIFT_TERRAIN_TILE_SIZE);
+	
+	for(uint i = 0; i < DRIFT_TERRAIN_TILE_SIZE_SQ; i++){
+		uint x = i % DRIFT_TERRAIN_TILE_SIZE, y = i / DRIFT_TERRAIN_TILE_SIZE;
+		float q = Q_VALUES[x + y];
+		float quant = roundf(values[i]/q);
+		DRIFT_ASSERT(quant == (s8)quant, "Value out of range (%d %d)[%d, %d] -> %f / %f", tx, ty, x, y, values[i], q);
+		samples[i] = (s8)quant;
 	}
 }
 
-static void decode_tile(tina_job* job){
-	DriftTerrainDensity* density_base = tina_job_get_description(job)->user_data;
-	uint idx = tina_job_get_description(job)->user_idx;
+#define CHUNK_SPLITS 16
+static DriftTerrainDensity BASE_TERRAIN[DRIFT_TERRAIN_TILEMAP_SIZE_SQ];
+static tina_group BASE_TERRAIN_GROUP = {};
+
+static void decode_tiles(tina_job* job){
+	TracyCZoneN(ZONE_DECODE, "Decode Tiles", true);
+	DriftTerrainDensity* density_dst = tina_job_get_description(job)->user_data;
+	uint idx0 = tina_job_get_description(job)->user_idx;
 	
-	u8* samples = density_base[idx].samples;
-	for(uint i = DRIFT_TERRAIN_TILE_SIZE + 1; i < DRIFT_TERRAIN_TILE_SIZE_SQ; i++){
-		int a = samples[i - 1*DRIFT_TERRAIN_TILE_SIZE - 1];
-		int b = samples[i - 1*DRIFT_TERRAIN_TILE_SIZE - 0];
-		int c = samples[i - 0*DRIFT_TERRAIN_TILE_SIZE - 1];
-		samples[i] ^= 0x80;
-		samples[i] += c + b - a;
+	uint batch_size = DRIFT_TERRAIN_TILEMAP_SIZE_SQ/DRIFT_TERRAIN_FILE_CHUNKS/CHUNK_SPLITS;
+	for(uint i = 0; i < batch_size; i++){
+		uint idx = idx0*batch_size + i;
+		uint tx = idx % DRIFT_TERRAIN_TILEMAP_SIZE, ty = idx / DRIFT_TERRAIN_TILEMAP_SIZE;
+		
+		TracyCZoneN(ZONE_QUANT, "Quant", true);
+		u8* samples = density_dst[idx].samples;
+		float values[DRIFT_TERRAIN_TILE_SIZE_SQ];
+		for(uint i = 0; i < DRIFT_TERRAIN_TILE_SIZE_SQ; i++){
+			uint x = i % DRIFT_TERRAIN_TILE_SIZE, y = i / DRIFT_TERRAIN_TILE_SIZE;
+			float q = Q_VALUES[x + y];
+			values[i] = (s8)samples[i]*q;
+		}
+		TracyCZoneEnd(ZONE_QUANT);
+		
+		TracyCZoneN(ZONE_DCT, "DCT", true);
+		uint n = DRIFT_TERRAIN_TILE_SIZE;
+		float tmp[n*n];
+		for(uint i = 0; i < n; i++) lifft_inverse_dct(values + i*n, 1, tmp + i, n, n);
+		for(uint i = 0; i < n; i++) lifft_inverse_dct(tmp + i*n, 1, values + i, n, n);
+		TracyCZoneEnd(ZONE_DCT);
+		
+		for(uint i = 0; i < DRIFT_TERRAIN_TILE_SIZE_SQ; i++) samples[i] = (u8)DriftClamp(values[i], 0, 255);
 	}
+	TracyCZoneEnd(ZONE_DECODE);
 }
 
-static void terrain_load(tina_job* job){
+static void load_chunk(tina_job* job){
+	TracyCZoneN(ZONE_LOAD, "Load Terrain", true);
 	uint idx = tina_job_get_description(job)->user_idx;
 	
-	char filename[64];
-	snprintf(filename, sizeof(filename), "bin/terrain%d.bin", idx);
-	const DriftConstData* data = DriftAssetGet(filename);
+	DriftData data = DriftAssetLoad(DriftSystemMem, "bin/terrain%d.bin", idx);
 	
-	void* dst = tina_job_get_description(job)->user_data;
-	memcpy(dst + idx*data->length, data->data, data->length);
+	void* density_base = tina_job_get_description(job)->user_data;
+	void* dst = density_base + idx*data.size;
+	memcpy(dst, data.ptr, data.size);
+	DriftDealloc(DriftSystemMem, data.ptr, data.size);
+	TracyCZoneEnd(ZONE_LOAD);
+	
+	tina_scheduler_enqueue_n(tina_job_get_scheduler(job), decode_tiles, dst, CHUNK_SPLITS, DRIFT_JOB_QUEUE_WORK, &BASE_TERRAIN_GROUP);
+}
+
+void DriftTerrainLoadBase(tina_scheduler* sched){
+	tina_scheduler_enqueue_n(sched, load_chunk, BASE_TERRAIN, DRIFT_TERRAIN_FILE_CHUNKS, DRIFT_JOB_QUEUE_WORK, &BASE_TERRAIN_GROUP);
 }
 
 void DriftTerrainResetCache(DriftTerrain* terra){
@@ -72,6 +112,7 @@ void DriftTerrainResetCache(DriftTerrain* terra){
 }
 
 DriftTerrain* DriftTerrainNew(tina_job* job, bool force_regen){
+	TracyCZoneN(ZONE_TERRAIN, "Terrain New", true);
 	DriftTerrain* terra = DriftAlloc(DriftSystemMem, sizeof(*terra));
 	memset(terra, 0, sizeof(*terra));
 	
@@ -94,16 +135,19 @@ DriftTerrain* DriftTerrainNew(tina_job* job, bool force_regen){
 		}
 	}
 	
-	// TODO
-	memset(terra->tilemap.density, 0xFF, sizeof(terra->tilemap.density));
+	// TODO should load the visibility map instead
+	memset(terra->tilemap.visibility, 0x00, sizeof(terra->tilemap.visibility));
+	terra->visibility_dirty = true;
 	
 	DriftTerrainDensity* density_base = terra->tilemap.density + DRIFT_TERRAIN_MIP0;
-	DriftThrottledParallelFor(job, "JobTerrainLoad", terrain_load, density_base, DRIFT_TERRAIN_FILE_SPLITS);
-	DriftThrottledParallelFor(job, "JobDecodeTile", decode_tile, density_base, DRIFT_TERRAIN_TILEMAP_SIZE_SQ);
+	tina_job_wait(job, &BASE_TERRAIN_GROUP, 0);
+	memcpy(density_base, BASE_TERRAIN, sizeof(BASE_TERRAIN));
 	DriftTerrainResetCache(terra);
 	
-	const DriftConstData* data = DriftAssetGet("bin/biome.bin");
-	memcpy(terra->tilemap.biome, data->data, data->length);
+	DriftData data = DriftAssetLoad(DriftSystemMem, "bin/biome.bin");
+	memcpy(terra->tilemap.biome, data.ptr, data.size);
+	DriftDealloc(DriftSystemMem, (void*)data.ptr, data.size);
+	TracyCZoneEnd(ZONE_TERRAIN);
 	
 	return terra;
 }
@@ -136,7 +180,7 @@ static void gather_tile_row(DriftTerrain* terra, uint idx0, uint idx1, uint offs
 // C D
 // A B
 
-static void gather_tile_texels(DriftTerrain* terra, uint idx, u32* density_texels){
+static void gather_tile_density(DriftTerrain* terra, uint idx, u32* density_texel_buffer){
 	u32 row[DRIFT_TERRAIN_TILE_SIZE] = {};
 	DriftTerrainTileCoord coord = terra->tilemap.coord[idx];
 	DriftTerrainDensity* density = terra->tilemap.density;
@@ -152,7 +196,7 @@ static void gather_tile_texels(DriftTerrain* terra, uint idx, u32* density_texel
 		size_t offset = y*DRIFT_TERRAIN_TILE_SIZE;
 		uint idx10 = tile_index(terra, (DriftTerrainTileCoord){coord.x - 1, coord.y - 0, coord.level});
 		gather_tile_row(terra, idx10, idx, offset, row);
-		memcpy(density_texels + offset, row, sizeof(row));
+		memcpy(density_texel_buffer + offset, row, sizeof(row));
 	}
 }
 
@@ -177,20 +221,14 @@ static void gather_sub(DriftTerrain* terra, uint dst_idx, uint x, uint y){
 }
 
 static void gather_mip(DriftTerrain* terra, uint idx){
-	if(terra->tilemap.state[idx] != DRIFT_TERRAIN_TILE_STATE_DIRTY) return;
-	
-	DriftTerrainDensity* density = terra->tilemap.density;
-	u8* dst = density[idx].samples;
-	
-	DriftTerrainTileCoord c = terra->tilemap.coord[idx];
-	DRIFT_ASSERT(c.level > 0, "Cannot gather mips for a level 0 tile.");
-	
-	gather_sub(terra, idx, 0, 0);
-	gather_sub(terra, idx, 1, 0);
-	gather_sub(terra, idx, 0, 1);
-	gather_sub(terra, idx, 1, 1);
-	
-	terra->tilemap.state[idx] = DRIFT_TERRAIN_TILE_STATE_READY;
+	if(terra->tilemap.state[idx] == DRIFT_TERRAIN_TILE_STATE_DIRTY){
+		DRIFT_ASSERT(terra->tilemap.coord[idx].level > 0, "Cannot gather mips for a level 0 tile.");
+		gather_sub(terra, idx, 0, 0);
+		gather_sub(terra, idx, 1, 0);
+		gather_sub(terra, idx, 0, 1);
+		gather_sub(terra, idx, 1, 1);
+		terra->tilemap.state[idx] = DRIFT_TERRAIN_TILE_STATE_READY;
+	}
 }
 
 // TODO Magic number for subpixel bits?
@@ -200,11 +238,17 @@ static inline DriftSegment seg(uint x, uint y, uint x0, uint y0, uint x1, uint y
 	return (DriftSegment){{8*x + x1, 8*y + y1}, {8*x + x0, 8*y + y0}};
 }
 
-static DriftSegment* generate_tile_geometry(u32* density_texels, DriftAffine tile_to_world){
-	u8 threshold = 128;
+static void update_tile_shadows(DriftTerrain* terra, uint tile_idx, u32* gathered_density){
+	// DRIFT_ASSERT(terra->tilemap.state[tile_idx] == DRIFT_TERRAIN_TILE_STATE_READY, "Unexpected tile state for update_tile_shadows()");
 	
+	DriftTerrainTileCoord coord = terra->tilemap.coord[tile_idx];
+	float scale = DRIFT_TERRAIN_TILE_SIZE*DRIFT_TERRAIN_TILE_SCALE;
+	DriftAffine tile_to_map = {1/scale, 0, 0, 1/scale, coord.x, coord.y};
+	DriftAffine tile_to_world = DriftAffineMul(terra->map_to_world, tile_to_map);
+
+	const u8 threshold = 128;
 	// We need '-threshold' at 6 bits of precision, promoted to 4x7 bits.
-	u32 neg_threshold_4x7 = (-threshold/4 & 0x7F)*0x01010101;
+	const u32 neg_threshold_4x7 = (-threshold/4 & 0x7F)*0x01010101;
 	
 	DRIFT_ARRAY(DriftSegment) segments = DRIFT_ARRAY_NEW(DriftSystemMem, 2048, DriftSegment);
 	for(uint y = 0; y < DRIFT_TERRAIN_TILE_SIZE; y++){
@@ -213,7 +257,7 @@ static DriftSegment* generate_tile_geometry(u32* density_texels, DriftAffine til
 		
 		for(uint x = 0; x < DRIFT_TERRAIN_TILE_SIZE; x++){
 			// Grab pre-gathered density values in 0xAABBCCDD order and reduce to 6 bits.
-			u32 density_4x6 = density_texels[x + y*DRIFT_TERRAIN_TILE_SIZE]/4 & 0x3F3F3F3F;
+			u32 density_4x6 = gathered_density[x + y*DRIFT_TERRAIN_TILE_SIZE]/4 & 0x3F3F3F3F;
 			// Subtract the threshold values and mask out sign bits.
 			// 7 bit signed value is big enough to hold a 6 bit difference. Bit 8 is overflow and is discarded.
 			u32 sign_bits = (density_4x6 + neg_threshold_4x7) & 0x40404040;
@@ -261,7 +305,10 @@ static DriftSegment* generate_tile_geometry(u32* density_texels, DriftAffine til
 		seg->b = DriftAffinePoint(tile_to_world, seg->b);
 	}
 	
-	return segments;
+	DriftArrayFree(terra->tilemap.collision[tile_idx].segments);
+	terra->tilemap.collision[tile_idx].segments = segments;
+	terra->tilemap.collision[tile_idx].count = DriftArrayLength(segments);
+	terra->tilemap.state[tile_idx] = DRIFT_TERRAIN_TILE_STATE_SHADOWS;
 }
 
 typedef struct UploadTile {
@@ -274,7 +321,8 @@ typedef struct {
 	DriftDrawShared* draw_shared;
 	const UploadTile* tiles;
 	DriftRGBA8* biome_tex;
-	DriftZoneMem* zone;
+	DriftRGBA8* visibility_tex;
+	DriftMem* mem;
 } UploadTilesContext;
 
 static void upload_tiles(tina_job* job){
@@ -285,13 +333,13 @@ static void upload_tiles(tina_job* job){
 		driver->load_texture_layer(driver, ctx->draw_shared->terrain_tiles, tile->texture_idx, tile->texels);
 	}
 	
-	DriftZoneMemRelease(ctx->zone);
-	
 	if(ctx->biome_tex) driver->load_texture_layer(driver, ctx->draw_shared->atlas_texture, DRIFT_ATLAS_BIOME, ctx->biome_tex);
+	if(ctx->visibility_tex) driver->load_texture_layer(driver, ctx->draw_shared->atlas_texture, DRIFT_ATLAS_VISIBILITY, ctx->visibility_tex);
+	DriftZoneMemRelease(ctx->mem);
 }
 
 // Update a binary heap entry relative to it's parents.
-void update_cache_entry(DriftTerrainCacheEntry* heap, DriftTerrainCacheEntry *entry, DriftTerrainCacheEntry value){
+static void update_cache_entry(DriftTerrainCacheEntry* heap, DriftTerrainCacheEntry *entry, DriftTerrainCacheEntry value){
 	DRIFT_ASSERT(entry - heap < DRIFT_TERRAIN_TILECACHE_SIZE, "Bad cache entry");
 	DRIFT_ASSERT(entry->timestamp <= value.timestamp, "Backwards timestamp");
 	
@@ -322,8 +370,7 @@ static DriftTerrainCacheEntry* least_recently_used(DriftTerrain* terra){
 	}
 }
 
-// TODO Need to split the gather/march code eventually for headless.
-static void mark_and_cache_tile(DriftTerrain* terra, uint idx, UploadTilesContext* upload_ctx){
+static void cache_tile(DriftTerrain* terra, uint idx, UploadTilesContext* upload_ctx){
 	u64 timestamp = terra->timestamp;
 	
 	// Mark the tile as recently used.
@@ -333,27 +380,15 @@ static void mark_and_cache_tile(DriftTerrain* terra, uint idx, UploadTilesContex
 	
 	// Nothing to do if it's already cached.
 	if(state == DRIFT_TERRAIN_TILE_STATE_CACHED) return;
-	
-	// TODO doesn't handle neighbors.
 	if(state == DRIFT_TERRAIN_TILE_STATE_DIRTY) gather_mip(terra, idx);
 	
-	TracyCZoneN(ZONE_GATHER, "Gather", true);
-	UploadTile* upload = DriftZoneMemAlloc(upload_ctx->zone, sizeof(*upload));
-	gather_tile_texels(terra, idx, upload->texels);
+	TracyCZoneN(ZONE_GATHER, "Gather/Shadow", true);
+	UploadTile* upload = DriftAlloc(upload_ctx->mem, sizeof(*upload));
+	gather_tile_density(terra, idx, upload->texels);
+	update_tile_shadows(terra, idx, upload->texels);
 	TracyCZoneEnd(ZONE_GATHER);
 	
-	TracyCZoneN(ZONE_MARCH, "March", true);
-	DriftArrayFree(terra->tilemap.collision[idx].segments);
-	
-	DriftTerrainTileCoord coord = terra->tilemap.coord[idx];
-	DriftAffine tile_to_map = {1.0/256, 0, 0, 1.0/256, coord.x, coord.y};
-	DriftSegment* segments = generate_tile_geometry(upload->texels, DriftAffineMult(terra->map_to_world, tile_to_map));
-	terra->tilemap.collision[idx].segments = segments;
-	terra->tilemap.collision[idx].count = DriftArrayLength(segments);
-	TracyCZoneEnd(ZONE_MARCH);
-	
 	uint texture_idx = terra->tilemap.texture_idx[idx];
-	
 	if(!texture_idx){
 		DriftTerrainCacheEntry* entry = least_recently_used(terra);
 		texture_idx = entry->texture_idx;
@@ -385,64 +420,71 @@ static void mark_and_cache_tile(DriftTerrain* terra, uint idx, UploadTilesContex
 	upload_ctx->tiles = upload;
 }
 
+// TODO Only used in one place, can it be inlined/simplified?
 // Gather indexes of tiles visible given the VP matrix.
-DRIFT_ARRAY(uint) DriftTerrainVisibleTiles(DriftTerrain* terra, DriftDraw* draw){
-	DriftAffine vp = draw->v_matrix;
-	float scale = 2/(sqrtf(vp.a*vp.a + vp.b*vp.b) + sqrtf(vp.c*vp.c + vp.d*vp.d));
-	float mip_level = DriftClamp(log2f(scale) - 3, 0, DRIFT_TERRAIN_TILEMAP_SIZE_LOG);
-	uint level = (uint)roundf(mip_level);
-	// DRIFT_LOG("level: %d", level);
-	
-	
+static DRIFT_ARRAY(uint) DriftTerrainVisibleTiles(DriftTerrain* terra, DriftDraw* draw){
 	DriftAffine vp_inv = draw->vp_inverse;
 	float hw = fabsf(vp_inv.a) + fabsf(vp_inv.c), hh = fabsf(vp_inv.b) + fabsf(vp_inv.d);
 	DriftAABB2 bounds = {vp_inv.x - hw, vp_inv.y - hh, vp_inv.x + hw, vp_inv.y + hh};
 	
+	DriftAffine vp = draw->v_matrix;
+	float scale = 2/(sqrtf(vp.a*vp.a + vp.b*vp.b) + sqrtf(vp.c*vp.c + vp.d*vp.d));
+	float mip_level = DriftClamp(log2f(scale) - 3, 0, DRIFT_TERRAIN_TILEMAP_SIZE_LOG);
 	float q = powf(0.5, roundf(mip_level))/256;
 	bounds.l = (bounds.l + DRIFT_TERRAIN_MAP_SIZE/2)*q; bounds.r = (bounds.r + DRIFT_TERRAIN_MAP_SIZE/2)*q;
 	bounds.b = (bounds.b + DRIFT_TERRAIN_MAP_SIZE/2)*q; bounds.t = (bounds.t + DRIFT_TERRAIN_MAP_SIZE/2)*q;
 	
 	int x0 = (int)floorf(bounds.l), x1 = (int)ceilf(bounds.r);
 	int y0 = (int)floorf(bounds.b), y1 = (int)ceilf(bounds.t);
-	
+	uint level = (uint)roundf(mip_level);
+
 	DRIFT_ARRAY(uint) tile_indexes = DRIFT_ARRAY_NEW(draw->mem, 256, uint);
 	for(int y = y0; y < y1; y++){
 		for(int x = x0; x < x1; x++){
 			uint idx = tile_index(terra, (DriftTerrainTileCoord){x, y, level});
-			if(idx < DRIFT_TERRAIN_TILE_COUNT) DRIFT_ARRAY_PUSH(tile_indexes, idx);
+			if(idx) DRIFT_ARRAY_PUSH(tile_indexes, idx);
 		}
 	}
 	
 	return tile_indexes;
 }
 
+void DriftTerrainUpdateVisibility(DriftTerrain* terra, DriftVec2 pos){
+	DriftRGBA8* visibility = terra->tilemap.visibility;
+	DriftVec2 p = DriftAffinePoint(terra->world_to_map, pos);
+	p.x -= 0.5f, p.y -= 0.5f;
+	float radius = 1.5f;
+	
+	int x0 = (int)floorf(DriftClamp(p.x - radius, 0, DRIFT_TERRAIN_TILEMAP_SIZE)), x1 = (int)ceilf(DriftClamp(p.x + radius, 0, DRIFT_TERRAIN_TILEMAP_SIZE));
+	int y0 = (int)floorf(DriftClamp(p.y - radius, 0, DRIFT_TERRAIN_TILEMAP_SIZE)), y1 = (int)ceilf(DriftClamp(p.y + radius, 0, DRIFT_TERRAIN_TILEMAP_SIZE));
+	for(int y = y0; y < y1; y++){
+		for(int x = x0; x < x1; x++){
+			uint idx = x + y*DRIFT_TERRAIN_TILEMAP_SIZE;
+			u8 value = (u8)(255*DriftSaturate(radius - hypotf(p.x - x, p.y - y)));
+			if(value > visibility[idx].r) visibility[idx] = (DriftRGBA8){value, 0, 0, 0};
+		}
+	}
+	
+	terra->visibility_dirty = true;
+}
+
 // Gather rendering data.
-void DriftTerrainDraw(DriftDraw* draw){
+void DriftTerrainDrawTiles(DriftDraw* draw, bool map_mode){
 	TracyCZoneN(ZONE_TERRAIN, "Terrain", true);
 	DriftTerrain* terra = draw->state->terra;
 	terra->timestamp++;
 	
-	DriftZoneMem* upload_zone = DriftZoneMemAquire(draw->shared->app->zone_heap, "UploadMem");
-	UploadTilesContext* upload_ctx = DriftZoneMemAlloc(upload_zone, sizeof(*upload_ctx));
-	(*upload_ctx) = (UploadTilesContext){.draw_shared = draw->shared, .zone = upload_zone};
+	DriftMem* upload_mem = DriftZoneMemAquire(draw->shared->app->zone_heap, "UploadMem");
+	UploadTilesContext* upload_ctx = DriftAlloc(upload_mem, sizeof(*upload_ctx));
+	(*upload_ctx) = (UploadTilesContext){.draw_shared = draw->shared, .mem = upload_mem};
 	
-	uint* tile_indexes = DriftTerrainVisibleTiles(terra, draw);
-	uint tile_count = DriftArrayLength(tile_indexes);
-	for(uint i = 0; i < tile_count; i++){
-		uint idx = tile_indexes[i];
-		mark_and_cache_tile(terra, idx, upload_ctx);
+	DRIFT_ARRAY(uint) tile_indexes = DriftTerrainVisibleTiles(terra, draw);
+	DRIFT_ARRAY_FOREACH(tile_indexes, idx_ptr){
+		cache_tile(terra, *idx_ptr, upload_ctx);
 		
-		DriftTerrainTileCoord c = terra->tilemap.coord[idx];
-		
-		DriftTerrainChunk chunk = {.x = c.x, .y = c.y, .level = c.level, .texture_idx = terra->tilemap.texture_idx[idx]};
+		DriftTerrainTileCoord c = terra->tilemap.coord[*idx_ptr];
+		DriftTerrainChunk chunk = {.x = c.x, .y = c.y, .level = c.level, .texture_idx = terra->tilemap.texture_idx[*idx_ptr]};
 		DRIFT_ARRAY_PUSH(draw->terrain_chunks, chunk);
-		
-		if(c.level == 0 && DriftArrayLength(draw->shadow_masks) < 16*1024){
-			uint segment_count = terra->tilemap.collision[idx].count;
-			DriftSegment* segments = DRIFT_ARRAY_RANGE(draw->shadow_masks, segment_count);
-			memcpy(segments, terra->tilemap.collision[idx].segments, segment_count*sizeof(*segments));
-			DriftArrayRangeCommit(draw->shadow_masks, segments + segment_count);
-		}
 	}
 	
 	if(terra->biome_dirty){
@@ -450,8 +492,52 @@ void DriftTerrainDraw(DriftDraw* draw){
 		terra->biome_dirty = false;
 	}
 	
-	tina_scheduler_enqueue(draw->shared->app->scheduler, "JobUploadTiles", upload_tiles, upload_ctx, 0, DRIFT_JOB_QUEUE_GFX, NULL);
+	if(terra->visibility_dirty && map_mode){
+		upload_ctx->visibility_tex = terra->tilemap.visibility;
+		terra->visibility_dirty = false;
+	}
+	
+	tina_scheduler_enqueue(draw->shared->app->scheduler, upload_tiles, upload_ctx, 0, DRIFT_JOB_QUEUE_GFX, NULL);
 	TracyCZoneEnd(ZONE_TERRAIN);
+	
+	// DriftAffine vp_inv = draw->vp_inverse;
+	// float hw = fabsf(vp_inv.a) + fabsf(vp_inv.c), hh = fabsf(vp_inv.b) + fabsf(vp_inv.d);
+	// DriftAABB2 bounds = {vp_inv.x - hw, vp_inv.y - hh, vp_inv.x + hw, vp_inv.y + hh};
+	// gather_shadows(draw, terra, bounds);
+}
+
+void DriftTerrainDrawShadows(DriftDraw* draw, DriftTerrain* terra, DriftAABB2 bounds){
+	float half_size = DRIFT_TERRAIN_MAP_SIZE/2;
+	int x0 = (int)floorf((bounds.l + half_size)/256), x1 = (int)ceilf((bounds.r + half_size)/256);
+	int y0 = (int)floorf((bounds.b + half_size)/256), y1 = (int)ceilf((bounds.t + half_size)/256);
+
+	DRIFT_ARRAY(uint) tile_indexes = DRIFT_ARRAY_NEW(draw->mem, 256, uint);
+	for(int y = y0; y < y1; y++){
+		for(int x = x0; x < x1; x++){
+			uint idx = tile_index(terra, (DriftTerrainTileCoord){x, y, 0});
+			if(idx){
+				if(DriftArrayLength(draw->shadow_masks) >= 16*1024){
+					DRIFT_LOG("Ooops, too many shadows!");
+					break;
+				}
+				
+				DriftTerrainTileState state = terra->tilemap.state[idx];
+				DRIFT_ASSERT(state != DRIFT_TERRAIN_TILE_STATE_DIRTY, "Unexpected tile state");
+				if(state < DRIFT_TERRAIN_TILE_STATE_SHADOWS){
+					u32 density[DRIFT_TERRAIN_TILE_SIZE_SQ];
+					gather_tile_density(terra, idx, density);
+					update_tile_shadows(terra, idx, density);
+				}
+				
+				uint segment_count = terra->tilemap.collision[idx].count;
+				DriftSegment* segments = DRIFT_ARRAY_RANGE(draw->shadow_masks, segment_count);
+				memcpy(segments, terra->tilemap.collision[idx].segments, segment_count*sizeof(*segments));
+				DriftArrayRangeCommit(draw->shadow_masks, segments + segment_count);
+			}
+		}
+	}
+	
+	// DRIFT_LOG("shadow count %d", DriftArrayLength(draw->shadow_masks));
 }
 
 typedef struct {
@@ -463,6 +549,9 @@ typedef struct {
 // Gather the index and sample location for a sample coordinate. 
 // TODO derivative too?
 static inline SampleInfo sample_info(DriftTerrain* terra, uint sx, uint sy){
+	if(sx > DRIFT_TERRAIN_MAP_SIZE) sx = 0;
+	if(sy > DRIFT_TERRAIN_MAP_SIZE) sy = 0;
+	
 	uint tile_idx = tile_index(terra, (DriftTerrainTileCoord){sx/DRIFT_TERRAIN_TILE_SIZE, sy/DRIFT_TERRAIN_TILE_SIZE});
 	u8* samples = terra->tilemap.density[tile_idx].samples;
 	
@@ -562,9 +651,7 @@ void DriftTerrainDig(DriftTerrain* terra, DriftVec2 pos, float radius){
 			float value = copysignf(DriftSDFValue(cells0[idx]), values[idx]);
 			*info.sample = DriftSDFEncode(value);
 			
-			// TODO this seems overkill to put in the inner loop!
 			terra->tilemap.state[info.tile_idx] = DRIFT_TERRAIN_TILE_STATE_READY;
-			
 			// Mark parent tiles as dirty.
 			DriftTerrainTileCoord c = terra->tilemap.coord[info.tile_idx];
 			while(c.level < DRIFT_TERRAIN_TILEMAP_SIZE_LOG){
@@ -651,12 +738,14 @@ float DriftTerrainRaymarch2(DriftTerrain* terra, DriftVec2 a, DriftVec2 b, float
 	return 1;
 }
 
-uint DriftTerrainSampleBiome(DriftTerrain* terra, DriftVec2 pos){
+DriftBiomeSample DriftTerrainSampleBiome(DriftTerrain* terra, DriftVec2 pos){
 	DriftRGBA8* biome = terra->tilemap.biome;
 	DriftVec2 p = DriftAffinePoint(terra->world_to_map, pos);
 	p.x -= 0.5f, p.y -= 0.5f;
 	
 	uint ix = (uint)p.x, iy = (uint)p.y;
+	if(ix > DRIFT_TERRAIN_TILEMAP_SIZE) ix = 0;
+	if(iy > DRIFT_TERRAIN_TILEMAP_SIZE) iy = 0;
 	uint idx = ix + DRIFT_TERRAIN_TILEMAP_SIZE*iy;
 	DriftRGBA8 raw[] = {
 		terra->tilemap.biome[idx + 0 + 0*DRIFT_TERRAIN_TILEMAP_SIZE],
@@ -666,23 +755,30 @@ uint DriftTerrainSampleBiome(DriftTerrain* terra, DriftVec2 pos){
 	};
 	
 	DriftVec2 f = {p.x - ix, p.y - iy};
-	float bio[] = {
-		DriftLerp(DriftLerp(raw[0].r, raw[1].r, f.x), DriftLerp(raw[2].r, raw[3].r, f.x), f.y),
-		DriftLerp(DriftLerp(raw[0].g, raw[1].g, f.x), DriftLerp(raw[2].g, raw[3].g, f.x), f.y),
-		DriftLerp(DriftLerp(raw[0].b, raw[1].b, f.x), DriftLerp(raw[2].b, raw[3].b, f.x), f.y),
-		DriftLerp(DriftLerp(raw[0].a, raw[1].a, f.x), DriftLerp(raw[2].a, raw[3].a, f.x), f.y),
-	};
+	DriftBiomeSample bio = {.weights = {
+		DriftLerp(DriftLerp(raw[0].r, raw[1].r, f.x), DriftLerp(raw[2].r, raw[3].r, f.x), f.y)/255.0f,
+		DriftLerp(DriftLerp(raw[0].g, raw[1].g, f.x), DriftLerp(raw[2].g, raw[3].g, f.x), f.y)/255.0f,
+		DriftLerp(DriftLerp(raw[0].b, raw[1].b, f.x), DriftLerp(raw[2].b, raw[3].b, f.x), f.y)/255.0f,
+		DriftLerp(DriftLerp(raw[0].a, raw[1].a, f.x), DriftLerp(raw[2].a, raw[3].a, f.x), f.y)/255.0f,
+	}};
+	bio.weights[4] = fmaxf(0, 1 - bio.weights[0] - bio.weights[1] - bio.weights[2] - bio.weights[3]);
 	
-	if(fmax(bio[0], bio[1]) > fmax(bio[2], bio[3])){
-		return bio[0] > bio[1] ? 0 : 1;
+	if(bio.weights[4] > 0.5){
+		bio.idx = 4;
 	} else {
-		return bio[2] > bio[3] ? 2 : 3;
+		if(fmax(bio.weights[0], bio.weights[1]) > fmax(bio.weights[2], bio.weights[3])){
+			bio.idx = bio.weights[0] > bio.weights[1] ? 0 : 1;
+		} else {
+			bio.idx = bio.weights[2] > bio.weights[3] ? 2 : 3;
+		}
 	}
+	
+	return bio;
 }
 
 // Terrain editing
 
-void clear_tiles(DriftTerrain* terra){
+static void clear_tiles(DriftTerrain* terra){
 	printf("clearing tiles");
 	
 	DriftTerrainDensity* density = terra->tilemap.density + DRIFT_TERRAIN_MIP0;
@@ -751,7 +847,6 @@ void DriftTerrainEdit(DriftTerrain* terra, DriftVec2 pos, float radius, DriftTer
 			
 			*info.sample = DriftSDFEncode(func(value, dist, r, pos, ctx));
 			terra->tilemap.state[info.tile_idx] = DRIFT_TERRAIN_TILE_STATE_READY;
-			
 			DriftTerrainTileCoord c = terra->tilemap.coord[info.tile_idx];
 			while(c.level < DRIFT_TERRAIN_TILEMAP_SIZE_LOG){
 				c = (DriftTerrainTileCoord){c.x/2, c.y/2, c.level + 1};
@@ -761,24 +856,34 @@ void DriftTerrainEdit(DriftTerrain* terra, DriftVec2 pos, float radius, DriftTer
 	}
 }
 
-void DriftBiomeEdit(DriftTerrain* terra, DriftVec2 pos, float radius, DriftRGBA8 value){
+void DriftBiomeEdit(DriftTerrain* terra, DriftVec2 pos, float radius, DriftRGBA8 _value){
 	DriftRGBA8* biome = terra->tilemap.biome;
 	DriftVec2 p = DriftAffinePoint(terra->world_to_map, pos);
 	p.x -= 0.5f, p.y -= 0.5f;
 	radius /= DRIFT_TERRAIN_TILE_SIZE*DRIFT_TERRAIN_TILE_SCALE;
 	
+	float value[5] = {_value.r, _value.g, _value.b, _value.a};
+	value[4] = 255 - value[0] - value[1] - value[2] - value[3];
+	
 	for(uint y = 0; y < DRIFT_TERRAIN_TILEMAP_SIZE; y++){
 		for(uint x = 0; x < DRIFT_TERRAIN_TILEMAP_SIZE; x++){
 			uint idx = x + y*DRIFT_TERRAIN_TILEMAP_SIZE;
-			DriftRGBA8 sample = biome[idx];
-			float dot = (sample.r*value.r + sample.g*value.g + sample.b*value.b + sample.a*value.a)/(255.0f*255.0f);
-			float alpha = DriftSaturate(radius - hypotf(p.x - x, p.y - y));
-			alpha = fmaxf(0, alpha - dot);
-			sample.r = (u8)ceilf(DriftLerp(sample.r, value.r, alpha));
-			sample.g = (u8)ceilf(DriftLerp(sample.g, value.g, alpha));
-			sample.b = (u8)ceilf(DriftLerp(sample.b, value.b, alpha));
-			sample.a = (u8)ceilf(DriftLerp(sample.a, value.a, alpha));
-			biome[idx] = sample;
+			DriftRGBA8 _sample = biome[idx];
+			float sample[5] = {_sample.r, _sample.g, _sample.b, _sample.a};
+			sample[4] = 255 - sample[0] - sample[1] - sample[2] - sample[3];
+			float dot = sample[0]*value[0] + sample[1]*value[1] + sample[2]*value[2] + sample[3]*value[3] + sample[4]*value[4];
+			float alpha = fmaxf(0, DriftSaturate(radius - hypotf(p.x - x, p.y - y) - dot/(255*255)));
+			
+			// Round up when interpolating the values.
+			sample[0] = ceilf(DriftLerp(sample[0], value[0], alpha));
+			sample[1] = ceilf(DriftLerp(sample[1], value[1], alpha));
+			sample[2] = ceilf(DriftLerp(sample[2], value[2], alpha));
+			sample[3] = ceilf(DriftLerp(sample[3], value[3], alpha));
+			sample[4] = ceilf(DriftLerp(sample[4], value[4], alpha));
+			
+			// Renormalize
+			float coef = fminf(1, 2 - (sample[0] + sample[1] + sample[2] + sample[3])/255);
+			biome[idx] = (DriftRGBA8){(u8)(coef*sample[0]), (u8)(coef*sample[1]), (u8)(coef*sample[2]), (u8)(coef*sample[3])};
 		}
 	}
 	
@@ -786,8 +891,8 @@ void DriftBiomeEdit(DriftTerrain* terra, DriftVec2 pos, float radius, DriftRGBA8
 }
 
 void DriftTerrainEditIO(tina_job* job, DriftTerrain* terra, bool save){
-	size_t density_size = DRIFT_TERRAIN_TILEMAP_SIZE_SQ*sizeof(DriftTerrainDensity);
 	DriftTerrainDensity* density = terra->tilemap.density + DRIFT_TERRAIN_MIP0;
+	size_t density_size = DRIFT_TERRAIN_TILEMAP_SIZE_SQ*sizeof(DriftTerrainDensity);
 	
 	{
 		const char* filename = "../bin/biome.bin";
@@ -799,21 +904,16 @@ void DriftTerrainEditIO(tina_job* job, DriftTerrain* terra, bool save){
 		fclose(file);
 	}
 	
-	DriftThrottledParallelFor(job, "JobEncodeTile", encode_tile, density, DRIFT_TERRAIN_TILEMAP_SIZE_SQ);
-	size_t len = density_size/DRIFT_TERRAIN_FILE_SPLITS;
-	for(uint i = 0; i < DRIFT_TERRAIN_FILE_SPLITS; i++){
-		char filename[64];
-		snprintf(filename, sizeof(filename), "../bin/terrain%d.bin", i);
-		
+	{
+		const char* filename = "../bin/terrain.raw";
 		FILE* file = fopen(filename, save ? "wb" : "rb");
 		DRIFT_ASSERT_HARD(file, "Failed to open '%s' for writting.", filename);
-		if(save) fwrite((u8*)density + i*len, 1, len, file); else fread((u8*)density + i*len, 1, len, file);
+		
+		if(save) fwrite(density, density_size, 1, file); else fread(density, density_size, 1, file);
 		fclose(file);
 	}
 	
-	DriftThrottledParallelFor(job, "JobDecodeTile", decode_tile, density, DRIFT_TERRAIN_TILEMAP_SIZE_SQ);
 	DriftTerrainResetCache(terra);
-	
 	DRIFT_LOG(save ? "Saved" : "Loaded");
 }
 
@@ -821,6 +921,7 @@ void DriftTerrainEditIO(tina_job* job, DriftTerrain* terra, bool save){
 #define MAP_SIZE (DRIFT_TERRAIN_TILEMAP_SIZE*DRIFT_TERRAIN_TILE_SIZE)
 
 typedef struct {
+	DriftTerrain* terra;
 	float* values;
 	DriftVec3* cells[2];
 } RectifyContext;
@@ -851,6 +952,9 @@ static void init_job(tina_job* job){
 }
 
 typedef struct {
+	float* progress;
+	float p0, p1;
+	
 	DriftVec3* dst;
 	DriftVec3* src;
 	int r;
@@ -859,25 +963,29 @@ typedef struct {
 static void flood_job(tina_job* job){
 	FloodContext* ctx = tina_job_get_description(job)->user_data;
 	uint i0 = tina_job_get_description(job)->user_idx*ROWS_PER_JOB;
-	if(i0 % 256 == 0){printf("\r  flood(r = %d): %d%%", ctx->r, 100*i0/MAP_SIZE); fflush(stdout);}
-	
 	for(uint i = i0; i < i0 + ROWS_PER_JOB; i += 1) DriftSDFFloodRow(ctx->dst + i, MAP_SIZE, ctx->src + i*MAP_SIZE, MAP_SIZE, ctx->r);
+	
+	*ctx->progress = DriftLerp(ctx->p0, ctx->p1, (float)i0/(float)MAP_SIZE);
 }
 
-void DriftTerrainEditRectify(DriftTerrain* terra, tina_job* job){
-	RectifyContext ctx = {
+static void rectify(tina_job* job){
+	DriftTerrain* terra = tina_job_get_description(job)->user_data;
+	
+	RectifyContext* ctx = DRIFT_COPY(DriftSystemMem, ((RectifyContext){
+		.terra = terra,
 		.values = DriftAlloc(DriftSystemMem, MAP_SIZE*MAP_SIZE*sizeof(float)),
 		.cells[0] = DriftAlloc(DriftSystemMem, MAP_SIZE*MAP_SIZE*sizeof(DriftVec3)),
 		.cells[1] = DriftAlloc(DriftSystemMem, MAP_SIZE*MAP_SIZE*sizeof(DriftVec3)),
-	};
+	}));
 	
-	puts("Rectify");
+	float progress_cursor = terra->rectify_progress = 0;
+	
 	size_t tile_stride = DRIFT_TERRAIN_TILE_SIZE;
 	size_t map_stride = DRIFT_TERRAIN_TILE_SIZE*DRIFT_TERRAIN_TILEMAP_SIZE;
 	for(uint i = 0; i < DRIFT_TERRAIN_TILEMAP_SIZE_SQ; i++){
 		uint x = i % DRIFT_TERRAIN_TILEMAP_SIZE, y = i / DRIFT_TERRAIN_TILEMAP_SIZE;
-		float* dst_origin = ctx.values + x*tile_stride + y*DRIFT_TERRAIN_TILE_SIZE_SQ*DRIFT_TERRAIN_TILEMAP_SIZE;
-		u8* samples = terra->tilemap.density[i + DRIFT_TERRAIN_MIP0].samples;
+		float* dst_origin = ctx->values + x*tile_stride + y*DRIFT_TERRAIN_TILE_SIZE_SQ*DRIFT_TERRAIN_TILEMAP_SIZE;
+		u8* samples = ctx->terra->tilemap.density[i + DRIFT_TERRAIN_MIP0].samples;
 		for(uint y = 0; y < DRIFT_TERRAIN_TILE_SIZE; y++){
 			float* dst = dst_origin + y*map_stride;
 			u8* src = samples + y*tile_stride;
@@ -885,40 +993,77 @@ void DriftTerrainEditRectify(DriftTerrain* terra, tina_job* job){
 		}
 	}
 	
-	puts("  init");
-	DriftThrottledParallelFor(job, "init_job", init_job, &ctx, MAP_SIZE);
+	ctx->terra->rectify_progress = 0.02f;
+	progress_cursor = 0.05f;
+	DriftThrottledParallelFor(job, init_job, ctx, MAP_SIZE);
 	
-	// DriftThrottledParallelFor(job, "flood_job", flood_job, &(FloodContext){.dst = ctx.cells[1], .src = ctx.cells[0], .r = 1}, MAP_SIZE/ROWS_PER_JOB);
-	// puts("");
-	// DriftThrottledParallelFor(job, "flood_job", flood_job, &(FloodContext){.dst = ctx.cells[0], .src = ctx.cells[1], .r = 1}, MAP_SIZE/ROWS_PER_JOB);
-	// puts("");
 	for(uint r = SDF_MAX_DIST/2; r > 0; r >>= 1){
-		DriftThrottledParallelFor(job, "flood_job", flood_job, &(FloodContext){.dst = ctx.cells[1], .src = ctx.cells[0], .r = r}, MAP_SIZE/ROWS_PER_JOB);
-		puts("");
-		DriftThrottledParallelFor(job, "flood_job", flood_job, &(FloodContext){.dst = ctx.cells[0], .src = ctx.cells[1], .r = r}, MAP_SIZE/ROWS_PER_JOB);
-		puts("");
+		FloodContext fctx = {.r = r, .progress = &ctx->terra->rectify_progress};
+		float inc = 0.15f;
+		
+		fctx.p0 = progress_cursor, progress_cursor += inc, fctx.p1 = progress_cursor;
+		fctx.dst = ctx->cells[1], fctx.src = ctx->cells[0];
+		DriftThrottledParallelFor(job, flood_job, &fctx, MAP_SIZE/ROWS_PER_JOB);
+		
+		fctx.p0 = progress_cursor, progress_cursor += inc, fctx.p1 = progress_cursor;
+		fctx.dst = ctx->cells[0], fctx.src = ctx->cells[1];
+		DriftThrottledParallelFor(job, flood_job, &fctx, MAP_SIZE/ROWS_PER_JOB);
 	}
 	
-	puts("  resolve");
-	for(uint i = 0; i < MAP_SIZE*MAP_SIZE; i++) ctx.values[i] = copysignf(DriftSDFValue(ctx.cells[0][i]), ctx.values[i]);
+	ctx->terra->rectify_progress = progress_cursor;
+	for(uint i = 0; i < MAP_SIZE*MAP_SIZE; i++) ctx->values[i] = copysignf(DriftSDFValue(ctx->cells[0][i]), ctx->values[i]);
 	
-	DriftDealloc(DriftSystemMem, ctx.cells[0], 0);
-	DriftDealloc(DriftSystemMem, ctx.cells[1], 0);
+	DriftDealloc(DriftSystemMem, ctx->cells[0], 0);
+	DriftDealloc(DriftSystemMem, ctx->cells[1], 0);
 	
-	puts("  encode");
 	for(uint i = 0; i < DRIFT_TERRAIN_TILEMAP_SIZE_SQ; i++){
 		uint x = i % DRIFT_TERRAIN_TILEMAP_SIZE, y = i / DRIFT_TERRAIN_TILEMAP_SIZE;
-		u8* dst_tile = terra->tilemap.density[i + DRIFT_TERRAIN_MIP0].samples;
-		float* samples = ctx.values + x*tile_stride + y*DRIFT_TERRAIN_TILE_SIZE_SQ*DRIFT_TERRAIN_TILEMAP_SIZE;
+		u8* dst_tile = ctx->terra->tilemap.density[i + DRIFT_TERRAIN_MIP0].samples;
+		float* samples = ctx->values + x*tile_stride + y*DRIFT_TERRAIN_TILE_SIZE_SQ*DRIFT_TERRAIN_TILEMAP_SIZE;
 		for(uint y = 0; y < DRIFT_TERRAIN_TILE_SIZE; y++){
 			u8* dst = dst_tile + y*tile_stride;
 			float* src = samples + y*map_stride;
 			for(uint x = 0; x < DRIFT_TERRAIN_TILE_SIZE; x++) dst[x] = DriftSDFEncode(src[x]);
 		}
 	}
-	DriftDealloc(DriftSystemMem, ctx.values, 0);
+	ctx->terra->rectify_progress = 1;
 	
+	DriftTerrainResetCache(ctx->terra);
+	DriftDealloc(DriftSystemMem, ctx->values, 0);
+	DriftDealloc(DriftSystemMem, ctx, sizeof(*ctx));
+}
+
+void DriftTerrainEditRectify(DriftTerrain* terra, tina_scheduler* sched, tina_group* group){
+	tina_scheduler_enqueue(sched, rectify, terra, 0, DRIFT_JOB_QUEUE_WORK, group);
+}
+
+void DriftTerrainEditEnter(){
+	
+}
+
+void DriftTerrainEditExit(tina_job* job){
+	rectify(job);
+	
+	DriftTerrain* terra = tina_job_get_description(job)->user_data;
+	DriftTerrainDensity* density = terra->tilemap.density + DRIFT_TERRAIN_MIP0;
+	size_t density_size = DRIFT_TERRAIN_TILEMAP_SIZE_SQ*sizeof(DriftTerrainDensity);
+	
+	DriftThrottledParallelFor(job, encode_tile, density, DRIFT_TERRAIN_TILEMAP_SIZE_SQ);
+	size_t len = density_size/DRIFT_TERRAIN_FILE_CHUNKS;
+	for(uint i = 0; i < DRIFT_TERRAIN_FILE_CHUNKS; i++){
+		char filename[64];
+		snprintf(filename, sizeof(filename), "../bin/terrain%d.bin", i);
+		
+		FILE* file = fopen(filename, "wb");
+		DRIFT_ASSERT_HARD(file, "Failed to open '%s' for writting.", filename);
+		fwrite((u8*)density + i*len, 1, len, file);
+		fclose(file);
+	}
+	
+	DriftThrottledParallelFor(job, decode_tiles, density, DRIFT_TERRAIN_FILE_CHUNKS*CHUNK_SPLITS);
 	DriftTerrainResetCache(terra);
+	
+	DRIFT_LOG("Wrote bin/terrain*.bin");
 }
 
 /* TODO

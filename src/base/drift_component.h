@@ -7,7 +7,7 @@ typedef struct DriftComponent {
 	
 	uint count;
 	uint gc_cursor;
-	void (*cleanup)(struct DriftComponent* component, uint idx);
+	// void (*cleanup)(struct DriftComponent* component, uint idx);
 } DriftComponent;
 
 // The first row in the component table is reserved for the entity.

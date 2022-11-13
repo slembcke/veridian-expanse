@@ -14,4 +14,5 @@ set(RESOURCE_MK_COMMANDS
 	GLSLANG=glslangValidator
 	SPIRV_OPT=spirv-opt
 	SPIRV_CROSS=spirv-cross
+	NULL=/dev/null
 )

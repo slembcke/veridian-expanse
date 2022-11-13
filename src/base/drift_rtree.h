@@ -1,4 +1,3 @@
-// TODO use table instead.
 #define RTREE_BRANCH_FACTOR 32
 
 typedef struct {
