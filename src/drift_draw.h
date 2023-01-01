@@ -25,7 +25,7 @@ typedef struct {
 	DriftGfxSampler* repeat_sampler;
 	
 	DriftGfxPipeline* overlay_primitive_pipeline;
-	DriftGfxPipeline* primitive_pipeline;
+	DriftGfxPipeline* linear_primitive_pipeline;
 	DriftGfxPipeline* light_pipeline[2];
 	DriftGfxPipeline* light_blit_pipeline[2];
 	DriftGfxPipeline* shadow_mask_pipeline[2];
@@ -33,6 +33,7 @@ typedef struct {
 	DriftGfxPipeline* terrain_pipeline;
 	DriftGfxPipeline* terrain_map_pipeline;
 	DriftGfxPipeline* sprite_pipeline;
+	DriftGfxPipeline* flash_sprite_pipeline;
 	DriftGfxPipeline* overlay_sprite_pipeline;
 	DriftGfxPipeline* haze_pipeline;
 	DriftGfxPipeline* resolve_pipeline;
@@ -87,7 +88,10 @@ struct DriftDraw {
 	
 	DriftMem* mem;
 	
+	// Current frame and tick count.
 	uint frame, tick;
+	// Current nanoseconds since launch.
+	u64 nanos;
 	// Elapsed time since last frame and tick.
 	float dt, dt_since_tick;
 	// Size of the window/framebuffer in pixels.
@@ -105,6 +109,7 @@ struct DriftDraw {
 	DRIFT_ARRAY(DriftSprite) bg_sprites;
 	DRIFT_ARRAY(DriftPrimitive) bg_prims;
 	DRIFT_ARRAY(DriftSprite) fg_sprites;
+	DRIFT_ARRAY(DriftSprite) flash_sprites;
 	DRIFT_ARRAY(DriftSprite) overlay_sprites;
 	DRIFT_ARRAY(DriftPrimitive) overlay_prims;
 	DRIFT_ARRAY(DriftSprite) hud_sprites;

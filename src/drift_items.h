@@ -85,5 +85,6 @@ void DriftItemDrop(DriftUpdate* update, DriftEntity entity, DriftItemType type);
 
 void DriftTickItemSpawns(DriftUpdate* update);
 void DriftDrawItems(DriftDraw* draw);
+DriftSprite DriftSpriteForItem(DriftItemType type, DriftAffine matrix);
 
 void DriftPowerNodeActivate(DriftGameState* state, DriftEntity e, DriftMem* mem);

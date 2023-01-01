@@ -29,7 +29,7 @@ static void draw_patch9(mu_Context *ctx, mu_Rect rect, int colorid){
 static const mu_Style STYLE = {
 	.font = NULL,
 	.size = {50, 10}, .padding = 2, .spacing = 3, .indent = 10,
-	.title_height = 16, .scrollbar_size = 10, .thumb_size = 8,
+	.scrollbar_size = 10, .thumb_size = 8,
 	.colors = {
 		[MU_COLOR_TITLEBG] = {0xAC, 0x32, 0x32, 0xFF},
 		[MU_COLOR_BORDER] = {0x00, 0x00, 0x00, 0x00},
@@ -46,7 +46,8 @@ static const struct {
 	uint frame;
 	DriftAABB2 border, split;
 } PATCHES[MU_COLOR_MAX] = {
-	[MU_COLOR_WINDOWBG] = {.frame = DRIFT_SPRITE_UI_WINDOW, {3, 10, 10, 3}, {9, 11, 11, 9}},
+	[MU_COLOR_WINDOWBG] = {.frame = DRIFT_SPRITE_UI_WINDOW, {2, 3, 2, 3}, {2, 3, 2, 3}},
+	[MU_COLOR_TITLEBG] = {.frame = DRIFT_SPRITE_UI_TITLE, {4, 0, 4, 0}, {27, 1, 20, 1}},
 	[MU_COLOR_BUTTON] = {.frame = DRIFT_SPRITE_UI_BUTTON, {2, 2, 2, 2}, {5, 5, 4, 4}},
 	[MU_COLOR_BUTTONHOVER] = {.frame = DRIFT_SPRITE_UI_BUTTONHOVER, {2, 2, 2, 2}, {5, 5, 4, 4}},
 	[MU_COLOR_BUTTONFOCUS] = {.frame = DRIFT_SPRITE_UI_BUTTONFOCUS, {2, 2, 2, 2}, {5, 5, 4, 4}},
@@ -64,7 +65,7 @@ static const struct {
 };
 
 static void patch9(DRIFT_ARRAY(DriftSprite)* arr, DriftAABB2 bb, uint patch_id, DriftRGBA8 tint){
-	DriftSpriteFrame frame = DRIFT_SPRITE_FRAMES[PATCHES[patch_id].frame];
+	DriftFrame frame = DRIFT_FRAMES[PATCHES[patch_id].frame];
 	DriftAABB2 border = PATCHES[patch_id].border, split = PATCHES[patch_id].split;
 	
 	u8 fx0 = frame.bounds.l, fx1 = frame.bounds.l + (u8)split.l - 1, fx2 = frame.bounds.r - (u8)split.r + 1, fx3 = frame.bounds.r;
@@ -170,11 +171,11 @@ void DriftUIHandleEvent(mu_Context* mu, SDL_Event* event, float scale){
 		case SDL_MOUSEBUTTONDOWN: if(b) mu_input_mousedown(mu, (int)(event->button.x/scale), (int)(event->button.y/scale), b); break;
 		case SDL_MOUSEBUTTONUP: if(b) mu_input_mouseup(mu, (int)(event->button.x/scale), (int)(event->button.y/scale), b); break;
 
-		case SDL_KEYDOWN: if(c) mu_input_keydown(mu, c); break;
+		case SDL_KEYDOWN: if(!event->key.repeat && c) mu_input_keydown(mu, c); break;
 		case SDL_KEYUP: if(c) mu_input_keyup(mu, c); break;
 		
-		case SDL_CONTROLLERBUTTONDOWN: mu_input_keydown(mu, g); break;
-		case SDL_CONTROLLERBUTTONUP: mu_input_keyup(mu, g); break;
+		case SDL_CONTROLLERBUTTONDOWN: if(g) mu_input_keydown(mu, g); break;
+		case SDL_CONTROLLERBUTTONUP: if(g) mu_input_keyup(mu, g); break;
 	}
 }
 
@@ -225,7 +226,7 @@ void DriftUIPresent(DriftDraw* draw){
 				
 				mu_Rect r = cmd->icon.rect;
 				DRIFT_ARRAY_PUSH(geo, ((DriftSprite){
-					.frame = DRIFT_SPRITE_FRAMES[frame],
+					.frame = DRIFT_FRAMES[frame],
 					.color = DriftRGBA8_from_mu(cmd->icon.color),
 					.matrix = {1, 0, 0, 1, r.x + r.w/2, h - r.y - r.h/2},
 				}));
@@ -289,7 +290,7 @@ static void DriftSettingsPane(DriftDraw* draw, DriftPauseState* pause_state){
 	win->rect = (mu_Rect){(int)(extents.x - win_size.x)/2, (int)(extents.y - win_size.y)/2, win_size.x, win_size.y};
 	
 	float inc = (!!(mu->key_down & MU_KEY_RIGHT) - !!(mu->key_down & MU_KEY_LEFT))/8.0f;
-	if(mu_begin_window_ex(mu, TITLE, win->rect, MU_OPT_NOTITLE)){
+	if(mu_begin_window_ex(mu, TITLE, win->rect, 0)){
 		mu_layout_row(mu, 2, (int[]){-1}, 18);
 		mu_begin_box(mu, MU_COLOR_GROUPBG, 0);
 		mu_layout_row(mu, 2, (int[]){-60, -1}, -1);
@@ -409,7 +410,7 @@ static void DriftPauseMenu(DriftDraw* draw, DriftPauseState* pause_state){
 	mu_Vec2 win_size = {100, 120};
 	win->rect = (mu_Rect){(int)(extents.x - win_size.x)/2, (int)(extents.y - win_size.y)/2, win_size.x, win_size.y};
 	
-	if(mu_begin_window_ex(mu, TITLE, win->rect, MU_OPT_NOTITLE)){
+	if(mu_begin_window_ex(mu, TITLE, win->rect, 0)){
 		mu_layout_row(mu, 1, (int[]){-1}, 20);
 		bool gfocus = false;
 		int button_width[] = {-1};
@@ -449,11 +450,14 @@ void DriftPauseLoop(DriftGameContext* ctx, tina_job* job, DriftAffine vp_matrix)
 	DriftVec2 camera_pos = DriftAffineOrigin(vp_inverse);
 	DriftAffine v_matrix = {1, 0, 0, 1, -camera_pos.x, -camera_pos.y};
 	
+	// Reset escape key event carried over from the previous screen.
+	ctx->mu->key_down = 0;
+	
 	DriftPauseState pause_state = DRIFT_PAUSE_STATE_MENU;
 	while(pause_state && !ctx->input.quit && !ctx->app->shell_restart){
 		float dt = (float)DriftGameContextUpdateNanos(ctx)/1e9f;
 		DriftInputEventsPoll(ctx, vp_inverse);
-		if(DriftInputButtonPress(&ctx->input.player, DRIFT_INPUT_PAUSE)) break;
+		if(pause_state == DRIFT_PAUSE_STATE_MENU && DriftInputButtonPress(&ctx->input.player, DRIFT_INPUT_PAUSE)) break;
 		
 		DriftDraw* draw = DriftDrawBegin(ctx, job, dt, 0, v_matrix, vp_matrix);
 		DriftDrawBindGlobals(draw);

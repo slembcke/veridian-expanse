@@ -193,7 +193,7 @@ static void debug_bb(DriftGameState* state, DriftAABB2 bb, DriftRGBA8 color){
 	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = {bb.r, bb.b}, .p1 = {bb.r, bb.t}, .radii = {1}, .color = color}));
 }
 
-static DriftVec2 light_frame_center(DriftSpriteFrame frame){
+static DriftVec2 light_frame_center(DriftFrame frame){
 	DriftVec2 offset = {(s8)frame.anchor.x, (s8)frame.anchor.y};
 	offset.x = 1 - 2*offset.x/(frame.bounds.r - frame.bounds.l + 1);
 	offset.y = 1 - 2*offset.y/(frame.bounds.t - frame.bounds.b + 1);
@@ -206,7 +206,7 @@ void DriftGameStateRender(DriftDraw* draw){
 	
 	if(draw->ctx->debug.boost_ambient){
 		DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
-			.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0.5f, 0.5f, 0.5f, 0}},
+			.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0.5f, 0.5f, 0.5f, 0}},
 			.matrix = DriftAffineMul(draw->vp_inverse, (DriftAffine){4, 0, 0, 4, 0, 0}),
 		}));
 	}
@@ -230,8 +230,10 @@ void DriftGameStateRender(DriftDraw* draw){
 	// Count shadowed lights and find bounds.
 	uint shadow_count = 0;
 	for(uint i = 0; i < light_count; i++){
-		if(draw->lights[i].shadow_caster){
+		float radius = draw->lights[i].radius;
+		if(radius > 0){
 			DriftAffine light_matrix = draw->lights[i].matrix;
+			// DriftDebugCircle(draw->state, DriftAffineOrigin(light_matrix), radius, (DriftRGBA8){0xFF, 0xFF, 0x00, 0x80});
 			
 			DriftVec2 center = light_frame_center(draw->lights[i].frame);
 			if(DriftAffineVisibility(DriftAffineMul(draw->vp_matrix, light_matrix), center, DRIFT_VEC2_ONE)){
@@ -253,7 +255,7 @@ void DriftGameStateRender(DriftDraw* draw){
 				// debug_bb(draw->state, bb, DRIFT_RGBA8_YELLOW);
 			} else {
 				// Light is not visible, clear it's shadow flag.
-				draw->lights[i].shadow_caster = false;
+				draw->lights[i].radius = 0;
 			}
 		}
 	}
@@ -269,7 +271,7 @@ void DriftGameStateRender(DriftDraw* draw){
 	DriftAffine shadowfield_matrix = DriftAffineMul(DriftAffineInverse(shadowfield_ortho), draw->vp_matrix);
 	
 	for(uint i = 0, j = 0; i < light_count; i++){
-		if(draw->lights[i].shadow_caster){
+		if(draw->lights[i].radius > 0){
 			DriftAffine light_matrix = draw->lights[i].matrix;
 			
 			struct {
@@ -348,7 +350,7 @@ void DriftGameStateRender(DriftDraw* draw){
 	DriftDrawBatches(draw, (DriftDrawBatch[]){
 		terrain_batch,
 		{.arr = draw->bg_sprites, .pipeline = draw_shared->sprite_pipeline, .bindings = &draw->default_bindings},
-		{.arr = draw->bg_prims, .pipeline = draw_shared->primitive_pipeline, .bindings = &draw->default_bindings},
+		{.arr = draw->bg_prims, .pipeline = draw_shared->linear_primitive_pipeline, .bindings = &draw->default_bindings},
 		{.arr = draw->fg_sprites, .pipeline = draw_shared->sprite_pipeline, .bindings = &draw->default_bindings},
 		{},
 	});
@@ -396,6 +398,7 @@ void DriftGameStateRender(DriftDraw* draw){
 	DriftDrawBatches(draw, (DriftDrawBatch[]){
 		{.arr = draw->state->debug.prims, .pipeline = draw_shared->overlay_primitive_pipeline, .bindings = &draw->default_bindings},
 		{.arr = draw->state->debug.sprites, .pipeline = draw_shared->overlay_sprite_pipeline, .bindings = &draw->default_bindings},
+		{.arr = draw->flash_sprites, .pipeline = draw_shared->flash_sprite_pipeline, .bindings = &draw->default_bindings},
 		{.arr = draw->overlay_sprites, .pipeline = draw_shared->overlay_sprite_pipeline, .bindings = &draw->default_bindings},
 		{.arr = draw->overlay_prims, .pipeline = draw_shared->overlay_primitive_pipeline, .bindings = &draw->default_bindings},
 		{.arr = draw->hud_sprites, .pipeline = draw_shared->overlay_sprite_pipeline, .bindings = &hud_bindings},
@@ -467,12 +470,12 @@ static void DriftGameStateCleanup(DriftUpdate* update){
 	}
 }
 
-static float toast_alpha(uint current_tick, DriftToast* toast){
-	return 1 - DriftSaturate((current_tick - toast->timestamp)/DRIFT_TICK_HZ - 4);
+static float toast_alpha(u64 current_nanos, DriftToast* toast){
+	return 1 - DriftSaturate((current_nanos - toast->timestamp)*1e-9f - 4);
 }
 
 void DriftContextPushToast(DriftGameContext* ctx, const char* format, ...){
-	DriftToast toast = {.timestamp = ctx->current_tick, .count = 1};
+	DriftToast toast = {.timestamp = ctx->update_nanos, .count = 1};
 	
 	va_list arg;
 	va_start(arg, format);
@@ -497,7 +500,7 @@ void DriftContextPushToast(DriftGameContext* ctx, const char* format, ...){
 	push_up:
 	for(; i; i--) ctx->toasts[i] = ctx->toasts[i - 1];
 	ctx->toasts[0] = toast;
-} 
+}
 
 static void draw_hud(DriftDraw* draw){
 	TracyCZoneN(ZONE_HUD, "HUD", true);
@@ -547,7 +550,7 @@ static void draw_hud(DriftDraw* draw){
 	}
 	
 	DriftVec2 info_cursor = {screen_size.x/2, screen_size.y/3};
-	float info_flash = (fmodf(draw->tick/DRIFT_TICK_HZ, 1) < 0.9f ? 1 : 0.25);
+	float info_flash = (DriftWaveSaw(draw->nanos, 1) < 0.9f ? 1 : 0.25);
 	
 	if(player->energy == 0){
 		const char* text = "THRUSTER POWER ONLY";
@@ -585,7 +588,7 @@ static void draw_hud(DriftDraw* draw){
 	DriftVec2 toast_cursor = {15, draw->internal_extent.y/3};
 	for(uint i = 0; i < DRIFT_MAX_TOASTS; i++){
 		DriftToast* toast = ctx->toasts + i;
-		float alpha = toast_alpha(draw->tick, toast);
+		float alpha = toast_alpha(draw->nanos, toast);
 		if(alpha > 0){
 			DriftVec4 fade = {{alpha, alpha, alpha, alpha}};
 			const char* message = toast->message;
@@ -613,10 +616,10 @@ static void draw_hud(DriftDraw* draw){
 			}
 		}
 		
-		float anim = DriftSaturate((draw->tick - player->power_timestamp)/(0.15f*DRIFT_TICK_HZ));
+		float anim = DriftSaturate((draw->tick - player->power_tick0)/0.15e9f);
 		DriftVec4 color = {{0, anim, anim, anim}};
 		DriftRGBA8 color8 = DriftRGBA8FromColor(color);
-		float wobble = 4*fabsf(sinf(draw->tick/15.0f)), r = 8 + wobble;
+		float wobble = 4*fabsf(DriftWaveComplex(draw->nanos, 1).x), r = 8 + wobble;
 		DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = nearest_pos, .p1 = nearest_pos, .radii = {r, r - 1}, .color = color8}));
 		
 		DriftVec2 dir = DriftVec2Normalize(DriftVec2Sub(nearest_pos, player_pos));
@@ -740,15 +743,16 @@ void DriftGameContextLoop(tina_job* job){
 		
 		TracyCZoneN(INPUT_ZONE, "Input", true);
 		DriftInputEventsPoll(ctx, DriftAffineInverse(prev_vp_matrix));
+		if(DriftInputButtonPress(&ctx->input.player, DRIFT_INPUT_PAUSE)) DriftPauseLoop(ctx, job, prev_vp_matrix);	
 		if(DriftInputButtonPress(&ctx->input.player, DRIFT_INPUT_OPEN_MAP)) DriftGameContextMapLoop(ctx, job, prev_vp_matrix, DRIFT_UI_STATE_NONE, 0);
-		if(DriftInputButtonPress(&ctx->input.player, DRIFT_INPUT_PAUSE)) DriftPauseLoop(ctx, job, prev_vp_matrix);
 		TracyCZoneEnd(INPUT_ZONE);
 		
 		DriftUpdate update = {
 			.ctx = ctx, .job = job, .state = state, .audio = app->audio,
 			.scheduler = app->scheduler, .mem = DriftZoneMemAquire(app->zone_heap, "UpdateMem"),
-			.frame = ctx->current_frame, .tick = ctx->current_tick,
-			.dt = update_nanos/1e9f, .tick_dt = 1/DRIFT_TICK_HZ, .prev_vp_matrix = prev_vp_matrix,
+			.frame = ctx->current_frame, .tick = ctx->current_tick, .nanos = update_nanos,
+			.dt = update_nanos/1e9f, .tick_dt = 1/DRIFT_TICK_HZ,
+			.prev_vp_matrix = prev_vp_matrix,
 		};
 		update._dead_entities = DRIFT_ARRAY_NEW(update.mem, 256, DriftEntity);
 		
@@ -770,6 +774,7 @@ void DriftGameContextLoop(tina_job* job){
 		u64 tick_dt_nanos = (u64)(1e9f/DRIFT_TICK_HZ);
 		while(ctx->tick_nanos < ctx->update_nanos){
 			update.tick = ctx->current_tick = ctx->_tick_counter;
+			update.nanos = ctx->tick_nanos;
 			
 			TracyCZoneN(ZONE_TICK, "Tick", true);
 			DriftSystemsTick(&update);
@@ -854,15 +859,9 @@ void DriftGameContextLoop(tina_job* job){
 				}
 			}
 			
-			DriftAffine t = {1, 0, 0, 1, roundf(draw->virtual_extent.x) - 64, 16};
-			char short_sha[6] = {};
-			for(uint i = 0; i < 5; i++){
-				uint c = DRIFT_GIT_SHA[i];
-				if(c - (uint)'a' <= 'f' - 'a') c += 'A' - 'a';
-				short_sha[i] = c;
-			}
+			DriftAffine t = {1, 0, 0, 1, roundf(draw->virtual_extent.x) - 10*8, 8};
 			DriftDrawTextF(draw, &draw->hud_sprites, t, DRIFT_VEC4_WHITE,"{#80808080}DEV {#40408080}%s",
-				/*DRIFT_VERSION_MAJOR, DRIFT_VERSION_MINOR,*/ short_sha
+				/*DRIFT_VERSION_MAJOR, DRIFT_VERSION_MINOR,*/ DRIFT_GIT_SHORT_SHA
 			);
 		}
 		

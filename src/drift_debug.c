@@ -450,6 +450,7 @@ void DriftDebugUI(DriftUpdate* _update, DriftDraw* _draw){
 					DriftEntity e = STATE->transforms.entity[idx];
 					DriftAffine t = STATE->transforms.matrix[idx];
 					DriftVec2 p = DriftAffineOrigin(t);
+					if(!DriftAffineVisibility(DRAW->vp_matrix, p, DRIFT_VEC2_ZERO)) continue;
 					DriftDrawTextF(DRAW, &STATE->debug.sprites, (DriftAffine){1, 0, 0, 1, p.x, p.y - 4}, DRIFT_VEC4_WHITE, " "DRIFT_ENTITY_FORMAT, e.id);
 					
 					DriftDebugSegment(STATE, p, (DriftVec2){p.x + 12*t.a, p.y + 12*t.b}, 1, DRIFT_RGBA8_RED);
@@ -477,6 +478,7 @@ void DriftDebugUI(DriftUpdate* _update, DriftDraw* _draw){
 				DRIFT_COMPONENT_FOREACH(&STATE->bodies.c, idx){
 					DriftEntity e = STATE->bodies.entity[idx];
 					DriftVec2 p = STATE->bodies.position[idx];
+					if(!DriftAffineVisibility(DRAW->vp_matrix, p, DRIFT_VEC2_ZERO)) continue;
 					DriftDrawTextF(DRAW, &STATE->debug.sprites, (DriftAffine){1, 0, 0, 1, p.x, p.y - 4}, DRIFT_VEC4_WHITE, " "DRIFT_ENTITY_FORMAT, e.id);
 					DriftDebugCircle(STATE, p, STATE->bodies.radius[idx], (DriftRGBA8){0x80, 0x40, 0x00, 0x80});
 				}
@@ -515,8 +517,13 @@ void DriftDebugUI(DriftUpdate* _update, DriftDraw* _draw){
 				DRIFT_COMPONENT_FOREACH(&STATE->power_nodes.c, idx){
 					uint flow_idx = DriftComponentFind(&fmap->c, STATE->power_nodes.entity[idx]);
 					DriftVec2 p0 = STATE->power_nodes.position[idx];
+					if(!DriftAffineVisibility(DRAW->vp_matrix, p0, DRIFT_VEC2_ZERO)) continue;
+					
 					DriftAffine m = {1, 0, 0, 1, p0.x + 10, p0.y};
-					DriftDrawTextF(DRAW, &STATE->debug.sprites, m, DRIFT_VEC4_WHITE, "%d\n%f", UPDATE->tick - fmap->flow[idx].mark, fmap->flow[idx].dist);
+					DriftDrawTextF(DRAW, &STATE->debug.sprites, m, DRIFT_VEC4_WHITE, "%sidx:%d\n{#FFFFFFFF}%d:%.1f",
+						fmap->current[idx] ? "{#00FF0000}" : "{#FF000000}", STATE->power_nodes.entity[idx].id,
+						UPDATE->tick - fmap->flow[idx].mark, fmap->flow[idx].dist
+					);
 					
 					uint next_idx = DriftComponentFind(&STATE->power_nodes.c, fmap->flow[flow_idx].next);
 					if(next_idx){
@@ -529,6 +536,7 @@ void DriftDebugUI(DriftUpdate* _update, DriftDraw* _draw){
 				
 				for(uint i = 0; i < STATE->power_edges.t.row_count; i++){
 					DriftVec2 p = DriftVec2Lerp(STATE->power_edges.edge[i].p0, STATE->power_edges.edge[i].p1, 0.5f);
+					if(!DriftAffineVisibility(DRAW->vp_matrix, p, DRIFT_VEC2_ZERO)) continue;
 					DriftDrawTextF(DRAW, &STATE->debug.sprites, (DriftAffine){1, 0, 0, 1, p.x, p.y}, DRIFT_VEC4_WHITE, "%d", i);
 				}
 				nk_tree_pop(NK);

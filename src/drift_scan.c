@@ -40,6 +40,11 @@ const DriftScan DRIFT_SCANS[_DRIFT_SCAN_COUNT] = {
 			"A mostly harmless biomechanical insectoid. Accumulates precious resources and stores them in their "HIGHLIGHT"HIVE"DRIFT_TEXT_WHITE". "
 			"Drops "HIGHLIGHT"SCRAP"DRIFT_TEXT_WHITE" when destroyed."
 	},
+	[DRIFT_SCAN_HIVE_FIGHTER] = {
+		.name = "Hive Worker", .radius = 14,
+		.description =
+			"An aggressive biomechanical insectoid. Needs more description."
+	},
 	[DRIFT_SCAN_FACTORY] = {
 		.name = "Fabricator", .radius = 12, .offset = {30, 10}, .interactive = true,
 		.description =
@@ -119,7 +124,7 @@ void DriftScanUI(DriftDraw* draw, DriftUIState* ui_state, DriftScanType select){
 	RowContext ctx = {.state = draw->state, .mu = mu, .win = win, .select = select};
 	static const int ROW[] = {-1};
 	
-	if(mu_begin_window_ex(mu, TITLE, win->rect, MU_OPT_NOTITLE)){
+	if(mu_begin_window_ex(mu, TITLE, win->rect, 0)){
 		mu_layout_row(mu, 2, (int[]){-1}, 18);
 		mu_begin_box(mu, MU_COLOR_GROUPBG, 0);
 		mu_layout_row(mu, 2, (int[]){-60, -1}, -1);

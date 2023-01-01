@@ -28,10 +28,7 @@ static const struct {
 	[DRIFT_ATLAS_DARK] = {LoadTexture, "gfx/ATLAS_BG_DARK.qoi"},
 	[DRIFT_ATLAS_DARKG] = {LoadTexture, "gfx/ATLAS_BG_DARK_FX.qoi"},
 	[DRIFT_ATLAS_BLUE] = {LoadTextureBin, "bin/blue_noise.bin"},
-	[DRIFT_ATLAS0] = {LoadTexture, "gfx/ATLAS0.qoi"},
-	[DRIFT_ATLAS0_FX] = {LoadTexture, "gfx/ATLAS0_FX.qoi"},
-	[DRIFT_ATLAS1] = {LoadTexture, "gfx/ATLAS1.qoi"},
-	[DRIFT_ATLAS1_FX] = {LoadTexture, "gfx/ATLAS1_FX.qoi"},
+	#include "atlas_defs.inc"
 };
 
 static void LoadAtlasLayer(tina_job* job){
@@ -264,8 +261,8 @@ DriftDrawShared* DriftDrawSharedNew(DriftApp* app, tina_job* job){
 		.alpha_src_factor = DRIFT_GFX_BLEND_FACTOR_ZERO, .alpha_dst_factor = DRIFT_GFX_BLEND_FACTOR_ONE,
 	};
 	
-	draw_shared->primitive_pipeline = MakePipeline(driver, "primitive", &primitive_desc, &prim_blend, color_target, DRIFT_GFX_CULL_MODE_NONE);
-	draw_shared->overlay_primitive_pipeline = MakePipeline(driver, "primitive", &primitive_desc, &prim_blend, draw_shared->resolve_target, DRIFT_GFX_CULL_MODE_NONE);
+	draw_shared->linear_primitive_pipeline = MakePipeline(driver, "primitive_linear", &primitive_desc, &prim_blend, color_target, DRIFT_GFX_CULL_MODE_NONE);
+	draw_shared->overlay_primitive_pipeline = MakePipeline(driver, "primitive_overlay", &primitive_desc, &prim_blend, draw_shared->resolve_target, DRIFT_GFX_CULL_MODE_NONE);
 	
 	static const DriftGfxBlendMode shadow_blend = {
 		.color_src_factor = DRIFT_GFX_BLEND_FACTOR_SRC_ALPHA_SATURATE, .color_dst_factor = DRIFT_GFX_BLEND_FACTOR_ONE,
@@ -292,11 +289,11 @@ DriftDrawShared* DriftDrawSharedNew(DriftApp* app, tina_job* job){
 		.vertex[0] = {.type = DRIFT_GFX_TYPE_FLOAT32_2,},
 		.vertex_stride = sizeof(DriftVec2),
 		.vertex[1] = {.type = DRIFT_GFX_TYPE_FLOAT32_4, .offset = offsetof(DriftSprite, matrix.a), .instanced = true},
-		.vertex[2] = {.type = DRIFT_GFX_TYPE_FLOAT32_4, .offset = offsetof(DriftSprite, matrix.x), .instanced = true},
+		.vertex[2] = {.type = DRIFT_GFX_TYPE_FLOAT32_2, .offset = offsetof(DriftSprite, matrix.x), .instanced = true},
 		.vertex[3] = {.type = DRIFT_GFX_TYPE_UNORM8_4, .offset = offsetof(DriftSprite, color), .instanced = true},
 		.vertex[4] = {.type = DRIFT_GFX_TYPE_U8_4, .offset = offsetof(DriftSprite, frame.bounds), .instanced = true},
-		.vertex[5] = {.type = DRIFT_GFX_TYPE_U8_2, .offset = offsetof(DriftSprite, frame.anchor), .instanced = true},
-		.vertex[6] = {.type = DRIFT_GFX_TYPE_U16, .offset = offsetof(DriftSprite, frame.layer), .instanced = true},
+		.vertex[5] = {.type = DRIFT_GFX_TYPE_U8_4, .offset = offsetof(DriftSprite, frame.anchor), .instanced = true},
+		.vertex[6] = {.type = DRIFT_GFX_TYPE_U8_2, .offset = offsetof(DriftSprite, z), .instanced = true},
 		.instance_stride = sizeof(DriftSprite),
 		DRIFT_GLOBAL_BINDINGS,
 	};
@@ -307,7 +304,8 @@ DriftDrawShared* DriftDrawSharedNew(DriftApp* app, tina_job* job){
 	};
 	
 	draw_shared->sprite_pipeline = MakePipeline(driver, "sprite", &sprite_desc, &premultiplied, color_target, DRIFT_GFX_CULL_MODE_NONE);
-	draw_shared->overlay_sprite_pipeline = MakePipeline(driver, "overlay_sprite", &sprite_desc, &premultiplied, draw_shared->resolve_target, DRIFT_GFX_CULL_MODE_NONE);
+	draw_shared->flash_sprite_pipeline = MakePipeline(driver, "sprite_flash", &sprite_desc, &premultiplied, draw_shared->resolve_target, DRIFT_GFX_CULL_MODE_NONE);
+	draw_shared->overlay_sprite_pipeline = MakePipeline(driver, "sprite_overlay", &sprite_desc, &premultiplied, draw_shared->resolve_target, DRIFT_GFX_CULL_MODE_NONE);
 	
 	draw_shared->debug_lightfield_pipeline = MakePipeline(driver, "debug_lightfield", &basic_quad_desc, NULL, color_target, DRIFT_GFX_CULL_MODE_NONE);
 	
@@ -399,9 +397,10 @@ DriftDraw* DriftDrawBegin(DriftGameContext* ctx, tina_job* job, float dt, float 
 	
 	DriftDraw* draw = DriftAlloc(mem, sizeof(*draw));
 	(*draw) = (DriftDraw){
-		.ctx = ctx, .state = &ctx->state, .shared = ctx->draw_shared, .job = job,
-		.mem = mem, .renderer = renderer,
-		.frame = ctx->current_frame, .tick = ctx->current_tick, .dt = dt, .dt_since_tick = dt_since_tick,
+		.ctx = ctx, .state = &ctx->state, .shared = ctx->draw_shared, .job = job, .mem = mem, .renderer = renderer,
+		.frame = ctx->current_frame, .tick = ctx->current_tick, .nanos = ctx->update_nanos,
+		.dt = dt, .dt_since_tick = dt_since_tick,
+		
 		.raw_extent = raw_extent, .virtual_extent = virtual_extent, .internal_extent = internal_extent,
 		.p_matrix = p_matrix, .v_matrix = v_matrix, .vp_matrix = vp_matrix, .vp_inverse = vp_inverse,
 		.reproj_matrix = DriftAffineMul(prev_vp_matrix, vp_inverse),
@@ -419,6 +418,7 @@ DriftDraw* DriftDrawBegin(DriftGameContext* ctx, tina_job* job, float dt, float 
 		.bg_sprites = DRIFT_ARRAY_NEW(mem, 2048, DriftSprite),
 		.bg_prims = DRIFT_ARRAY_NEW(mem, 2048, DriftPrimitive),
 		.fg_sprites = DRIFT_ARRAY_NEW(mem, 2048, DriftSprite),
+		.flash_sprites = DRIFT_ARRAY_NEW(mem, 2048, DriftSprite),
 		.overlay_sprites = DRIFT_ARRAY_NEW(mem, 2048, DriftSprite),
 		.overlay_prims = DRIFT_ARRAY_NEW(mem, 2048, DriftPrimitive),
 		.hud_sprites = DRIFT_ARRAY_NEW(mem, 2048, DriftSprite),
@@ -543,12 +543,12 @@ DriftAABB2 DriftDrawTextBounds(const char* string, size_t n, const DriftInputIco
 	return bounds;
 }
 
-static inline void output_glyph(DriftSprite** instances, char c, DriftRGBA8 color, DriftAffine t){
+static inline void output_glyph(DriftSprite** glyphs, char c, DriftRGBA8 color, DriftAffine t){
 	// TODO Magic numbers for glyph indexing
 	uint x = ((c*8) & 0xFF);
-	uint y = ((c/2) & 0xF0);
-	DriftSpriteFrame frame = {.bounds = {x, y, x + (FONT_W - 1), y + (GLYPH_H - 1)}, .anchor.y = GLYPH_BASELINE, .layer = DRIFT_ATLAS_UI};
-	*(*instances)++ = (DriftSprite){.frame = frame, .color = color, .matrix = t};
+	uint y = ((c/2) & 0xF0) + 4*16;
+	DriftFrame frame = {.bounds = {x, y, x + (FONT_W - 1), y + (GLYPH_H - 1)}, .anchor.y = GLYPH_BASELINE, .layer = DRIFT_ATLAS_UI};
+	*(*glyphs)++ = (DriftSprite){.frame = frame, .color = color, .matrix = t};
 }
 
 DriftAffine DriftDrawText(DriftDraw* draw, DRIFT_ARRAY(DriftSprite)* array, DriftAffine matrix, DriftVec4 tint, const char* string){
@@ -556,15 +556,15 @@ DriftAffine DriftDrawText(DriftDraw* draw, DRIFT_ARRAY(DriftSprite)* array, Drif
 	DriftVec2 origin = {t.x, t.y};
 	
 	size_t length = strlen(string);
-	DriftSprite* instances = DRIFT_ARRAY_RANGE(*array, length);
+	DriftSprite* glyphs = DRIFT_ARRAY_RANGE(*array, length);
 	
-	DriftRGBA8 color = {(u8)(0xFF*tint.r), (u8)(0xFF*tint.g), (u8)(0xFF*tint.b), (u8)(0xFF*tint.a)};
+	DriftRGBA8 color = DriftRGBA8FromColor(tint);
 	const char* cursor = string;
 	while(*cursor){
 		char c = *(cursor++);
 		switch(c){
 			default: {
-				output_glyph(&instances, c, color, t);
+				output_glyph(&glyphs, c, color, t);
 				t.x += GLYPH_ADVANCE*matrix.a;
 				t.y += GLYPH_ADVANCE*matrix.b;
 			} break;
@@ -585,7 +585,7 @@ DriftAffine DriftDrawText(DriftDraw* draw, DRIFT_ARRAY(DriftSprite)* array, Drif
 				c = *cursor;
 				switch(c){
 					case '{':{
-						output_glyph(&instances, c, color, t);
+						output_glyph(&glyphs, c, color, t);
 						t.x += GLYPH_ADVANCE*matrix.a;
 						t.y += GLYPH_ADVANCE*matrix.b;
 						cursor++;
@@ -600,10 +600,10 @@ DriftAffine DriftDrawText(DriftDraw* draw, DRIFT_ARRAY(DriftSprite)* array, Drif
 							['8'] = 0x8, ['9'] = 0x9, ['A'] = 0xA, ['B'] = 0xB, ['C'] = 0xC, ['D'] = 0xD, ['E'] = 0xE, ['F'] = 0xF,
 						};
 						
-						color.r = (u8)(tint.r*(16*HEXN[(uint)cursor[0]] + HEXN[(uint)cursor[1]]));
-						color.g = (u8)(tint.g*(16*HEXN[(uint)cursor[2]] + HEXN[(uint)cursor[3]]));
-						color.b = (u8)(tint.b*(16*HEXN[(uint)cursor[4]] + HEXN[(uint)cursor[5]]));
-						color.a = (u8)(tint.a*(16*HEXN[(uint)cursor[6]] + HEXN[(uint)cursor[7]]));
+						color.r = (u8)(tint.r*(16*HEXN[(u8)cursor[0]] + HEXN[(u8)cursor[1]]));
+						color.g = (u8)(tint.g*(16*HEXN[(u8)cursor[2]] + HEXN[(u8)cursor[3]]));
+						color.b = (u8)(tint.b*(16*HEXN[(u8)cursor[4]] + HEXN[(u8)cursor[5]]));
+						color.a = (u8)(tint.a*(16*HEXN[(u8)cursor[6]] + HEXN[(u8)cursor[7]]));
 						cursor += 9;
 					} break;
 					case '@': {
@@ -613,9 +613,9 @@ DriftAffine DriftDrawText(DriftDraw* draw, DRIFT_ARRAY(DriftSprite)* array, Drif
 						cursor += strlen(icon->label) + 2;
 						
 						while(true){
-							DriftSpriteFrame frame = DRIFT_SPRITE_FRAMES[icon->frame];
+							DriftFrame frame = DRIFT_FRAMES[icon->frame];
 							
-							*instances++ = (DriftSprite){frame, DRIFT_RGBA8_WHITE, t};
+							*glyphs++ = (DriftSprite){frame, DRIFT_RGBA8_WHITE, t};
 							t.x += icon->advance*GLYPH_ADVANCE*matrix.a;
 							t.y += icon->advance*GLYPH_ADVANCE*matrix.b;
 							
@@ -633,7 +633,7 @@ DriftAffine DriftDrawText(DriftDraw* draw, DRIFT_ARRAY(DriftSprite)* array, Drif
 		}
 	}
 	
-	DriftArrayRangeCommit(*array, instances);
+	DriftArrayRangeCommit(*array, glyphs);
 	return t;
 }
 

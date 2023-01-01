@@ -3,9 +3,6 @@
 #include <string.h>
 #include <stdio.h>
 
-#define LIFFT_IMPLEMENTATION
-#define LIFFT_FLOAT_TYPE float
-#include "lifft/lifft.h"
 #include "tracy/TracyC.h"
 
 #include "drift_game.h"

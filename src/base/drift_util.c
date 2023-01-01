@@ -242,23 +242,31 @@ void _DriftStopwatchStop(DriftStopwatch* sw, const char* label, const char* file
 void DriftBreakpoint(){}
 void DriftAbort(){abort();}
 
-void DriftAssertHelper(const char *condition, const char *file, unsigned line, DriftAssertType type, const char *message, ...){
-	char message_buffer[1024];
+void DriftAssertHelper(const char *condition, const char *file, unsigned line, DriftAssertType type, const char *message_fmt, ...){
+	char message[1024];
 
 	va_list vargs;
-	va_start(vargs, message); {
-		vsnprintf(message_buffer, sizeof(message_buffer), message, vargs);
+	va_start(vargs, message_fmt); {
+		vsnprintf(message, sizeof(message), message_fmt, vargs);
 	} va_end(vargs);
 	
 	const char *message_type = (type != DRIFT_ASSERT_WARN ? "Aborting due to error" : "Warning");
 	
 	mtx_lock(&log_mtx);
-	fprintf(log_err,
+	char log_buffer[2048];
+	snprintf(log_buffer, sizeof(log_buffer),
 		"%s: %s\n"
 		"\tFailed condition: %s\n"
 		"\tSource: %s:%d\n",
-		message_type, message_buffer, condition, file + DRIFT_SRC_PREFIX_LENGTH, line
+		message_type, message, condition, file + DRIFT_SRC_PREFIX_LENGTH, line
 	);
+	
+	fputs(log_buffer, log_err);
+	if(!DRIFT_DEBUG){
+		int SDL_ShowSimpleMessageBox(u32 flags, const char *title, const char *message, void* window);
+		SDL_ShowSimpleMessageBox(0x10, "Veridian Expanse (build "DRIFT_GIT_SHORT_SHA")", message, NULL);
+	}
+	
 	fflush(log_err);
 	mtx_unlock(&log_mtx);
 	

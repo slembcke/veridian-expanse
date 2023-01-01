@@ -48,73 +48,12 @@ typedef struct {
 // Manhattan distance to nearest center.
 static float k_metric(DriftAABB2 bb, DriftVec2 p){return fabsf((bb.l + bb.r) - 2*p.x) + fabsf((bb.b + bb.t) - 2*p.y);}
 
-static void kmeans2(PartitionContext* ctx){
-	// Find the min/max bounding box centers.
-	DriftVec2 center0 = DriftAABB2Center(ctx->bound[0]);
-	DriftAABB2 minmax = {center0.x, center0.y, center0.x, center0.y};
-	DriftVec2 center_l = center0, center_b = center0, center_r = center0, center_t = center0;
-	for(uint i = 1; i < ctx->count; i++){
-		DriftVec2 center = DriftAABB2Center(ctx->bound[i]);
-		if(center.x < minmax.l) minmax.l = center.x, center_l = center;
-		if(center.x > minmax.r) minmax.r = center.x, center_r = center;
-		if(center.y < minmax.b) minmax.b = center.y, center_b = center;
-		if(center.y > minmax.t) minmax.t = center.y, center_t = center;
-	}
+static void partition(PartitionContext* ctx, u16 node_idx, u16 child_idx, DriftAABB2 bb){
+	DRIFT_ASSERT(ctx->idx0 != ctx->idx1, "Non-unique nodes for partitioning");
+	ctx->count = 1;
+	ctx->bound[0] = bb;
+	ctx->child[0] = child_idx;
 	
-	// Use the longest axis as a heuristic to prime the k-means.
-	DriftVec2 mean0, mean1;
-	if(minmax.r - minmax.l > minmax.t - minmax.b){
-		mean0 = center_l, mean1 = center_r;
-		DRIFT_ASSERT(mean0.x != mean1.x, "Degenerate split.");
-	} else{
-		mean0 = center_b, mean1 = center_t;
-		DRIFT_ASSERT(mean0.y != mean1.y, "Degenerate split.");
-	}
-	
-	DriftVec2 sum0, sum1;
-	float weight0, weight1;
-	bool part[2*RTREE_BRANCH_FACTOR];
-	for(uint loop = 0; loop < 8; loop++){
-		DRIFT_ASSERT(mean0.x != mean1.x && mean0.y != mean1.y, "Matching means.");
-		sum0 = sum1 = (DriftVec2){};
-		weight0 = weight1 = 0;
-		
-		for(uint i = 0; i < ctx->count; i++){
-			DriftAABB2 bb = ctx->bound[i];
-			// Weight by area.
-			float weight = (bb.r - bb.l)*(bb.t - bb.b);
-			DRIFT_ASSERT(fabsf(weight) < INFINITY, "Infinite weight.");
-			if((part[i] = (k_metric(bb, mean0) < k_metric(bb, mean1)))){
-				sum0 = DriftVec2FMA(sum0, DriftAABB2Center(bb), weight), weight0 += weight;
-			} else {
-				sum1 = DriftVec2FMA(sum1, DriftAABB2Center(bb), weight), weight1 += weight;
-			}
-		}
-		
-#if DRIFT_DEBUG
-		uint check = 0;
-		for(uint i= 0; i <ctx->count; i++) check += part[i];
-		DRIFT_ASSERT(check != 0 && check <= RTREE_BRANCH_FACTOR, "Bad split");
-#endif
-		
-		mean0 = DriftVec2Mul(sum0, 1/weight0);
-		mean1 = DriftVec2Mul(sum1, 1/weight1);
-		DRIFT_ASSERT(finitef(mean0.x) && finitef(mean0.y) && finitef(mean1.x) && finitef(mean1.y), "Non-finite means.");
-	}
-	
-	// Insert into output nodes.
-	ctx->tree->n_count[ctx->idx0] = 0;
-	ctx->tree->n_count[ctx->idx1] = 0;
-	
-	for(uint i = 0; i < ctx->count; i++){
-		DRIFT_ASSERT_HARD(rnode_insert(ctx->tree, part[i] ? ctx->idx0 : ctx->idx1, ctx->child[i], ctx->bound[i]), "Failed to split node.");
-	}
-	
-	*ctx->bb_ptr[0] = rnode_bound(ctx->tree, ctx->idx0);
-	*ctx->bb_ptr[1] = rnode_bound(ctx->tree, ctx->idx1);
-}
-
-static void partition_insert(PartitionContext* ctx, u16 node_idx){
 	DriftAABB2* bound = ctx->tree->n_bound[node_idx].arr;
 	u16* child = ctx->tree->n_child[node_idx].arr;
 	uint count = ctx->tree->n_count[node_idx];
@@ -124,15 +63,60 @@ static void partition_insert(PartitionContext* ctx, u16 node_idx){
 		ctx->child[ctx->count] = child[i];
 		ctx->count++;
 	}
-}
-
-static void partition1(PartitionContext* ctx, u16 node_idx, u16 child_idx, DriftAABB2 bb){
-	DRIFT_ASSERT(ctx->idx0 != ctx->idx1, "Non-unique nodes for partitioning");
-	ctx->count = 1;
-	ctx->bound[0] = bb;
-	ctx->child[0] = child_idx;
-	partition_insert(ctx, node_idx);
-	kmeans2(ctx);
+	
+	// Find the extreme points.
+	DriftVec2 c = DriftAABB2Center(ctx->bound[0]);
+	DriftVec2 min_x = c, min_y = c, max_x = c, max_y = c;
+	for(uint i = 1; i < ctx->count; i++){
+		DriftVec2 c = DriftAABB2Center(ctx->bound[i]);
+		if(c.x < min_x.x) min_x = c;
+		if(c.x > max_x.x) max_x = c;
+		if(c.y < min_y.y) min_y = c;
+		if(c.y > max_y.y) max_y = c;
+	}
+	
+	// Use the longest axis as a heuristic to prime the k-means.
+	DriftVec2 mean0, mean1;
+	if(max_x.x - min_x.x > max_y.y - min_y.y){
+		mean0 = min_x, mean1 = max_x;
+	} else{
+		mean0 = min_y, mean1 = max_y;
+	}
+	
+	u64 partition_bits = 0;
+	for(uint loop = 0; loop < 8; loop++){
+		DRIFT_ASSERT(mean0.x != mean1.x && mean0.y != mean1.y, "Matching means.");
+		DriftVec2 sum0 = DRIFT_VEC2_ZERO, sum1 = DRIFT_VEC2_ZERO;
+		float weight0 = 1, weight1 = 0;
+		
+		for(uint i = 0; i < ctx->count; i++){
+			DriftAABB2 bb = ctx->bound[i];
+			float area = (bb.r - bb.l)*(bb.t - bb.b);
+			if(k_metric(bb, mean0) < k_metric(bb, mean1)){
+				sum0 = DriftVec2FMA(sum0, DriftAABB2Center(bb), area), weight0 += area;
+				partition_bits |= 1 << i;
+			} else {
+				sum1 = DriftVec2FMA(sum1, DriftAABB2Center(bb), area), weight1 += area;
+			}
+		}
+		
+		mean0 = DriftVec2Mul(sum0, 1/weight0);
+		mean1 = DriftVec2Mul(sum1, 1/weight1);
+		DRIFT_ASSERT(isfinite(mean0.x) && isfinite(mean0.y) && isfinite(mean1.x) && isfinite(mean1.y), "Non-finite means.");
+	}
+	
+	// Insert into output nodes.
+	ctx->tree->n_count[ctx->idx0] = 0;
+	ctx->tree->n_count[ctx->idx1] = 0;
+	for(uint i = 0; i < ctx->count; i++){
+		uint parent_idx = partition_bits & 1 ? ctx->idx0 : ctx->idx1;
+		bool check = rnode_insert(ctx->tree, parent_idx, ctx->child[i], ctx->bound[i]);
+		partition_bits >>= 1;
+		DRIFT_ASSERT(check, "Failed to split node.");
+	}
+	
+	*ctx->bb_ptr[0] = rnode_bound(ctx->tree, ctx->idx0);
+	*ctx->bb_ptr[1] = rnode_bound(ctx->tree, ctx->idx1);
 }
 
 static u16 rtree_new_node(DriftRTree* tree){
@@ -173,36 +157,37 @@ static void rtree_insert(DriftRTree* tree, u16 user_idx, DriftAABB2 bb){
 		u16 node_idx = stack_arr[--stack_count];
 		if(rnode_insert(tree, node_idx, child_idx, bb)) break;
 		
-		// Insertion failed. Need to partition the results.
-		u16 part_idx = rtree_new_node(tree);
-		tree->n_leaf[part_idx] = tree->n_leaf[node_idx];
+		// Insertion failed. Need to split the node by partitioning the children.
+		u16 split_idx = rtree_new_node(tree);
+		tree->n_leaf[split_idx] = tree->n_leaf[node_idx];
 		
-		if(stack_count > 0){
+		if(stack_count == 0){
+			// Root node cannot be split and must be handled specially.
+			u16 root_idx = tree->root = rtree_new_node(tree);
+			tree->n_leaf[root_idx] = false;
+			tree->n_count[root_idx] = 2;
+			tree->n_child[root_idx].arr[0] = node_idx;
+			tree->n_child[root_idx].arr[1] = split_idx;
+			
+			partition(&(PartitionContext){
+				.tree = tree, .idx0 = node_idx, .idx1 = split_idx,
+				.bb_ptr[0] = tree->n_bound[root_idx].arr + 0,
+				.bb_ptr[1] = tree->n_bound[root_idx].arr + 1,
+			}, node_idx, child_idx, bb);
+			break;
+		} else {
+			// Split the node in two.
 			u16 parent_idx = stack_arr[stack_count - 1];
 			
-			partition1(&(PartitionContext){
-				.tree = tree, .idx0 = node_idx, .idx1 = part_idx,
+			partition(&(PartitionContext){
+				.tree = tree, .idx0 = node_idx, .idx1 = split_idx,
 				.bb_ptr[0] = tree->n_bound[parent_idx].arr + rnode_find(tree, parent_idx, node_idx),
 				.bb_ptr[1] = &bb,
 			}, node_idx, child_idx, bb);
 			
 			// Loop again to insert the second partition into the parent.
 			// 'bb' is updated by partition.
-			child_idx = part_idx;
-		} else {
-			// Root node cannot be split and must be handled specially.
-			u16 root_idx = tree->root = rtree_new_node(tree);
-			tree->n_leaf[root_idx] = false;
-			tree->n_count[root_idx] = 2;
-			tree->n_child[root_idx].arr[0] = node_idx;
-			tree->n_child[root_idx].arr[1] = part_idx;
-			
-			partition1(&(PartitionContext){
-				.tree = tree, .idx0 = node_idx, .idx1 = part_idx,
-				.bb_ptr[0] = tree->n_bound[root_idx].arr + 0,
-				.bb_ptr[1] = tree->n_bound[root_idx].arr + 1,
-			}, node_idx, child_idx, bb);
-			break;
+			child_idx = split_idx;
 		}
 	}
 }
@@ -248,7 +233,7 @@ static DriftAABB2 subtree_update(DriftRTree* tree, u16 node_idx, DriftAABB2* bou
 
 void DriftRTreeUpdate(DriftRTree* tree, DriftAABB2* bound, DriftAABB2* loose_bound, uint count, DriftMem* mem){
 	TracyCZoneN(ZONE_UPDATE, "RTree Update", true);
-	DRIFT_ARRAY(u16) queue = DRIFT_ARRAY_NEW(mem, 1024, u16);
+	DRIFT_ARRAY(u16) queue = DRIFT_ARRAY_NEW(mem, count/4, u16);
 	TracyCZoneN(ZONE_UPDATE_SUBTREES, "Update Subtrees", true);
 	subtree_update(tree, tree->root, bound, count, &queue);
 	TracyCZoneEnd(ZONE_UPDATE_SUBTREES);
@@ -270,20 +255,15 @@ void DriftRTreeUpdate(DriftRTree* tree, DriftAABB2* bound, DriftAABB2* loose_bou
 	TracyCZoneEnd(ZONE_UPDATE);
 }
 
-static void process_leaves(DriftRTree* tree, DriftAABB2* bounds, DRIFT_ARRAY(DriftIndexPair) in_pairs, DRIFT_ARRAY(DriftIndexPair)* out_pairs){
-	TracyCZoneN(ZONE_LEAVES, "Process Leaves", true);
-	uint pair_count = DriftArrayLength(in_pairs);
-	for(uint i = 0; i < pair_count; i++){
-		DriftIndexPair pair = in_pairs[i];
-		for(uint i = 0; i < tree->n_count[pair.idx0]; i++){
-			uint j0 = (pair.idx0 == pair.idx1 ? i + 1 : 0);
-			for(uint j = j0; j < tree->n_count[pair.idx1]; j++){
-				DriftIndexPair tmp = {tree->n_child[pair.idx0].arr[i], tree->n_child[pair.idx1].arr[j]};
-				if(DriftAABB2Overlap(bounds[tmp.idx0], bounds[tmp.idx1])) DRIFT_ARRAY_PUSH(*out_pairs, tmp);
-			}
+static void process_leaf_pair(DriftRTree* tree, DriftAABB2* bounds, DriftIndexPair pair, DRIFT_ARRAY(DriftIndexPair)* out_pairs){
+	for(uint i = 0; i < tree->n_count[pair.idx0]; i++){
+		// Adjust indexes for self colliding nodes. 
+		uint j_max = (pair.idx0 == pair.idx1 ? i : tree->n_count[pair.idx1]);
+		for(uint j = 0; j < j_max; j++){
+			DriftIndexPair tmp = {tree->n_child[pair.idx0].arr[i], tree->n_child[pair.idx1].arr[j]};
+			if(DriftAABB2Overlap(bounds[tmp.idx0], bounds[tmp.idx1])) DRIFT_ARRAY_PUSH(*out_pairs, tmp);
 		}
 	}
-	TracyCZoneEnd(ZONE_LEAVES);
 }
 
 typedef struct LeafJobContext {
@@ -296,8 +276,10 @@ typedef struct LeafJobContext {
 } LeafJobContext;
 
 static void process_leaves_job(tina_job* job){
+	TracyCZoneN(ZONE_LEAVES, "Process Leaves", true);
 	LeafJobContext* ctx = tina_job_get_description(job)->user_data;
-	process_leaves(ctx->tree, ctx->bounds, ctx->pairs, &ctx->result);
+	DRIFT_ARRAY_FOREACH(ctx->pairs, pair) process_leaf_pair(ctx->tree, ctx->bounds, *pair, &ctx->result);
+	TracyCZoneEnd(ZONE_LEAVES);
 }
 
 DRIFT_ARRAY(DriftIndexPair) DriftRTreePairs(DriftRTree* tree, DriftAABB2* bounds, tina_job* job, DriftMem* mem){
@@ -313,13 +295,13 @@ DRIFT_ARRAY(DriftIndexPair) DriftRTreePairs(DriftRTree* tree, DriftAABB2* bounds
 	
 	if(tree->n_leaf[tree->root]){
 		// Special case to handle the root when it's a leaf.
-		process_leaves(tree, bounds, queue_arr, &out_pairs);
+		process_leaf_pair(tree, bounds, queue_arr[0], &out_pairs);
 		TracyCZoneEnd(ZONE_PAIRS);
 		return out_pairs;
 	}
 	
 	// Use a separate queue for leaf-leaf collisions as they need to be handled specially.
-	size_t leaf_count = 32;
+	size_t leaf_count = 96;
 	DriftIndexPair* leaf_queue = DRIFT_ARRAY_NEW(mem, leaf_count, DriftIndexPair);
 	tina_group leaf_group = {};
 	LeafJobContext* leaf_ctx = NULL;
@@ -329,9 +311,8 @@ DRIFT_ARRAY(DriftIndexPair) DriftRTreePairs(DriftRTree* tree, DriftAABB2* bounds
 		DriftIndexPair pair = queue_arr[queue_tail++];
 		
 		for(uint i = 0; i < tree->n_count[pair.idx0]; i++){
-			// Adjust the secondary index for self colliding nodes to avoid duplicate pairs.
-			uint j0 = (pair.idx0 == pair.idx1 ? i + 0 : 0);
-			for(uint j = j0; j < tree->n_count[pair.idx1]; j++){
+			uint j_max = (pair.idx0 == pair.idx1 ? i + 1 : tree->n_count[pair.idx1]);
+			for(uint j = 0; j < j_max; j++){
 				if(DriftAABB2Overlap(tree->n_bound[pair.idx0].arr[i], tree->n_bound[pair.idx1].arr[j])){
 					DriftIndexPair overlapping_pair = {tree->n_child[pair.idx0].arr[i], tree->n_child[pair.idx1].arr[j]};
 					
@@ -360,7 +341,7 @@ DRIFT_ARRAY(DriftIndexPair) DriftRTreePairs(DriftRTree* tree, DriftAABB2* bounds
 	}
 	
 	// Process any remaining leaf pairs.
-	process_leaves(tree, bounds, leaf_queue, &out_pairs);
+	DRIFT_ARRAY_FOREACH(leaf_queue, pair) process_leaf_pair(tree, bounds, *pair, &out_pairs);
 	
 	TracyCZoneN(ZONE_WAIT, "Wait for Pairs", true);
 	tina_job_wait(job, &leaf_group, 0);

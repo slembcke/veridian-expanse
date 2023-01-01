@@ -235,13 +235,14 @@ int DriftMain(DriftApp* app){
 	DriftAssetsReset();
 	TracyCZoneEnd(ZONE_RESOURCES);
 	
-	// Start terrain loading before opening the shell since it takes a long time.
 #if DRIFT_MODULES
 	DriftModuleLoad(app);
 	void (*DriftTerrainLoadBase)(tina_scheduler* sched) = SDL_LoadFunction(app->module, "DriftTerrainLoadBase");
 #else
 	void DriftTerrainLoadBase(tina_scheduler* sched);
 #endif
+
+	// Start terrain loading before opening the shell since it takes a long time.
 	DriftTerrainLoadBase(app->scheduler);
 	
 	// Start shell and module.

@@ -14,7 +14,6 @@ struct DriftGameState {
 	mtx_t entities_mtx;
 	DriftEntitySet entities;
 	DriftComponentTransform transforms;
-	DriftComponentSprite sprites;
 	DriftComponentRigidBody bodies;
 	DriftComponentPlayer players;
 	DriftComponentDrone drones;
@@ -130,6 +129,7 @@ typedef struct DriftUpdate {
 	tina_job* job;
 	tina_scheduler* scheduler;
 	uint frame, tick;
+	u64 nanos;
 	float dt, tick_dt;
 	DriftAffine prev_vp_matrix;
 	DriftEntity* _dead_entities;
@@ -154,9 +154,17 @@ static inline void DriftDebugSegment2(DriftGameState* state, DriftVec2 p0, Drift
 static inline void DriftDebugRay(DriftGameState* state, DriftVec2 p0, DriftVec2 dir, float mul, DriftRGBA8 color){
 	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = p0, .p1 = DriftVec2FMA(p0, dir, mul), .radii = {1}, .color = color}));
 }
+static inline void DriftDebugTransform(DriftGameState* state, DriftAffine transform, float scale){
+	DriftVec2 p0 = DriftAffinePoint(transform, (DriftVec2){0, 0});
+	DriftVec2 px = DriftAffinePoint(transform, (DriftVec2){scale, 0});
+	DriftVec2 py = DriftAffinePoint(transform, (DriftVec2){0, scale});
+	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = p0, .p1 = px, .radii = {1}, .color = DRIFT_RGBA8_RED}));
+	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = p0, .p1 = py, .radii = {1}, .color = DRIFT_RGBA8_GREEN}));
+}
 #else
 #define DriftDebugCircle(...){}
 #define DriftDebugSegment(...){}
 #define DriftDebugSegment2(...){}
 #define DriftDebugRay(...){}
+#define DriftDebugTransform(...){}
 #endif

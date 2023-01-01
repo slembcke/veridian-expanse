@@ -91,7 +91,7 @@ static void draw_shared(DriftDraw* draw, DriftScript* script){
 		const float scale = 1;
 		
 		DriftVec2 pos = tut->indicator_location;
-		float r = 10 + 10*fabsf(sinf(draw->tick/15.0f));
+		float r = 10 + 10*fabsf(DriftWaveComplex(draw->nanos, 1).x);
 		DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = pos, .p1 = pos, .radii = {r, r - scale}, .color = DRIFT_RGBA8_GREEN}));
 		
 		DriftVec2 screen_pos = DriftAffineOrigin(draw->vp_inverse);

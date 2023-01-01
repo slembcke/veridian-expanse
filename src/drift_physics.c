@@ -252,13 +252,13 @@ void DriftPhysicsTick(DriftUpdate* update){
 		.loose_bounds = DriftAlloc(mem, body_count*sizeof(*phys->loose_bounds)),
 		// TODO should come up with real hueristics for these eventually.
 		.ground_plane = DriftAlloc(mem, body_count*sizeof(*phys->ground_plane)),
-		.cpair = DRIFT_ARRAY_NEW(mem, 2*body_count, DriftCollisionPair),
-		.contact = DRIFT_ARRAY_NEW(mem, 2*body_count, DriftContact),
+		.cpair = DRIFT_ARRAY_NEW(mem, body_count/2, DriftCollisionPair),
+		.contact = DRIFT_ARRAY_NEW(mem, body_count/2, DriftContact),
 	}));
 	
 	TracyCZoneN(ZONE_COLLISION_PAIRS, "Collision Pairs", true);
 	PhysicsJobContext* bounds_job_ctx = phys_job_enqueue(update, phys, 0, body_count, 1024, bounds_job);
-	PhysicsJobContext* terrain_job_ctx = phys_job_enqueue(update, phys, 1, body_count, 256, terrain_job);
+	PhysicsJobContext* terrain_job_ctx = phys_job_enqueue(update, phys, 1, body_count, 1024, terrain_job);
 	
 	TracyCZoneN(ZONE_WAIT_JOBS, "Wait For Bounds", true);
 	tina_job_wait(update->job, &bounds_job_ctx->group, 0);

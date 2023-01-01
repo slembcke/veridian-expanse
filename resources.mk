@@ -26,11 +26,13 @@ SHADER_INCLUDES = \
 	shaders/lighting.hlsl \
 
 SHADERS = \
-	resources/shaders/primitive.hlsl \
+	resources/shaders/primitive_linear.hlsl \
+	resources/shaders/primitive_overlay.hlsl \
 	resources/shaders/terrain.hlsl \
 	resources/shaders/terrain_map.hlsl \
 	resources/shaders/sprite.hlsl \
-	resources/shaders/overlay_sprite.hlsl \
+	resources/shaders/sprite_flash.hlsl \
+	resources/shaders/sprite_overlay.hlsl \
 	resources/shaders/light0.hlsl \
 	resources/shaders/light1.hlsl \
 	resources/shaders/light_blit0.hlsl \

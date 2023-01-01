@@ -66,7 +66,7 @@ static void draw_indicator(DriftDraw* draw, DriftVec2 pos, DriftVec2 rot, float 
 	rot = DriftVec2Mul(rot, radius/8);
 	DRIFT_ARRAY_PUSH(draw->overlay_sprites, ((DriftSprite){
 		.color = {(u8)(color.r*i), (u8)(color.g*i), (u8)(color.b*i), color.a},
-		.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_SELECT_INDICATOR],
+		.frame = DRIFT_FRAMES[DRIFT_SPRITE_SELECT_INDICATOR],
 		.matrix = {rot.x, rot.y, -rot.y, rot.x, pos.x, pos.y},
 	}));
 }
@@ -292,14 +292,6 @@ static void update_grab(DriftUpdate* update, DriftPlayerData* player, DriftAffin
 	}
 }
 
-static inline void DriftDebugTransform(DriftGameState* state, DriftAffine transform, float scale){
-	DriftVec2 p0 = DriftAffinePoint(transform, (DriftVec2){0, 0});
-	DriftVec2 px = DriftAffinePoint(transform, (DriftVec2){scale, 0});
-	DriftVec2 py = DriftAffinePoint(transform, (DriftVec2){0, scale});
-	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = p0, .p1 = px, .radii = {1}, .color = DRIFT_RGBA8_RED}));
-	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = p0, .p1 = py, .radii = {1}, .color = DRIFT_RGBA8_GREEN}));
-}
-
 static void draw_arm_with_ik(DriftDraw* draw, DriftAffine transform, float anim, float grip, DriftArmPose* pose, DriftVec2 target, float err_smooth, float err_rate){
 	DriftVec2 pos0 = DriftVec2Mul((DriftVec2){8, 8}, 1 - 2*anim);
 	DriftVec2 pos = pos0, dir = {1, 0};
@@ -338,7 +330,7 @@ static void draw_arm_with_ik(DriftDraw* draw, DriftAffine transform, float anim,
 	
 	// Draw mount
 	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){
-		.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_GRABBER_MOUNT], .color = DRIFT_RGBA8_WHITE,
+		.frame = DRIFT_FRAMES[DRIFT_SPRITE_GRABBER_MOUNT], .color = DRIFT_RGBA8_WHITE,
 		.matrix = DriftAffineMul(transform, (DriftAffine){1, 0, 0, 1, pos0.x, pos0.y}),
 	}));
 	
@@ -346,11 +338,11 @@ static void draw_arm_with_ik(DriftDraw* draw, DriftAffine transform, float anim,
 	float grip_angle = -0.7f*(1 - grip);
 	DriftVec2 grip_q = {cosf(grip_angle), sinf(grip_angle)};
 	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){
-		.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_GRIPPER], .color = DRIFT_RGBA8_WHITE,
+		.frame = DRIFT_FRAMES[DRIFT_SPRITE_GRIPPER], .color = DRIFT_RGBA8_WHITE,
 		.matrix = DriftAffineMul(transform, (DriftAffine){-grip_q.x, -grip_q.y, -grip_q.y,  grip_q.x, pos.x, pos.y}),
 	}));
 	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){
-		.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_GRIPPER], .color = DRIFT_RGBA8_WHITE,
+		.frame = DRIFT_FRAMES[DRIFT_SPRITE_GRIPPER], .color = DRIFT_RGBA8_WHITE,
 		.matrix = DriftAffineMul(transform, (DriftAffine){-grip_q.x,  grip_q.y, -grip_q.y, -grip_q.x, pos.x, pos.y}),
 	}));
 	
@@ -358,7 +350,7 @@ static void draw_arm_with_ik(DriftDraw* draw, DriftAffine transform, float anim,
 	static const DriftSpriteEnum frames[] = {DRIFT_SPRITE_GRABARM0, DRIFT_SPRITE_GRABARM1, DRIFT_SPRITE_GRABARM2};
 	for(uint i = 0; i < 3; i++){
 		DriftAffine t = DriftAffineMul(transform, (DriftAffine){q[i].x, q[i].y, -q[i].y, q[i].x, x[i].x, x[i].y});
-		DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = DRIFT_SPRITE_FRAMES[frames[i]], .color = DRIFT_RGBA8_WHITE, .matrix = t}));
+		DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = DRIFT_FRAMES[frames[i]], .color = DRIFT_RGBA8_WHITE, .matrix = t}));
 		// DriftDebugTransform(draw->state, t, 5);
 	}
 }
@@ -385,7 +377,7 @@ static void draw_grab(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 	// Draw grabber reticle.
 	if(!player->grabbed_entity.id){
 		DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){
-			.p0 = world_reticle, .p1 = world_reticle, .radii = {GRABBER_RADIUS, GRABBER_RADIUS - 1}, .color = {0x80, 0x00, 0x00, 0x80}
+			.p0 = world_reticle, .p1 = world_reticle, .radii = {GRABBER_RADIUS, GRABBER_RADIUS - 1}, .color = {0xC0, 0x00, 0x00, 0x80}
 		}));
 	}
 	
@@ -395,7 +387,7 @@ static void draw_grab(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 		
 		draw_offset_label(draw, player_pos, player->reticle, (DriftVec4){{0.0, 0.5, 0.0, 0.25}}, label);
 		
-		float bob = 3*fabsf(sinf(draw->tick/20.0f));
+		float bob = 3*fabsf(DriftWaveComplex(draw->nanos, 1).x);
 		DriftVec2 p[] = {
 			DriftAffinePoint(transform, (DriftVec2){-4, 24 - bob}),
 			DriftAffinePoint(transform, (DriftVec2){ 0, 21 - bob}),
@@ -414,9 +406,9 @@ static void draw_grab(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 	
 	// Draw pickup indicators.
 	DriftGameState* state = draw->state;
-	uint transform_idx, pickup_idx;
+	uint transform_idx, item_idx;
 	DriftJoin join = DriftJoinMake((DriftComponentJoin[]){
-		{&pickup_idx, &state->items.c},
+		{&item_idx, &state->items.c},
 		{&transform_idx, &state->transforms.c},
 		{},
 	});
@@ -424,12 +416,24 @@ static void draw_grab(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 	const uint period = 1 << 29;
 	float phase = (draw->ctx->update_nanos % period)*(float)M_PI/period;
 	DriftVec2 rot = {cosf(phase), sinf(phase)}, inc = {cosf((float)(M_PI*DRIFT_PHI)), sinf((float)(M_PI*DRIFT_PHI))};
-	DriftSpriteFrame frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_SELECT_INDICATOR];
+	DriftFrame frame = DRIFT_FRAMES[DRIFT_SPRITE_SELECT_INDICATOR];
+	float ring = 5*(draw->tick % 120);
 	
 	while(DriftJoinNext(&join)){
-		DriftVec2 item_pos = DriftAffineOrigin(state->transforms.matrix[transform_idx]);
+		DriftAffine m = state->transforms.matrix[transform_idx];
+		DriftVec2 item_pos = DriftAffineOrigin(m);
+		if(!DriftAffineVisibility(draw->vp_matrix, item_pos, DRIFT_VEC2_ZERO)) continue;
+		
 		draw_indicator(draw, item_pos, rot, 8, (DriftRGBA8){0x00, 0x80, 0x00, 0x80});
 		rot = DriftVec2Rotate(rot, inc);
+		
+		DriftItemType type = state->items.type[item_idx];
+		float flash = 1 - fabsf(DriftVec2Distance(item_pos, player_pos) - ring)/40.0f;
+		if(type != DRIFT_ITEM_POWER_NODE && flash > 0){
+			DriftSprite sprite = DriftSpriteForItem(type, m);
+			sprite.color = DriftRGBA8FromColor(DriftVec4Mul((DriftVec4){{0, 1, 0, 1}}, flash));
+			DRIFT_ARRAY_PUSH(draw->flash_sprites, sprite);
+		}
 	}
 	
 	float err_smooth = 1 - expf(-30*draw->dt);
@@ -437,7 +441,8 @@ static void draw_grab(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 	float grip = DriftInputButtonState(input, DRIFT_INPUT_GRAB);
 	
 	DriftPlayerAnimState* anim = &player->anim_state;
-	DriftVec2 wobble = DriftAffineDirection(transform, (DriftVec2){cosf(draw->tick/20.0f), sinf(draw->tick/10.0f)/2});
+	DriftVec2 wobble = DriftWaveComplex(draw->nanos, 0.5f);
+	wobble.y = 0.5f*DriftVec2Rotate(wobble, wobble).y;
 	DriftVec2 desired = DriftVec2FMA(player->reticle, wobble, 3*(1 - grip));
 	
 	DriftAffine t_l = DriftAffineMul(transform, (DriftAffine){-1, 0, 0, 1, 0, 0});
@@ -531,7 +536,7 @@ static void draw_dig_laze(DriftDraw* draw, DriftPlayerData* player, DriftAffine 
 	
 	if(player->is_digging){
 		DRIFT_ARRAY_PUSH(draw->fg_sprites, DriftSpriteMake(DRIFT_SPRITE_LASER_DOT, (DriftRGBA8){0xFF, 0x60, 0x40, 0x00}, (DriftAffine){1, 0, 0, 1, p1.x, p1.y}));
-		DRIFT_ARRAY_PUSH(draw->lights, DriftLightMake(true, DRIFT_SPRITE_LIGHT_RADIAL, (DriftVec4){{26.53f, 3.83f, 0.00f, 5.00f}}, (DriftAffine){250, 0, 0, 250, p1.x, p1.y}, LASER_RADIUS/4));
+		DRIFT_ARRAY_PUSH(draw->lights, DriftLightMake(DRIFT_SPRITE_LIGHT_RADIAL, (DriftVec4){{26.53f, 3.83f, 0.00f, 5.00f}}, (DriftAffine){250, 0, 0, 250, p1.x, p1.y}, LASER_RADIUS/4));
 	}
 }
 
@@ -623,7 +628,7 @@ static void update_scan(DriftUpdate* update, DriftPlayerData* player, DriftAffin
 	}
 	
 	// Collide reticle with the terrain.
-	float ray_t = DriftTerrainRaymarch(state->terra, player_pos, DriftVec2Add(player_pos, reticle), SCANNER_INNER_RADIUS, 2);
+	float ray_t = DriftTerrainRaymarch(state->terra, player_pos, DriftVec2Add(player_pos, reticle), 0, 2);
 	reticle = DriftVec2Mul(reticle, ray_t);
 	player->reticle = reticle;
 	
@@ -733,7 +738,7 @@ static void draw_scan(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 		}
 		
 		DriftAffine t = draw_offset_label(draw, player_pos, DriftVec2Sub(closest_pos, player_pos), label_color, label);
-		DriftSprite sprite = {.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_SCAN0], .color = DRIFT_RGBA8_WHITE, .matrix = t};
+		DriftSprite sprite = {.frame = DRIFT_FRAMES[DRIFT_SPRITE_SCAN0], .color = DRIFT_RGBA8_WHITE, .matrix = t};
 		
 		float progress = state->scan_progress[closest_type];
 		if(progress < 1){
@@ -756,28 +761,28 @@ static void draw_scan(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 	float c = cosf(phase0), s = sinf(phase0);
 	
 	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){
-		.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_GRABARM0], .color = DRIFT_RGBA8_WHITE,
+		.frame = DRIFT_FRAMES[DRIFT_SPRITE_GRABARM0], .color = DRIFT_RGBA8_WHITE,
 		.matrix = DriftAffineMul(transform, (DriftAffine){-0.7f, -0.7f, -0.7f, 0.7f, +retract, retract}),
 	}));
 	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){
-		.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_SCANNER], .color = DRIFT_RGBA8_WHITE,
+		.frame = DRIFT_FRAMES[DRIFT_SPRITE_SCANNER], .color = DRIFT_RGBA8_WHITE,
 		.matrix = DriftAffineTRS(origin[0], -phase0, DRIFT_VEC2_ONE),
 	}));
 	DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
-		.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_LIGHT_TRI], .color = {{0, 6, 6, 0}},
+		.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_TRI], .color = {{0, 6, 6, 0}},
 		.matrix = DriftAffineTRS(origin[0], -phase0, (DriftVec2){30, 30}),
 	}));
 	
 	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){
-		.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_GRABARM0], .color = DRIFT_RGBA8_WHITE,
+		.frame = DRIFT_FRAMES[DRIFT_SPRITE_GRABARM0], .color = DRIFT_RGBA8_WHITE,
 		.matrix = DriftAffineMul(transform, (DriftAffine){+0.7f, -0.7f, +0.7f, 0.7f, -retract, retract}),
 	}));
 	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){
-		.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_SCANNER], .color = DRIFT_RGBA8_WHITE,
+		.frame = DRIFT_FRAMES[DRIFT_SPRITE_SCANNER], .color = DRIFT_RGBA8_WHITE,
 		.matrix = DriftAffineTRS(origin[1], +phase0, DRIFT_VEC2_ONE),
 	}));
 	DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
-		.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_LIGHT_TRI], .color = {{0, 6, 6, 0}},
+		.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_TRI], .color = {{0, 6, 6, 0}},
 		.matrix = DriftAffineTRS(origin[1], +phase0, (DriftVec2){30, 30}),
 	}));
 	
@@ -813,7 +818,7 @@ static void draw_scan(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 	}
 	
 	DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
-		.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0, 0.5f, 0.5f, 5}},
+		.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0, 0.5f, 0.5f, 5}},
 		.matrix = DriftAffineMul((DriftAffine){80, 0, 0, 80, world_reticle.x, world_reticle.y}, (DriftAffine){c, s, -s, c, 0, 0}),
 	}));
 }

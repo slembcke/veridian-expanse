@@ -3,6 +3,9 @@
 #include <math.h>
 #include <float.h>
 
+#define LIFFT_FLOAT_TYPE float
+#include "lifft/lifft.h"
+
 static inline float DriftClamp(float x, float min, float max){return fmaxf(min, fminf(x, max));}
 static inline float DriftSaturate(float x){return fmaxf(0.0f, fminf(x, 1.0f));}
 static inline float DriftLerpConst(float a, float b, float dt){return a + DriftClamp(b - a, -dt ,dt);}
@@ -181,6 +184,18 @@ static inline bool DriftAffineVisibility(DriftAffine mvp, DriftVec2 center, Drif
 	
 	// Check the bounds against the clip space viewport.
 	return ((fabsf(csc.x) - cshw < 1) && (fabsf(csc.y) - cshh < 1));
+}
+
+//MARK: Waves and noise.
+
+static inline float DriftWaveSaw(u64 nanos, float hz){
+	float nano_hz = 1e-9f*hz;
+	return (nanos % (u64)(1/nano_hz))*nano_hz;
+}
+
+static inline DriftVec2 DriftWaveComplex(u64 nanos, float hz){
+	float phase = (float)(2*M_PI)*DriftWaveSaw(nanos, hz);
+	return (DriftVec2){cosf(phase), sinf(phase)};
 }
 
 #define DRIFT_PHI 1.618033988749895

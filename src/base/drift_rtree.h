@@ -1,4 +1,4 @@
-#define RTREE_BRANCH_FACTOR 32
+#define RTREE_BRANCH_FACTOR 24
 
 typedef struct {
 	u16 root, count;

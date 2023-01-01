@@ -15,17 +15,6 @@ typedef struct {
 typedef struct {
 	DriftComponent c;
 	DriftEntity* entity;
-	struct {
-		uint frame;
-		DriftRGBA8 color;
-
-		DriftLight light;
-	}* data;
-} DriftComponentSprite;
-
-typedef struct {
-	DriftComponent c;
-	DriftEntity* entity;
 	DriftVec2* position;
 	DriftVec2* velocity;
 	DriftVec2* rotation;
@@ -60,6 +49,8 @@ typedef struct {
 	DriftComponent c;
 	DriftEntity* entity;
 	DriftVec2* position;
+	DriftVec2* rotation;
+	float* clam;
 	bool* active;
 } DriftComponentPowerNode;
 
@@ -81,6 +72,8 @@ typedef struct {
 } DriftFlowNode;
 
 typedef struct {
+	DriftVec2 target_pos;
+	
 	DriftComponent c;
 	DriftEntity* entity;
 	DriftFlowNode* flow;
@@ -93,7 +86,7 @@ typedef struct {
 	struct {
 		u8 flow_map;
 		float radius;
-		DriftEntity next_node;
+		DriftEntity node;
 		DriftVec2 target_pos;
 	}* data;
 } DriftNavComponent;
@@ -125,8 +118,8 @@ typedef struct {
 } DriftComponentProjectiles;
 
 typedef struct {
-	float value, maximum;
-	uint damage_timestamp, damage_timeout;
+	float value, maximum, timeout;
+	uint damage_tick0;
 	DriftItemType drop;
 } DriftHealth;
 
@@ -170,7 +163,7 @@ typedef struct DriftPlayerData {
 	float temp, energy, energy_cap;
 	bool is_overheated, is_powered;
 	// TODO should store connected pnode instead of bool
-	uint power_timestamp, shield_timestamp;
+	u64 power_tick0, shield_tick0;
 	
 	bool headlight;
 	float nacelle_l, nacelle_r;

@@ -1,6 +1,6 @@
 #include "drift_game.h"
 
-const DriftSpriteFrame DRIFT_SPRITE_FRAMES[] = {
+const DriftFrame DRIFT_FRAMES[] = {
 	[DRIFT_SPRITE_NONE] = {.layer = DRIFT_ATLAS_MISC, .bounds = {0x10, 0x60, 0x1F, 0x6F}, .anchor = {8, 8}},
 	[DRIFT_SPRITE_SCAN_IMAGE] = {.layer = DRIFT_ATLAS_SCAN, .bounds = {0x00, 0x00, 0xFF, 0x3F}, .anchor = {127, 32}},
 	#include "sprite_defs.inc"
@@ -156,15 +156,15 @@ static void ConvolveXY(Buffer* dst, Buffer* src, const FilterKernel* k_x, const 
 	BufferDestroy(&tmp);
 }
 
-static DriftSpriteFrame LayerFrame(const GradientInfo *grad){
-	return (DriftSpriteFrame){.layer = grad->frame - _DRIFT_SPRITE_COUNT, .bounds = {0x00, 0x00, 0xFF, 0xFF}};
+static DriftFrame LayerFrame(const GradientInfo *grad){
+	return (DriftFrame){.layer = grad->frame - _DRIFT_SPRITE_COUNT, .bounds = {0x00, 0x00, 0xFF, 0xFF}};
 }
 
 void DriftGradientMap(u8* pixels, uint image_w, uint image_h, uint layer){
 	size_t row_len = 4*image_w;
 	
 	for(const GradientInfo* grad = GRADIENT_INFO; grad->frame != ~0u; grad++){
-		DriftSpriteFrame frame = grad->frame < _DRIFT_SPRITE_COUNT ? DRIFT_SPRITE_FRAMES[grad->frame] : LayerFrame(grad);
+		DriftFrame frame = grad->frame < _DRIFT_SPRITE_COUNT ? DRIFT_FRAMES[grad->frame] : LayerFrame(grad);
 		if(frame.layer + 1u != layer) continue;
 		
 		uint w = frame.bounds.r - frame.bounds.l + 1;

@@ -1,61 +1,71 @@
 #include <stdlib.h>
 #include "drift_game.h"
 
-static DriftEntity SpawnGlowBug(DriftGameState* state, DriftVec2 pos, DriftVec2 rot){
+
+typedef struct {
+	DriftEnemyType type;
+	DriftScanType scan;
+	float mass, radius;
+	DriftCollisionType collision;
+	DriftHealth health;
+} DriftEnemyInfo;
+
+static DriftEntity spawn_enemy(DriftGameState* state, DriftVec2 pos, DriftVec2 rot, DriftEnemyInfo info){
 	DriftEntity e = DriftMakeEntity(state);
 	DriftComponentAdd(&state->transforms.c, e);
 
 	uint enemy_idx = DriftComponentAdd(&state->enemies.c, e);
-	state->enemies.type[enemy_idx] = DRIFT_ENEMY_GLOW_BUG;
+	state->enemies.type[enemy_idx] = info.type;
+	
 	
 	uint scan_idx = DriftComponentAdd(&state->scan.c, e);
-	state->scan.type[scan_idx] = DRIFT_SCAN_GLOW_BUG;
+	state->scan.type[scan_idx] = info.scan;
 	
-	uint nav_idx = DriftComponentAdd(&state->bug_nav.c, e);
-	state->bug_nav.speed[nav_idx] = 50;
-	state->bug_nav.accel[nav_idx] = 150;
-
 	uint body_idx = DriftComponentAdd(&state->bodies.c, e);
-	float mass = 2, radius = 8;
+	float mass = info.mass, radius = info.radius;
 	state->bodies.position[body_idx] = pos;
 	state->bodies.rotation[body_idx] = rot;
 	state->bodies.mass_inv[body_idx] = 1/mass;
 	state->bodies.moment_inv[body_idx] = 2/(mass*radius*radius);
 	state->bodies.radius[body_idx] = radius;
-	state->bodies.collision_type[body_idx] = DRIFT_COLLISION_NON_HOSTILE;
+	state->bodies.collision_type[body_idx] = info.collision;
 	
 	uint health_idx = DriftComponentAdd(&state->health.c, e);
-	state->health.data [health_idx] = (DriftHealth){.value = 25, .maximum = 25, .drop = DRIFT_ITEM_LUMIUM};
+	state->health.data[health_idx] = info.health;
 	
 	return e;
 }
 
-static DriftEntity SpawnWorkerDrone(DriftGameState* state, DriftVec2 pos, DriftVec2 rot){
-	DriftEntity e = DriftMakeEntity(state);
-	DriftComponentAdd(&state->transforms.c, e);
-
-	uint enemy_idx = DriftComponentAdd(&state->enemies.c, e);
-	state->enemies.type[enemy_idx] = DRIFT_ENEMY_WORKER_BUG;
+static DriftEntity spawn_glow_bug(DriftGameState* state, DriftVec2 pos, DriftVec2 rot){
+	DriftEntity e = spawn_enemy(state, pos, rot, (DriftEnemyInfo){
+		.type = DRIFT_ENEMY_GLOW_BUG, .scan = DRIFT_SCAN_GLOW_BUG,
+		.mass = 2, .radius = 8, .collision = DRIFT_COLLISION_NON_HOSTILE,
+		.health = {.value = 25, .maximum = 25, .drop = DRIFT_ITEM_LUMIUM},
+	});
 	
-	uint scan_idx = DriftComponentAdd(&state->scan.c, e);
-	state->scan.type[scan_idx] = DRIFT_SCAN_HIVE_WORKER;
-	
-	uint nav_idx = DriftComponentAdd(&state->bug_nav.c, e);
-	state->bug_nav.speed[nav_idx] = 100;
-	state->bug_nav.accel[nav_idx] = 300;
+	DriftComponentAdd(&state->bug_nav.c, e);
+	return e;
+}
 
-	uint body_idx = DriftComponentAdd(&state->bodies.c, e);
-	float mass = 8, radius = 12;
-	state->bodies.position[body_idx] = pos;
-	state->bodies.rotation[body_idx] = rot;
-	state->bodies.mass_inv[body_idx] = 1/mass;
-	state->bodies.moment_inv[body_idx] = 2/(mass*radius*radius);
-	state->bodies.radius[body_idx] = radius;
-	state->bodies.collision_type[body_idx] = DRIFT_COLLISION_WORKER_DRONE;
-
-	uint health_idx = DriftComponentAdd(&state->health.c, e);
-	state->health.data [health_idx] = (DriftHealth){.value = 100, .maximum = 100, .drop = DRIFT_ITEM_SCRAP};
+static DriftEntity spawn_worker_bug(DriftGameState* state, DriftVec2 pos, DriftVec2 rot){
+	DriftEntity e = spawn_enemy(state, pos, rot, (DriftEnemyInfo){
+		.type = DRIFT_ENEMY_WORKER_BUG, .scan = DRIFT_SCAN_HIVE_WORKER,
+		.mass = 8, .radius = 12, .collision = DRIFT_COLLISION_WORKER_DRONE,
+		.health = {.value = 100, .maximum = 100, .drop = DRIFT_ITEM_SCRAP},
+	});
 	
+	DriftComponentAdd(&state->bug_nav.c, e);
+	return e;
+}
+
+static DriftEntity spawn_fighter_bug(DriftGameState* state, DriftVec2 pos, DriftVec2 rot){
+	DriftEntity e = spawn_enemy(state, pos, rot, (DriftEnemyInfo){
+		.type = DRIFT_ENEMY_FIGHTER_BUG, .scan = DRIFT_SCAN_HIVE_FIGHTER,
+		.mass = 8, .radius = 12, .collision = DRIFT_COLLISION_WORKER_DRONE,
+		.health = {.value = 200, .maximum = 200, .drop = DRIFT_ITEM_COPPER},
+	});
+	
+	DriftComponentAdd(&state->bug_nav.c, e);
 	return e;
 }
 
@@ -110,14 +120,18 @@ static void tick_spawns(DriftUpdate* update, DriftVec2 player_pos){
 		DriftVec2 offset = DriftRandomInUnitCircle();
 		DriftVec2 pos = DriftVec2FMA(player_pos, offset, DRIFT_SPAWN_RADIUS);
 		if(DriftCheckSpawn(update, pos, 8)){
-			DriftSelectionContext ctx = {.rand = rand()};
-			DriftEntity (*spawn_func)(DriftGameState*, DriftVec2, DriftVec2) = NULL;
+			DriftSelectionContext sel = {.rand = rand()};
+			DriftEntity (*spawn_func)(DriftGameState* state, DriftVec2 pos, DriftVec2 rot);
 			
 			switch(DriftTerrainSampleBiome(state->terra, pos).idx){
 				default:
 				case DRIFT_BIOME_LIGHT:{
-					if(DriftSelectWeight(&ctx, 100)) spawn_func = SpawnGlowBug;
-					if(DriftSelectWeight(&ctx, 20)) spawn_func = SpawnWorkerDrone;
+					if(DriftSelectWeight(&sel, 100)) spawn_func = spawn_glow_bug;
+					if(DriftSelectWeight(&sel, 30)) spawn_func = spawn_worker_bug;
+					if(DriftSelectWeight(&sel, 30)) spawn_func = spawn_fighter_bug;
+				} break;
+				case DRIFT_BIOME_CRYO:{
+					if(DriftSelectWeight(&sel, 30)) spawn_func = spawn_glow_bug;
 				} break;
 			}
 			
@@ -184,6 +198,17 @@ static void tick_enemies(DriftUpdate* update, DriftVec2 player_pos){
 				}
 			} break;
 			
+			case DRIFT_ENEMY_FIGHTER_BUG: {
+				if(aggro){
+					state->bug_nav.forward_bias[nav_idx] = DriftVec2Mul(player_delta, -0.3f/DriftVec2Length(player_delta));
+					state->bug_nav.speed[nav_idx] = 200;
+					state->bug_nav.accel[nav_idx] = 900;
+				} else {
+					state->bug_nav.speed[nav_idx] = 150;
+					state->bug_nav.accel[nav_idx] = 450;
+				}
+			} break;
+			
 			default: break;
 		}
 		
@@ -191,7 +216,7 @@ static void tick_enemies(DriftUpdate* update, DriftVec2 player_pos){
 	}
 }
 
-static void tick_navs(DriftUpdate* update){
+static void tick_bug_navs(DriftUpdate* update){
 	DriftGameState* state = update->state;
 	
 	uint nav_idx, body_idx;
@@ -201,9 +226,8 @@ static void tick_navs(DriftUpdate* update){
 		{},
 	});
 	
-	float period = 2e9;
-	float phase = 2*(float)M_PI/period*(update->ctx->tick_nanos % (u64)period), inc = 0.2f;
-	DriftVec2 rot = {cosf(phase), sinf(phase)}, rinc = {cosf(inc), sinf(inc)};
+	DriftVec2 rot = DriftWaveComplex(update->nanos, 0.5f);
+	DriftVec2 inc = {cosf(0.2f), sinf(0.2f)};
 
 	while(DriftJoinNext(&join)){
 		DriftVec2 pos = state->bodies.position[body_idx];
@@ -229,7 +253,7 @@ static void tick_navs(DriftUpdate* update){
 		*w = (*w)*0.7f + DriftVec2Cross(forward, *v)/50;
 		
 		// Increment the rotation to put the next bug out of phase with this one.
-		rot = DriftVec2Rotate(rot, rinc);
+		rot = DriftVec2Rotate(rot, inc);
 	}
 }
 
@@ -240,7 +264,7 @@ void DriftTickEnemies(DriftUpdate* update){
 	
 	tick_spawns(update, player_pos);
 	tick_enemies(update, player_pos);
-	tick_navs(update);
+	tick_bug_navs(update);
 }
 
 static uint anim_loop(uint tick, uint div, uint f0, uint f1){
@@ -250,27 +274,59 @@ static uint anim_loop(uint tick, uint div, uint f0, uint f1){
 static void DrawGlowBug(DriftDraw* draw, DriftEntity e, DriftAffine transform){
 	DriftGameState* state = draw->state;
 	uint tick = e.id + draw->tick;
-	uint frame = anim_loop(tick++, 8, DRIFT_SPRITE_GLOW_BUG1, DRIFT_SPRITE_GLOW_BUG6);
+	uint frame = anim_loop(tick, 8, DRIFT_SPRITE_GLOW_BUG00, DRIFT_SPRITE_GLOW_BUG05);
 	DRIFT_ARRAY_PUSH(draw->fg_sprites, DriftSpriteMake(frame, DRIFT_RGBA8_WHITE, transform));
 	
 	DriftAffine m = DriftAffineMul(transform, (DriftAffine){90, 0, 0, 90, 0, -8});
-	DRIFT_ARRAY_PUSH(draw->lights, DriftLightMake(false, DRIFT_SPRITE_LIGHT_RADIAL, (DriftVec4){{0.12f, 0.08f, 0.02f, 2.00f}}, m, 0));
+	DRIFT_ARRAY_PUSH(draw->lights, DriftLightMake(DRIFT_SPRITE_LIGHT_RADIAL, (DriftVec4){{0.12f, 0.08f, 0.02f, 2.00f}}, m, 0));
+}
+
+static void DrawTrilobyte(DriftDraw* draw, DriftEntity e, DriftAffine transform){
+	DriftGameState* state = draw->state;
+	uint tick = e.id + draw->tick;
+	
+	uint body_idx = DriftComponentFind(&state->bodies.c, e);
+	float turn = -0.1f*state->bodies.angular_velocity[body_idx];
+	DriftVec2 q = {cosf(turn), sinf(turn)};
+	
+	DriftAffine t = transform, foo[8];
+	for(uint i = 0; i < 8; i++){
+		foo[i] = t = DriftAffineMul(t, (DriftAffine){q.x, q.y, -q.y, q.x, 0, -8});
+	}
+	
+	DRIFT_ARRAY_PUSH(draw->fg_sprites, DriftSpriteMake(DRIFT_SPRITE_TRILOBYTE_TAIL_BLUE00, DRIFT_RGBA8_WHITE, foo[7]));
+	for(uint i = 6; i < 8; i--){
+		uint frame = anim_loop(tick + 5*i, 4, DRIFT_SPRITE_TRILOBYTE_BODY_BLUE00, DRIFT_SPRITE_TRILOBYTE_BODY_BLUE05);
+		DRIFT_ARRAY_PUSH(draw->fg_sprites, DriftSpriteMake(frame, DRIFT_RGBA8_WHITE, foo[i]));
+	}
+	DRIFT_ARRAY_PUSH(draw->fg_sprites, DriftSpriteMake(DRIFT_SPRITE_TRILOBYTE_HEAD_BLUE00, DRIFT_RGBA8_WHITE, transform));
 }
 
 static void DrawWorkerBug(DriftDraw* draw, DriftEntity e, DriftAffine transform){
 	DriftGameState* state = draw->state;
 	uint tick = e.id + draw->tick;
-	uint frame = anim_loop(tick++, 8, DRIFT_SPRITE_WORKER_DRONE1, DRIFT_SPRITE_WORKER_DRONE4);//DRIFT_SPRITE_WORKER_DRONE1 + (tick++)/8%4;
+	uint frame = anim_loop(tick, 8, DRIFT_SPRITE_WORKER_DRONE00, DRIFT_SPRITE_WORKER_DRONE03);//DRIFT_SPRITE_WORKER_DRONE1 + (tick++)/8%4;
 	DRIFT_ARRAY_PUSH(draw->fg_sprites, DriftSpriteMake(frame, DRIFT_RGBA8_WHITE, transform));
 	
 	DriftAffine m = DriftAffineMul(transform, (DriftAffine){30, 0, 0, 30, 0, -8});
-	DRIFT_ARRAY_PUSH(draw->lights, DriftLightMake(false, DRIFT_SPRITE_LIGHT_RADIAL, (DriftVec4){{0.26f, 0.43f, 0.51f, 1.00f}}, m, 0));
+	DRIFT_ARRAY_PUSH(draw->lights, DriftLightMake(DRIFT_SPRITE_LIGHT_RADIAL, (DriftVec4){{0.26f, 0.43f, 0.51f, 1.00f}}, m, 0));
+}
+
+static void DrawFighterBug(DriftDraw* draw, DriftEntity e, DriftAffine transform){
+	DriftGameState* state = draw->state;
+	uint tick = e.id + draw->tick;
+	uint frame = anim_loop(tick, 8, DRIFT_SPRITE_FIGHTER_DRONE00, DRIFT_SPRITE_FIGHTER_DRONE03);//DRIFT_SPRITE_WORKER_DRONE1 + (tick++)/8%4;
+	DRIFT_ARRAY_PUSH(draw->fg_sprites, DriftSpriteMake(frame, DRIFT_RGBA8_WHITE, transform));
+	
+	DriftAffine m = DriftAffineMul(transform, (DriftAffine){45, 0, 0, 45, 0, -8});
+	DRIFT_ARRAY_PUSH(draw->lights, DriftLightMake(DRIFT_SPRITE_LIGHT_RADIAL, (DriftVec4){{0.89f, 0.11f, 0.99f, 0.00f}}, m, 0));
 }
 
 typedef void DrawFunc(DriftDraw* draw, DriftEntity e, DriftAffine transform);
-static DrawFunc* const DRAW_FUNCS[] = {
-	[DRIFT_ENEMY_GLOW_BUG] = DrawGlowBug,
+static DrawFunc* const DRAW_FUNCS[_DRIFT_ENEMY_COUNT] = {
+	[DRIFT_ENEMY_GLOW_BUG] = DrawTrilobyte,
 	[DRIFT_ENEMY_WORKER_BUG] = DrawWorkerBug,
+	[DRIFT_ENEMY_FIGHTER_BUG] = DrawFighterBug,
 };
 
 void DriftDrawEnemies(DriftDraw* draw){
@@ -297,7 +353,7 @@ void DriftDrawEnemies(DriftDraw* draw){
 		if(frame % health_div){
 			DriftAffine t = {1, 0, 0, 1, transform.x, transform.y - 14};
 			DRIFT_ARRAY_PUSH(draw->overlay_sprites, ((DriftSprite){
-				.frame = DRIFT_SPRITE_FRAMES[DRIFT_SPRITE_HEALTH1 - 1 + frame], .color = DRIFT_RGBA8_WHITE, .matrix = t,
+				.frame = DRIFT_FRAMES[DRIFT_SPRITE_HEALTH1 - 1 + frame], .color = DRIFT_RGBA8_WHITE, .matrix = t,
 			}));
 		}
 	}

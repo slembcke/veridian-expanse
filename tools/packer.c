@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -25,6 +26,8 @@
 
 
 #define ATLAS_SIZE 256
+
+bool WRITE_PNG;
 
 typedef struct {uint8_t r, g, b, a;} RGBA8;
 
@@ -53,8 +56,10 @@ typedef struct {
 static void write_image(const char* name_format, Image img, int atlas_index){
 	char filename[1024];
 	
-	// snprintf(filename, sizeof(filename), "resources/gfx/ATLAS%d.%s", atlas_index, "png");
-	// stbi_write_png(filename, img.w, img.h, 4, img.px, 0);
+	if(WRITE_PNG){
+		snprintf(filename, sizeof(filename), name_format, atlas_index, "png");
+		stbi_write_png(filename, img.w, img.h, 4, img.px, 0);
+	}
 	
 	RGBA8 flip[img.w*img.h];
 	for(int i = 0; i < img.h; i++){
@@ -104,9 +109,9 @@ static int gen_atlases(lua_State *lua){
 		
 		{ // Read in normals/glow.
 			snprintf(filename, sizeof(filename), "%s_n.png", input_name);
-			Image img = {.px = (RGBA8*)stbi_load(filename, &img.w, &img.h, NULL, 4)};
-			input_normal[input_idx] = img;
-			if(img.px == NULL){
+			Image grad = {.px = (RGBA8*)stbi_load(filename, &grad.w, &grad.h, NULL, 4)};
+			input_normal[input_idx] = grad;
+			if(grad.px == NULL){
 				fprintf(stderr, "PACKING ERROR: '%s' not found.\n", filename);
 				abort();
 			} else {
@@ -122,19 +127,20 @@ static int gen_atlases(lua_State *lua){
 				// printf("loaded '%s'\n", filename);
 			}
 			
-			if(img.w != w || img.h != h || glow.w != w || glow.h != h){
+			if(grad.w != w || grad.h != h || glow.w != w || glow.h != h){
 				fprintf(stderr, "PACKING ERROR: '%s' size does not match.\n", input_name);
+				fprintf(stderr, "grad: (%d x %d), glow: (%d x %d)\n", grad.w, grad.h, glow.w, glow.h);
 				abort();
 			}
 			// Convert to gradient + glow
-			for(int i = 0; i < img.w*img.h; i++){
-				float nx = 2*img.px[i].r/255.0 - 1;
-				float ny = 2*img.px[i].g/255.0 - 1;
-				float nz = 2*img.px[i].b/255.0 - 1;
-				img.px[i].r = 255*fmaxf(0, fminf(0.5 - 0.5*nx/nz, 1));
-				img.px[i].g = 255*fmaxf(0, fminf(0.5 - 0.5*ny/nz, 1));
-				img.px[i].b = glow.px[i].b;
-				img.px[i].a = 255;
+			for(int i = 0; i < grad.w*grad.h; i++){
+				float nx = 2*grad.px[i].r/255.0 - 1;
+				float ny = 2*grad.px[i].g/255.0 - 1;
+				float nz = 2*grad.px[i].b/255.0 - 1;
+				grad.px[i].r = 255*fmaxf(0, fminf(0.5 - 0.5*nx/nz, 1));
+				grad.px[i].g = 255*fmaxf(0, fminf(0.5 - 0.5*ny/nz, 1));
+				grad.px[i].b = glow.px[i].b;
+				grad.px[i].a = 255;
 			}
 		}
 	}
@@ -227,6 +233,9 @@ int main(int argc, const char* argv[]){
 	
 	lua_pushcfunction(lua, gen_atlases);
   lua_setglobal(lua, "gen_atlases");
+	
+	char* write_png = getenv("WRITE_PNG");
+	WRITE_PNG = strcmp(write_png ?: "", "1") == 0;
 	
 	// char filename[1024];
 	// snprintf(filename, sizeof(filename), "%s/tools/packer.lua", getenv("VPATH"));

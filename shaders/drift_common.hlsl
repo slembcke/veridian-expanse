@@ -59,11 +59,11 @@ struct DriftSpriteVertInput {
 	DRIFT_ATTR0 float2 uv;
 	// Instance attribs:
 	DRIFT_ATTR1 float4 mat0;
-	DRIFT_ATTR2 float4 mat1_z_shiny;
+	DRIFT_ATTR2 float2 mat1;
 	DRIFT_ATTR3 float4 color;
 	DRIFT_ATTR4 uint4 frame_bounds;
-	DRIFT_ATTR5 uint2 anchor;
-	DRIFT_ATTR6 uint layer;
+	DRIFT_ATTR5 uint3 frame_props;
+	DRIFT_ATTR6 uint3 sprite_props;
 };
 
 struct DriftSpriteFragInput {
@@ -73,30 +73,29 @@ struct DriftSpriteFragInput {
 	nointerpolation float4 uv_bounds;
 	nointerpolation float4 color;
 	// TODO combine with props?
-	nointerpolation float2 uv_scale;
-	nointerpolation float shiny;
+	nointerpolation float4 uv_scale_shiny;
 };
 
 void DriftSpriteVShader(in DriftSpriteVertInput IN, out DriftSpriteFragInput FRAG, bool apply_rounding){
 	// Transform:
-	if(apply_rounding) IN.mat1_z_shiny.xy = round(IN.mat1_z_shiny.xy);
-	float2x3 transform = float2x3(IN.mat0.xz, IN.mat1_z_shiny.x, IN.mat0.yw, IN.mat1_z_shiny.y);
+	if(apply_rounding) IN.mat1.xy = round(IN.mat1.xy);
+	float2x3 transform = float2x3(IN.mat0.xz, IN.mat1.x, IN.mat0.yw, IN.mat1.y);
 	float2 size = IN.frame_bounds.zw - IN.frame_bounds.xy + 1;
-	float2 world_pos = mul(transform, float3(size*IN.uv - U8ToSigned(IN.anchor.xy), 1));
+	float2 world_pos = mul(transform, float3(size*IN.uv - U8ToSigned(IN.frame_props.xy), 1));
 	float2 clip_pos = mul(float2x3(DRIFT_MATRIX_VP), float3(world_pos, 1));
 	// Apply foreshortening.
-	clip_pos *= 1 - IN.mat1_z_shiny.z*(1 - DRIFT_FORESHORTENING);
+	clip_pos *= 1 - IN.sprite_props[0]*(1 - DRIFT_FORESHORTENING)/255;
 	
 	// Output:
 	FRAG.position = float4(clip_pos, 0, 1);
 	FRAG.ssuv = 0.5*clip_pos + 0.5;
 	FRAG.ssuv_prev = 0.5 + 0.5*mul(float2x3(DRIFT_MATRIX_REPROJ), FRAG.position.xyw).xy;
-	FRAG.uv = float3(lerp(IN.frame_bounds.xy, IN.frame_bounds.zw + 1, IN.uv)/DRIFT_ATLAS_SIZE, IN.layer);
+	FRAG.uv = float3(lerp(IN.frame_bounds.xy, IN.frame_bounds.zw + 1, IN.uv)/DRIFT_ATLAS_SIZE, IN.frame_props.z);
 	FRAG.uv_bounds = IN.frame_bounds/DRIFT_ATLAS_SIZE;
 	FRAG.color = IN.color;
 	float2x2 scale = mul(float2x2(DRIFT_MATRIX_V), float2x2(transform));
-	FRAG.uv_scale = DRIFT_ATLAS_SIZE*float2(length(scale[0]), length(scale[1]));
-	FRAG.shiny = IN.mat1_z_shiny.w;
+	FRAG.uv_scale_shiny.xy = DRIFT_ATLAS_SIZE*float2(length(scale[0]), length(scale[1]));
+	FRAG.uv_scale_shiny.z = IN.sprite_props.y/255.0;
 }
 
 float2 DoubleAngle(float2 n){

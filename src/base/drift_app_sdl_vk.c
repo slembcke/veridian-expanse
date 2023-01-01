@@ -1334,6 +1334,7 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 			
 			app->shell_window = SDL_CreateWindow("Veridian Expanse", app->window_x, app->window_y, app->window_w, app->window_h, window_flags);
 			DRIFT_ASSERT_HARD(app->shell_window, "Failed to create SDL Vulkan window.");
+			SDL_SetWindowMinimumSize(app->shell_window, 640, 360);
 			TracyCZoneEnd(ZONE_WINDOW);
 			
 			SDL_PumpEvents();
@@ -1345,9 +1346,9 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 				DriftImage img = DriftAssetLoadImage(mem, "gfx/cursor.qoi");
 				
 				SDL_Surface* cursor_surface = SDL_CreateRGBSurfaceWithFormatFrom(img.pixels, img.w, img.h, 32, img.w*4, SDL_PIXELFORMAT_RGBA32);
-				DRIFT_ASSERT(cursor_surface, "surface error: %s", SDL_GetError());
+				DRIFT_ASSERT(cursor_surface, "Failed to create surface for cursor: %s", SDL_GetError());
 				SDL_Cursor* cursor = SDL_CreateColorCursor(cursor_surface, 1, 1);
-				DRIFT_ASSERT(cursor, "create cursor error: %s", SDL_GetError());
+				DRIFT_ASSERT(cursor, "Failed to create cursor: %s", SDL_GetError());
 				SDL_SetCursor(cursor);
 			}
 			

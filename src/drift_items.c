@@ -146,7 +146,7 @@ static DriftEntity pnode_make(DriftGameState* state, DriftItemType type, DriftVe
 }
 
 static void pnode_draw(DriftDraw* draw, DriftVec2 pos){
-	bool flash = draw->tick%20 < 15;
+	bool flash = DriftWaveSaw(draw->nanos, 3) < 0.75f;
 	
 	// TODO draw lines in parts to highlight min dist?
 	DriftNearbyNodesInfo info = DriftSystemPowerNodeNearby(draw->state, pos, draw->mem, DRIFT_POWER_BEAM_RADIUS);
@@ -164,8 +164,8 @@ static void pnode_draw(DriftDraw* draw, DriftVec2 pos){
 			DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){pos, p1, {1.5}, {0x80, 0x00, 0x00, 0x80}}));
 			DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){p1, node->pos, {1.5}, {0x80, 0x40, 0x00, 0x80}}));
 			
-			float foo = 1 - fabsf(sinf(draw->tick/10.0f)); // TODO
-			DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){p0, DriftVec2Lerp(p0, pos, foo*node->blocked_at), {DRIFT_POWER_BEAM_RADIUS, DRIFT_POWER_BEAM_RADIUS - 1.5f}, {0x80, 0x40, 0x00, 0x80}}));
+			float pulse = 1 - fabsf(DriftWaveComplex(draw->nanos, 1).x);
+			DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){p0, DriftVec2Lerp(p0, pos, pulse*node->blocked_at), {DRIFT_POWER_BEAM_RADIUS, DRIFT_POWER_BEAM_RADIUS - 1.5f}, {0x80, 0x40, 0x00, 0x80}}));
 		} else {
 			// Draw good links in green.
 			u8 v = info.node_can_connect ? 0xFF : 0x20;
@@ -283,7 +283,7 @@ static DriftEntity item_make_generic(DriftGameState* state, DriftItemType type, 
 	state->bodies.rotation[body_idx] = (DriftVec2){cosf(a*2*(float)M_PI), sinf(a*2*(float)M_PI)};
 	state->bodies.angular_velocity[body_idx] = 0; // TODO need better random spin?
 	
-	DriftSpriteFrame frame = DRIFT_SPRITE_FRAMES[DRIFT_PICKUP_ITEMS[type].frame];
+	DriftFrame frame = DRIFT_FRAMES[DRIFT_PICKUP_ITEMS[type].frame];
 	float radius = (frame.bounds.r - frame.bounds.l)/2, mass = 0.1f;
 	state->bodies.mass_inv[body_idx] = 1/mass;
 	state->bodies.moment_inv[body_idx] = 1/(mass*0.5f*radius*radius);
@@ -293,11 +293,11 @@ static DriftEntity item_make_generic(DriftGameState* state, DriftItemType type, 
 	return e;
 }
 
-static DriftSprite sprite_for_item(DriftItemType type, DriftAffine matrix){
+DriftSprite DriftSpriteForItem(DriftItemType type, DriftAffine matrix){
 	DriftSpriteEnum frame = DRIFT_PICKUP_ITEMS[type].frame;
 	return (DriftSprite){
-		.frame = DRIFT_SPRITE_FRAMES[frame], .matrix = matrix,
-		.color = DRIFT_RGBA8_WHITE, .shiny = DRIFT_PICKUP_ITEMS[type].shiny,
+		.frame = DRIFT_FRAMES[frame], .color = DRIFT_RGBA8_WHITE, .matrix = matrix,
+		.shiny = (u8)(DRIFT_PICKUP_ITEMS[type].shiny/255),
 	};
 }
 
@@ -305,8 +305,8 @@ static DriftLight light_for_item(DriftItemType type, DriftAffine matrix){
 	DriftSpriteEnum frame = DRIFT_PICKUP_ITEMS[type].light_frame;
 	float size = DRIFT_PICKUP_ITEMS[type].light_size;
 	return (DriftLight){
-		.frame = DRIFT_SPRITE_FRAMES[frame], .matrix = DriftAffineMul(matrix, (DriftAffine){size, 0, 0, size, 0, 0}),
-		.color = DRIFT_PICKUP_ITEMS[type].light_color,
+		.frame = DRIFT_FRAMES[frame], .color = DRIFT_PICKUP_ITEMS[type].light_color,
+		.matrix = DriftAffineMul(matrix, (DriftAffine){size, 0, 0, size, 0, 0}),
 	};
 }
 
@@ -324,7 +324,7 @@ void DriftItemDraw(DriftDraw* draw, DriftItemType type, DriftVec2 pos){
 	DRIFT_ASSERT(DRIFT_PICKUP_ITEMS[type].make, "Item is not a pickup.");
 	
 	DriftAffine matrix = (DriftAffine){1, 0, 0, 1, pos.x, pos.y};
-	DRIFT_ARRAY_PUSH(draw->fg_sprites, sprite_for_item(type, matrix));
+	DRIFT_ARRAY_PUSH(draw->fg_sprites, DriftSpriteForItem(type, matrix));
 	if(DRIFT_PICKUP_ITEMS[type].light_frame) DRIFT_ARRAY_PUSH(draw->lights, light_for_item(type, matrix));
 	
 	DriftItemDrawPickupFunc* func = DRIFT_PICKUP_ITEMS[type].draw;
@@ -352,21 +352,23 @@ void DriftItemDrop(DriftUpdate* update, DriftEntity entity, DriftItemType type){
 
 void DriftDrawItems(DriftDraw* draw){
 	DriftGameState* state = draw->state;
-	DriftSprite* sprites = DRIFT_ARRAY_RANGE(draw->fg_sprites, state->items.c.count);
-	DriftLight* lights = DRIFT_ARRAY_RANGE(draw->lights, state->items.c.count);
+	DriftAffine vp_matrix = draw->vp_matrix;
 	
 	uint item_idx, transform_idx;
-	DriftJoin deposits = DriftJoinMake((DriftComponentJoin[]){
+	DriftJoin join = DriftJoinMake((DriftComponentJoin[]){
 		{&item_idx, &state->items.c},
 		{&transform_idx, &state->transforms.c},
 		{},
 	});
-	while(DriftJoinNext(&deposits)){
-		*sprites++ = sprite_for_item(state->items.type[item_idx], state->transforms.matrix[transform_idx]);
-		*lights++ = light_for_item(state->items.type[item_idx], state->transforms.matrix[transform_idx]);
+	while(DriftJoinNext(&join)){
+		DriftAffine m = state->transforms.matrix[transform_idx];
+		DriftVec2 pos = DriftAffineOrigin(m);
+		DriftItemType type = state->items.type[item_idx];
+		if(type == DRIFT_ITEM_POWER_NODE || !DriftAffineVisibility(vp_matrix, pos, (DriftVec2){16, 16})) continue;
+		
+		DRIFT_ARRAY_PUSH(draw->fg_sprites, DriftSpriteForItem(type, m));
+		if(DRIFT_PICKUP_ITEMS[type].light_frame) DRIFT_ARRAY_PUSH(draw->lights, light_for_item(type, m));
 	}
-	DriftArrayRangeCommit(draw->fg_sprites, sprites);
-	DriftArrayRangeCommit(draw->lights, lights);
 }
 
 void DriftTickItemSpawns(DriftUpdate* update){
@@ -731,7 +733,7 @@ void DriftCraftUI(DriftDraw* draw, DriftUIState* ui_state){
 	win->rect = (mu_Rect){(int)(extents.x - UI_SIZE.x)/2, (int)(extents.y - UI_SIZE.y)/2, UI_SIZE.x, UI_SIZE.y};
 	win->open = (*ui_state == DRIFT_UI_STATE_CRAFT);
 	
-	if(mu_begin_window_ex(mu, TITLE, win->rect, MU_OPT_NOTITLE | MU_OPT_NOSCROLL)){
+	if(mu_begin_window_ex(mu, TITLE, win->rect, MU_OPT_NOSCROLL)){
 		mu_layout_row(mu, 2, (int[]){-1}, 18);
 		mu_begin_box(mu, MU_COLOR_GROUPBG, 0);
 		mu_layout_row(mu, 2, (int[]){-60, -1}, -1);
