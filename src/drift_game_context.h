@@ -1,4 +1,19 @@
-#define DRIFT_FLOW_MAP_COUNT 2
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
+typedef enum {
+	DRIFT_FLOW_MAP_POWER,
+	DRIFT_FLOW_MAP_PLAYER,
+	DRIFT_FLOW_MAP_WAYPOINT,
+	_DRIFT_FLOW_MAP_COUNT,
+} DriftFlowMapID;
 
 #define TMP_SAVE_FILENAME "dump.bin"
 
@@ -6,45 +21,73 @@ typedef struct DriftNuklear DriftNuklear;
 typedef struct DriftGameContext DriftGameContext;
 typedef struct DriftGameState DriftGameState;
 
+typedef struct {
+	DriftItemType type;
+	uint count;
+} DriftCargoSlot;
+
 // TODO audit
 struct DriftGameState {
 	DRIFT_ARRAY(DriftComponent*) components;
 	DRIFT_ARRAY(DriftTable*) tables;
+	DRIFT_ARRAY(DriftEntity) hot_entities;
 	
-	mtx_t entities_mtx;
 	DriftEntitySet entities;
+	DRIFT_ARRAY(DriftEntity) dead_entities;
+	
 	DriftComponentTransform transforms;
 	DriftComponentRigidBody bodies;
 	DriftComponentPlayer players;
 	DriftComponentDrone drones;
-	// DriftComponentOreDeposit ore_deposits;
 	DriftComponentItem items;
 	DriftComponentScan scan;
+	DriftComponentScanUI scan_ui;
 	DriftComponentPowerNode power_nodes;
 	DriftTablePowerNodeEdges power_edges;
-	DriftComponentFlowMap flow_maps[DRIFT_FLOW_MAP_COUNT];
+	DriftComponentFlowMap flow_maps[_DRIFT_FLOW_MAP_COUNT];
 	DriftNavComponent navs;
 	DriftComponentProjectiles projectiles;
 	DriftComponentHealth health;
 	DriftComponentBugNav bug_nav;
 	DriftComponentEnemy enemies;
 	
+	DriftComponentHives hives;
+	
 	DriftTerrain* terra;
 	DriftRTree rtree;
 	DriftPhysics* physics;
 	
-	DriftAudioSampler thruster_sampler;
-	
-	u16 inventory[_DRIFT_ITEM_COUNT];
+	DriftEntity player;
 	float scan_progress[_DRIFT_SCAN_COUNT];
 	
 	struct {
-		bool enable_controls;
-		bool show_hud;
+		u16 skiff[_DRIFT_ITEM_COUNT];
+		u16 transit[_DRIFT_ITEM_COUNT];
+		u16 cargo[_DRIFT_ITEM_COUNT];
+	} inventory;
+	
+	struct {
+		bool is_research;
+		DriftItemType item;
+		float progress;
+	} fab;
+	
+	struct {
+		uint count, pod;
+	} dispatch;
+	
+	DriftScript* script;
+	
+	// TODO move into player?
+	DriftAudioSampler thruster_sampler;
+	
+	struct {
+		// NOTE: These fields do not get saved and default to 0.
+		uint save_lock;
+		bool disable_look, disable_move, disable_hud, disable_scan;
+		bool needs_tutorial, spawn_at_start, factory_needs_reboot, never_seen_map;
+		DriftToolType tool_restrict;
 		DriftScanType scan_restrict;
-		bool factory_rebooted;
-		
-		DriftEntity factory_node;
 	} status;
 	
 	struct {
@@ -53,58 +96,49 @@ struct DriftGameState {
 	} debug;
 };
 
-void DriftGameStateInit(DriftGameState* state, bool reset_game);
+DriftGameState* DriftGameStateNew(tina_job* job);
+void DriftGameStateFree(DriftGameState* state);
+void DriftGameStateSetupIntro(DriftGameState* state);
+
 void DriftGameStateRender(DriftDraw* draw);
 
 DriftEntity DriftMakeEntity(DriftGameState* state);
-void DriftDestroyEntity(DriftUpdate* update, DriftEntity entity);
-
-typedef struct DriftScript {
-	DriftUpdate* update;
-	
-	u8 buffer[64*1024];
-	tina* coro;
-	bool debug_skip;
-	
-	void* script_ctx;
-	void (*draw)(DriftDraw* draw, struct DriftScript* script);
-} DriftScript;
-
-void* DriftTutorialScript(tina* coro, void* value);
+DriftEntity DriftMakeHotEntity(DriftGameState* state);
+void DriftDestroyEntity(DriftGameState* state, DriftEntity entity);
 
 typedef struct DriftToast {
 	char message[64];
 	u64 timestamp;
-	uint count;
+	uint count, num;
 } DriftToast;
 
 struct DriftGameContext {
-	DriftApp* app;
-	
-	DriftGameState state;
-	DriftEntity player;
-	DriftScript script;
+	DriftGameState* state;
 	DriftToast toasts[DRIFT_MAX_TOASTS];
 	
-	DriftInput input;
-	
 	DriftDrawShared* draw_shared;
+	
+	struct {
+		bool dynamic;
+		float size, dry, wet, decay, cutoff;
+	} reverb;
 	
 	float time_scale_log;
 	// Current and init wall clock times.
 	u64 clock_nanos, init_nanos;
 	// Game's current update, tick, and substep times.
 	u64 update_nanos, tick_nanos;
-	uint current_tick, _tick_counter;
+	uint current_tick, _tick_counter; // TODO should be in state instead?
 	uint current_frame, _frame_counter;
 	
 	mu_Context* mu;
 	DriftUIState ui_state;
 	DriftScanType last_scan;
+	bool is_docked;
 	
 	struct {
 		DriftNuklear* ui;
-		bool show_ui, hide_hud, godmode;
+		bool show_ui, reset_ui, godmode;
 		
 		bool reset_on_load;
 		bool draw_terrain_sdf, hide_terrain_decals, disable_haze, boost_ambient;
@@ -116,26 +150,20 @@ struct DriftGameContext {
 
 double DriftGameContextUpdateNanos(DriftGameContext* ctx);
 
-void DriftContextGameStart(tina_job* job);
-void DriftGameContextLoop(tina_job* job);
-
-void DriftContextPushToast(DriftGameContext* ctx, const char* format, ...);
-
 typedef struct DriftUpdate {
 	DriftGameContext* ctx;
 	DriftGameState* state;
-	DriftAudioContext* audio;
 	DriftMem* mem;
 	tina_job* job;
-	tina_scheduler* scheduler;
 	uint frame, tick;
 	u64 nanos;
 	float dt, tick_dt;
 	DriftAffine prev_vp_matrix;
-	DriftEntity* _dead_entities;
 } DriftUpdate;
 
-void DriftGameStateIO(DriftIO* io);
+void DriftGameStateSave(DriftGameState* state);
+bool DriftGameStateLoad(DriftGameState* state);
+
 void DriftDebugUI(DriftUpdate* _update, DriftDraw* _draw);
 
 #if true
@@ -153,6 +181,12 @@ static inline void DriftDebugSegment2(DriftGameState* state, DriftVec2 p0, Drift
 }
 static inline void DriftDebugRay(DriftGameState* state, DriftVec2 p0, DriftVec2 dir, float mul, DriftRGBA8 color){
 	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = p0, .p1 = DriftVec2FMA(p0, dir, mul), .radii = {1}, .color = color}));
+}
+static void DriftDebugBB(DriftGameState* state, DriftAABB2 bb, float radius, DriftRGBA8 color){
+	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = {bb.l, bb.b}, .p1 = {bb.r, bb.b}, .radii = {radius}, .color = color}));
+	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = {bb.l, bb.t}, .p1 = {bb.r, bb.t}, .radii = {radius}, .color = color}));
+	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = {bb.l, bb.b}, .p1 = {bb.l, bb.t}, .radii = {radius}, .color = color}));
+	DRIFT_ARRAY_PUSH(state->debug.prims, ((DriftPrimitive){.p0 = {bb.r, bb.b}, .p1 = {bb.r, bb.t}, .radii = {radius}, .color = color}));
 }
 static inline void DriftDebugTransform(DriftGameState* state, DriftAffine transform, float scale){
 	DriftVec2 p0 = DriftAffinePoint(transform, (DriftVec2){0, 0});

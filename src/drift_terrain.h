@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #define DRIFT_TERRAIN_TILE_SCALE 8
 #define DRIFT_TERRAIN_TILE_SIZE 32
 #define DRIFT_TERRAIN_TILE_SIZE_SQ (DRIFT_TERRAIN_TILE_SIZE*DRIFT_TERRAIN_TILE_SIZE)
@@ -51,6 +61,9 @@ typedef struct {
 	struct {
 		DriftRGBA8 biome[DRIFT_TERRAIN_TILEMAP_SIZE_SQ];
 		DriftRGBA8 visibility[DRIFT_TERRAIN_TILEMAP_SIZE_SQ];
+		u8 resources[DRIFT_TERRAIN_TILEMAP_SIZE_SQ];
+		u8 biomass[DRIFT_TERRAIN_TILEMAP_SIZE_SQ];
+		
 		DriftTerrainTileCoord coord[DRIFT_TERRAIN_TILE_COUNT];
 		DriftTerrainTileState state[DRIFT_TERRAIN_TILE_COUNT];
 		DriftTerrainDensity density[DRIFT_TERRAIN_TILE_COUNT];
@@ -79,11 +92,19 @@ void DriftTerrainFree(DriftTerrain* terra);
 void DriftTerrainResetCache(DriftTerrain* terra);
 void DriftTerrainUpdateVisibility(DriftTerrain* terra, DriftVec2 pos);
 void DriftTerrainDrawTiles(DriftDraw* draw, bool map_mode);
-void DriftTerrainDrawShadows(DriftDraw* draw, DriftTerrain* terra, DriftAABB2 bounds);
+void DriftTerrainGatherShadows(DriftDraw* draw, DriftTerrain* terra, DriftAABB2 bounds);
 
 void DriftTerrainDig(DriftTerrain* terra, DriftVec2 pos, float radius);
 
 uint DriftTerrainTileAt(DriftTerrain* terra, DriftVec2 pos);
+
+#define DRIFT_TERRAIN_TILE_RADIUS (DRIFT_TERRAIN_TILE_SCALE*DRIFT_TERRAIN_TILE_SIZE/2)
+uint DriftTerrainSpawnTileIndexes(DriftTerrain* terra, uint indexes[], uint count, DriftVec2 center, float spawn_radius);
+uint DriftTerrainSpawnLocations(DriftTerrain* terra, DriftVec2 locations[], uint count, uint tile_idx, uint seed, float radius);
+uint DriftTerrainTileResources(DriftTerrain* terra, uint tile_idx);
+void DriftTerrainTileResourcesInc(DriftTerrain* terra, uint tile_idx);
+uint DriftTerrainTileBiomass(DriftTerrain* terra, uint tile_idx);
+void DriftTerrainTileBiomassInc(DriftTerrain* terra, uint tile_idx);
 
 typedef struct {
 	float dist;
@@ -102,7 +123,6 @@ typedef struct {
 
 DriftBiomeSample DriftTerrainSampleBiome(DriftTerrain* terra, DriftVec2 pos);
 
-void DriftTerrainEditEnter(void);
 void DriftTerrainEditExit(tina_job* job);
 
 typedef struct {
@@ -110,8 +130,8 @@ typedef struct {
 } DriftTerrainEditPerlinParams;
 
 typedef float DriftTerrainEditFunc(float value, float dist, float radius, DriftVec2 pos, void* ctx);
-DriftTerrainEditFunc DriftTerrainEditAdd, DriftTerrainEditSub, DriftTerrainEditPerlin;
-void DriftTerrainEdit(DriftTerrain* terra, DriftVec2 pos, float radius, DriftTerrainEditFunc func, void* ctx);
+DriftTerrainEditFunc DriftTerrainEditAdd, DriftTerrainEditSub, DriftTerrainEditPerlin, DriftTerrainEditPerlinAdd, DriftTerrainEditPerlinSub;
+void DriftTerrainEdit(DriftUpdate* update, DriftVec2 pos, float radius, DriftTerrainEditFunc* func, void* ctx);
 
 void DriftBiomeEdit(DriftTerrain* terra, DriftVec2 pos, float radius, DriftRGBA8 value);
 void DriftBiomeSpaceEdit(DriftTerrain* terra, DriftVec2 pos, float radius, float value);

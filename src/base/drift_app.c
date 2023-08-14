@@ -1,47 +1,58 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-#include "tinycthread/tinycthread.h"
-
-#if __unix__
+#if __unix__ || __APPLE__
+	#include <unistd.h>
 	#include <signal.h>
 	#include <sys/mman.h>
-#if __linux__
-	#include <sys/prctl.h>
-#endif
+	#if __linux__
+		#include <sys/prctl.h>
+	#endif
+#elif __WIN64__
+	#include <windows.h>
 #endif
 
-#if DRIFT_MODULES
-	#include <SDL.h>
-#endif
+#include <SDL.h>
 
 #include "tracy/TracyC.h"
 
-// #define _TINA_MUTEX_T mtx_t
-// #define _TINA_MUTEX_INIT(_LOCK_) mtx_init(&_LOCK_, mtx_plain)
-// #define _TINA_MUTEX_DESTROY(_LOCK_) mtx_destroy(&_LOCK_)
-// #define _TINA_MUTEX_LOCK(_LOCK_) {TracyCZoneN(ZONE, "Lock", true); mtx_lock(&_LOCK_); TracyCZoneEnd(ZONE);}
-// #define _TINA_MUTEX_UNLOCK(_LOCK_) {TracyCZoneN(ZONE, "Unlock", true); mtx_unlock(&_LOCK_); TracyCZoneEnd(ZONE);}
-// #define _TINA_COND_T cnd_t
-// #define _TINA_COND_INIT(_SIG_) cnd_init(&_SIG_)
-// #define _TINA_COND_DESTROY(_SIG_) cnd_destroy(&_SIG_)
-// #define _TINA_COND_WAIT(_SIG_, _LOCK_) cnd_wait(&_SIG_, &_LOCK_);
-// #define _TINA_COND_SIGNAL(_SIG_) {TracyCZoneN(ZONE, "Signal", true); cnd_signal(&_SIG_); TracyCZoneEnd(ZONE);}
-// #define _TINA_COND_BROADCAST(_SIG_) cnd_broadcast(&_SIG_)
-
-#define TINA_IMPLEMENTATION
-#include "tina/tina.h"
+#define _TINA_MUTEX_T SDL_mutex*
+#define _TINA_MUTEX_INIT(_LOCK_) _LOCK_ = SDL_CreateMutex()
+#define _TINA_MUTEX_DESTROY(_LOCK_) SDL_DestroyMutex(_LOCK_)
+#define _TINA_MUTEX_LOCK(_LOCK_) {TracyCZoneN(ZONE, "Lock", true); SDL_LockMutex(_LOCK_); TracyCZoneEnd(ZONE);}
+#define _TINA_MUTEX_UNLOCK(_LOCK_) {TracyCZoneN(ZONE, "Unlock", true); SDL_UnlockMutex(_LOCK_); TracyCZoneEnd(ZONE);}
+#define _TINA_COND_T SDL_cond*
+#define _TINA_COND_INIT(_SIG_) _SIG_ = SDL_CreateCond()
+#define _TINA_COND_DESTROY(_SIG_) SDL_DestroyCond(_SIG_)
+#define _TINA_COND_WAIT(_SIG_, _LOCK_) SDL_CondWait(_SIG_, _LOCK_)
+#define _TINA_COND_SIGNAL(_SIG_) {TracyCZoneN(ZONE, "Signal", true); SDL_CondSignal(_SIG_); TracyCZoneEnd(ZONE);}
+#define _TINA_COND_BROADCAST(_SIG_) SDL_CondBroadcast(_SIG_)
 
 #ifdef TRACY_FIBERS
 #define _TINA_PROFILE_ENTER(_JOB_) TracyCFiberEnter(job->fiber->name)
 #define _TINA_PROFILE_LEAVE(_JOB_, _STATUS) TracyCFiberLeave
 #endif
 
+#define TINA_IMPLEMENTATION
+#include "tina/tina.h"
+
 #define TINA_JOBS_IMPLEMENTATION
 #include "tina/tina_jobs.h"
 
 #include "drift_base.h"
+
+DriftApp* APP;
 
 void DriftThrottledParallelFor(tina_job* job, tina_job_func func, void* user_data, uint count){
 	tina_scheduler* sched = tina_job_get_scheduler(job);
@@ -60,25 +71,25 @@ void DriftParallelFor(tina_job* job, tina_job_func func, void* user_data, uint c
 }
 
 #if DRIFT_MODULES
-static void DriftModuleLoad(DriftApp* app){
-	SDL_UnloadObject(app->module);
+static void DriftModuleLoad(void){
+	SDL_UnloadObject(APP->module);
 	
 	char libname[256];
 #if __unix__
-	snprintf(libname, sizeof(libname), "./%s.so", app->module_libname);
+	snprintf(libname, sizeof(libname), "./%s.so", APP->module_libname);
 #elif __APPLE__
-	snprintf(libname, sizeof(libname), "./%s.dylib", app->module_libname);
+	snprintf(libname, sizeof(libname), "./%s.dylib", APP->module_libname);
 #elif __WIN64__
-	snprintf(libname, sizeof(libname), "%s-tmp.dll", app->module_libname);
+	snprintf(libname, sizeof(libname), "%s-tmp.dll", APP->module_libname);
 	// Windows can't replace an open file. So need to copy the lib before opening it.
 	char srcname[256];
-	snprintf(srcname, sizeof(srcname), "%s.dll", app->module_libname);
+	snprintf(srcname, sizeof(srcname), "%s.dll", APP->module_libname);
 	DRIFT_ASSERT_HARD(CopyFile(srcname, libname, false), "Failed to copy lib");
 #else
 	#error Unhandled platform.
 #endif
 	
-	while((app->module = SDL_LoadObject(libname)) == NULL){
+	while((APP->module = SDL_LoadObject(libname)) == NULL){
 		DRIFT_LOG("Failed to load module. (%s)\nRebuild and press the any key to try again.", SDL_GetError());
 		getchar();
 	}
@@ -87,53 +98,43 @@ static void DriftModuleLoad(DriftApp* app){
 }
 
 void DriftModuleRun(tina_job* job){
-	DriftApp* app = tina_job_get_description(job)->user_data;
-	tina_job_func* entrypoint = SDL_LoadFunction(app->module, app->module_entrypoint);
+	tina_job_func* entrypoint = SDL_LoadFunction(APP->module, APP->module_entrypoint);
 	DRIFT_ASSERT_HARD(entrypoint, "Failed to find entrypoint function. (%s)", SDL_GetError());
 	
-	app->module_status = DRIFT_MODULE_RUNNING;
-	tina_scheduler_enqueue(app->scheduler, entrypoint, app, 0, DRIFT_JOB_QUEUE_MAIN, &app->module_entrypoint_jobs);
+	APP->module_status = DRIFT_MODULE_RUNNING;
+	tina_scheduler_enqueue(APP->scheduler, entrypoint, NULL, 0, DRIFT_JOB_QUEUE_MAIN, &APP->module_entrypoint_jobs);
 }
 
 static void module_reload(tina_job* job){
-	DriftApp* app = tina_job_get_description(job)->user_data;
-	
 	// Rebuild the module
-	if(system(app->module_build_command)){
-		app->module_status = DRIFT_MODULE_ERROR;
+	if(system(APP->module_build_command)){
+		APP->module_status = DRIFT_MODULE_ERROR;
 	} else {
-		app->module_status = DRIFT_MODULE_READY;
+		APP->module_status = DRIFT_MODULE_READY;
 		
 		// Wait for the previous entrypoint to exit.
-		tina_job_wait(job, &app->module_entrypoint_jobs, 0);
-		DriftModuleLoad(app);
+		tina_job_wait(job, &APP->module_entrypoint_jobs, 0);
+		DriftModuleLoad();
 		DriftModuleRun(job);
 	}
 }
 
-void DriftModuleRequestReload(DriftApp* app, tina_job* job){
-	if(app->module_status == DRIFT_MODULE_RUNNING || app->module_status == DRIFT_MODULE_ERROR){
-		app->module_status = DRIFT_MODULE_BUILDING;
-		tina_scheduler_enqueue(app->scheduler, module_reload, app, 0, DRIFT_JOB_QUEUE_WORK, &app->module_rebuild_jobs);
+void DriftModuleRequestReload(tina_job* job){
+	if(APP->module_status == DRIFT_MODULE_RUNNING || APP->module_status == DRIFT_MODULE_ERROR){
+		APP->module_status = DRIFT_MODULE_BUILDING;
+		tina_scheduler_enqueue(APP->scheduler, module_reload, APP, 0, DRIFT_JOB_QUEUE_WORK, &APP->module_rebuild_jobs);
 	}
 }
 #endif
 
-#if __unix__ || __APPLE__
-	#include <unistd.h>
-	static unsigned DriftAppGetCPUCount(void){return sysconf(_SC_NPROCESSORS_ONLN);}
-#elif __WIN64__
-	static unsigned DriftAppGetCPUCount(void){
-		SYSTEM_INFO sysinfo;
-		GetSystemInfo(&sysinfo);
-		return sysinfo.dwNumberOfProcessors;
-	}
-#else
-	#error Not implemented for this platform.
-#endif
+typedef struct {
+	uint id, queue;
+	SDL_Thread* thread;
+	const char* name;
+} DriftThread;
 
 static _Thread_local uint ThreadID;
-uint DriftAppGetThreadID(void){return ThreadID;}
+uint DriftGetThreadID(void){return ThreadID;}
 
 static int DriftAppWorkerThreadBody(void* user_data){
 	DriftThread* thread = user_data;
@@ -145,17 +146,11 @@ static int DriftAppWorkerThreadBody(void* user_data){
 	DRIFT_ASSERT(pthread_sigmask(SIG_BLOCK, &mask, NULL) == 0, "Failed to block signals");
 #endif
 
-#if __linux__
-	prctl(PR_SET_NAME, thread->name);
-#endif
-	
 #if TRACY_ENABLE
 	TracyCSetThreadName(thread->name);
 #endif
 	
-	DriftApp* app = thread->app;
-	tina_scheduler_run(app->scheduler, thread->queue, false);
-	
+	tina_scheduler_run(APP->scheduler, thread->queue, false);
 	return 0;
 }
 
@@ -175,6 +170,10 @@ static void* DriftAppFiberBody(tina* fiber, void* value){
 	DRIFT_ABORT("Unreachable");
 }
 
+#define JOB_COUNT 1024
+#define FIBER_COUNT 64
+char FIBER_NAMES[FIBER_COUNT][64];
+
 static tina* DriftAppFiberFactory(tina_scheduler* sched, unsigned fiber_idx, void* buffer, size_t stack_size, void* user_ptr){
 	stack_size = 256*1024;
 	
@@ -191,15 +190,16 @@ static tina* DriftAppFiberFactory(tina_scheduler* sched, unsigned fiber_idx, voi
 	buffer = DriftAlloc(DriftSystemMem, stack_size);
 #endif
 
+	snprintf(FIBER_NAMES[fiber_idx], sizeof(FIBER_NAMES[0]), "TINA JOBS FIBER %02d", fiber_idx);
 	tina* fiber = tina_init(buffer, stack_size, DriftAppFiberBody, sched);
-	fiber->name = DriftSMPrintf(DriftSystemMem, "TINA JOBS FIBER %02d", fiber_idx);;
+	fiber->name = FIBER_NAMES[fiber_idx];
 	
 	return fiber;
 }
 
-static void DriftThreadInit(DriftThread* thread, DriftApp* app, uint id, uint queue, const char* name){
-	*thread = (DriftThread){.app = app, .id = id, .queue = queue, .name = name};
-	thrd_create(&thread->thread, DriftAppWorkerThreadBody, thread);
+static void DriftThreadInit(DriftThread* thread, uint id, uint queue, const char* name){
+	*thread = (DriftThread){.id = id, .queue = queue, .name = name};
+	thread->thread = SDL_CreateThread(DriftAppWorkerThreadBody, name, thread);
 }
 
 void DriftPrefsIO(DriftIO* io){
@@ -207,115 +207,138 @@ void DriftPrefsIO(DriftIO* io){
 	DriftIOBlock(io, "prefs", prefs, sizeof(*prefs));
 }
 
+#if __unix__ || __APPLE__
+	static unsigned DriftAppGetCPUCount(void){return sysconf(_SC_NPROCESSORS_ONLN);}
+#elif __WIN64__
+	static unsigned DriftAppGetCPUCount(void){
+		SYSTEM_INFO sysinfo;
+		GetSystemInfo(&sysinfo);
+		return sysinfo.dwNumberOfProcessors;
+	}
+#else
+	#error Not implemented for this platform.
+#endif
+
 int DriftMain(DriftApp* app){
+	APP = app;
+	
 	TracyCZoneN(ZONE_STARTUP, "Startup", true);
 	TracyCZoneN(ZONE_JOBS, "Jobs", true);
 	// Setup jobs.
-	uint cpu_count = DriftAppGetCPUCount();
-	app->thread_count = DRIFT_MAX(DRIFT_MIN(cpu_count + 1u, DRIFT_APP_MAX_THREADS), 3u);
-	DRIFT_LOG("DriftApp thread count: %d", app->thread_count);
+	uint thread_count = DRIFT_MAX(DRIFT_MIN(DriftAppGetCPUCount() + 1u, DRIFT_APP_MAX_THREADS), 3u);
+	DRIFT_LOG("DriftApp thread count: %d", thread_count);
 	
-	uint job_count = 1024, fiber_count = 64;
-	size_t sched_size = tina_scheduler_size(job_count, _DRIFT_JOB_QUEUE_COUNT, fiber_count, 0);
+	
+	size_t sched_size = tina_scheduler_size(JOB_COUNT, _DRIFT_JOB_QUEUE_COUNT, FIBER_COUNT, 0);
 	void* sched_buffer = DriftAlloc(DriftSystemMem, sched_size);
-	app->scheduler = _tina_scheduler_init2(sched_buffer, job_count, _DRIFT_JOB_QUEUE_COUNT, fiber_count, 0, DriftAppFiberFactory, NULL);
-	tina_scheduler_queue_priority(app->scheduler, DRIFT_JOB_QUEUE_MAIN, DRIFT_JOB_QUEUE_WORK);
+	APP->scheduler = _tina_scheduler_init2(sched_buffer, JOB_COUNT, _DRIFT_JOB_QUEUE_COUNT, FIBER_COUNT, 0, DriftAppFiberFactory, NULL);
+	tina_scheduler_queue_priority(APP->scheduler, DRIFT_JOB_QUEUE_MAIN, DRIFT_JOB_QUEUE_WORK);
 	
-	DriftThreadInit(app->threads + 1, app, DRIFT_THREAD_ID_GFX, DRIFT_JOB_QUEUE_GFX, "DriftGFXThread");
-	for(uint i = DRIFT_THREAD_ID_WORKER0; i < app->thread_count; i++){
-		const char* name = DriftSMPrintf(DriftSystemMem, "DriftWorkerThread %d", i);
-		DriftThreadInit(app->threads + i, app, i, DRIFT_JOB_QUEUE_WORK, name);
+	DriftThread threads[DRIFT_APP_MAX_THREADS];
+	DriftThreadInit(threads + 1, DRIFT_THREAD_ID_GFX, DRIFT_JOB_QUEUE_GFX, "gfx");
+	char thread_names[DRIFT_APP_MAX_THREADS][64];
+	for(uint i = DRIFT_THREAD_ID_WORKER0; i < thread_count; i++){
+		snprintf(thread_names[i], sizeof(thread_names[0]), "work %d", i);
+		DriftThreadInit(threads + i, i, DRIFT_JOB_QUEUE_WORK, thread_names[i]);
 	}
 	TracyCZoneEnd(ZONE_JOBS);
 	
 	// Setup memory.
-	app->zone_heap = DriftZoneMemHeapNew(DriftSystemMem, "Global");
+	APP->zone_heap = DriftZoneMemHeapNew(DriftSystemMem, "Global");
 	
 	TracyCZoneN(ZONE_RESOURCES, "Resources", true);
 	DriftAssetsReset();
 	TracyCZoneEnd(ZONE_RESOURCES);
 	
 #if DRIFT_MODULES
-	DriftModuleLoad(app);
-	void (*DriftTerrainLoadBase)(tina_scheduler* sched) = SDL_LoadFunction(app->module, "DriftTerrainLoadBase");
+	DriftModuleLoad();
+	void (*DriftTerrainLoadBase)(tina_scheduler* sched) = SDL_LoadFunction(APP->module, "DriftTerrainLoadBase");
 #else
 	void DriftTerrainLoadBase(tina_scheduler* sched);
 #endif
 
 	// Start terrain loading before opening the shell since it takes a long time.
-	DriftTerrainLoadBase(app->scheduler);
+	DriftTerrainLoadBase(APP->scheduler);
 	
 	// Start shell and module.
 	TracyCZoneN(ZONE_START, "Start", true)
-	app->shell_func(app, DRIFT_SHELL_START, NULL);
+	APP->shell_func(DRIFT_SHELL_START, NULL);
 	
-	app->prefs = (DriftPreferences){.master_volume = 1, .music_volume = 0.5f};
-	DriftIOFileRead(TMP_PREFS_FILENAME, DriftPrefsIO, &app->prefs);
+	APP->prefs = (DriftPreferences){
+		.master_volume = 1, .music_volume = 0.5f, .effects_volume = 1.0f,
+		.sharpening = 2, .lightfield_scale = 4, .hires = false,
+		.mouse_sensitivity = 1.0f, .joy_deadzone = 0.15f,
+	};
+	DriftIOFileRead(TMP_PREFS_FILENAME, DriftPrefsIO, &APP->prefs);
 	
 	TracyCZoneN(ZONE_OPEN_AUDIO, "Open Audio", true);
-	app->audio = DriftAudioContextNew();
-	DriftAudioSetParams(app->audio, app->prefs.master_volume, app->prefs.music_volume);
+	APP->audio = DriftAudioContextNew(APP->scheduler);
+	DriftAudioSetParams(APP->prefs.master_volume, APP->prefs.music_volume, APP->prefs.effects_volume);
 	TracyCZoneEnd(ZONE_OPEN_AUDIO);
 		
-	tina_scheduler_enqueue(app->scheduler, app->entry_func, app, 0, DRIFT_JOB_QUEUE_MAIN, NULL);
+	tina_scheduler_enqueue(APP->scheduler, APP->entry_func, app, 0, DRIFT_JOB_QUEUE_MAIN, NULL);
 	TracyCZoneEnd(ZONE_START);
 	TracyCZoneEnd(ZONE_STARTUP);
 	
 	// Run the main queue until shutdown.
-	tina_scheduler_run(app->scheduler, DRIFT_JOB_QUEUE_MAIN, false);
+	tina_scheduler_run(APP->scheduler, DRIFT_JOB_QUEUE_MAIN, false);
 	
 	// Gracefully shut down worker threads.
-	for(uint i = DRIFT_THREAD_ID_GFX; i < app->thread_count; i++) thrd_join(app->threads[i].thread, NULL);
+	for(uint i = DRIFT_THREAD_ID_GFX; i < thread_count; i++) SDL_WaitThread(threads[i].thread, NULL);
+	tina_scheduler_destroy(APP->scheduler);
+	DriftDealloc(DriftSystemMem, sched_buffer, sched_size);
 	
-	app->shell_func(app, DRIFT_SHELL_STOP, NULL);
+	APP->shell_func(DRIFT_SHELL_STOP, NULL);
+	DriftZoneMemHeapFree(APP->zone_heap);
 	
-	if(app->shell_restart){
+	DriftAudioContextFree(APP->audio);
+	
+	if(APP->shell_restart){
 		DRIFT_LOG("Restarting...");
-		app->shell_func = app->shell_restart;
-		app->shell_restart = NULL;
+		APP->shell_func = APP->shell_restart;
+		APP->shell_restart = NULL;
 		return DriftMain(app);
 	} else {
-		DriftDealloc(DriftSystemMem, sched_buffer, sched_size);
 		return EXIT_SUCCESS;
 	}
 }
 
-void DriftAppShowWindow(DriftApp* app){
-	DriftAppAssertMainThread();
-	app->shell_func(app, DRIFT_SHELL_SHOW_WINDOW, NULL);
+void DriftAppShowWindow(void){
+	DriftAssertMainThread();
+	APP->shell_func(DRIFT_SHELL_SHOW_WINDOW, NULL);
 }
 
-void DriftAppHaltScheduler(DriftApp* app){
-	tina_scheduler_interrupt(app->scheduler, DRIFT_JOB_QUEUE_MAIN);
-	tina_scheduler_interrupt(app->scheduler, DRIFT_JOB_QUEUE_WORK);
-	tina_scheduler_interrupt(app->scheduler, DRIFT_JOB_QUEUE_GFX);
+void DriftAppHaltScheduler(void){
+	tina_scheduler_interrupt(APP->scheduler, DRIFT_JOB_QUEUE_MAIN);
+	tina_scheduler_interrupt(APP->scheduler, DRIFT_JOB_QUEUE_WORK);
+	tina_scheduler_interrupt(APP->scheduler, DRIFT_JOB_QUEUE_GFX);
 }
 
-DriftGfxRenderer* DriftAppBeginFrame(DriftApp* app, DriftMem* mem){
-	DriftAppAssertMainThread();
-	return app->shell_func(app, DRIFT_SHELL_BEGIN_FRAME, mem);
+DriftGfxRenderer* DriftAppBeginFrame(DriftMem* mem){
+	DriftAssertMainThread();
+	return APP->shell_func(DRIFT_SHELL_BEGIN_FRAME, mem);
 }
 
-void DriftAppPresentFrame(DriftApp* app, DriftGfxRenderer* renderer){
-	DriftAppAssertGfxThread();
-	app->shell_func(app, DRIFT_SHELL_PRESENT_FRAME, renderer);
+void DriftAppPresentFrame(DriftGfxRenderer* renderer){
+	DriftAssertGfxThread();
+	APP->shell_func(DRIFT_SHELL_PRESENT_FRAME, renderer);
 }
 
-void DriftAppToggleFullscreen(DriftApp* app){
-	DriftAppAssertMainThread();
-	app->fullscreen = !app->fullscreen;
-	app->shell_func(app, DRIFT_SHELL_TOGGLE_FULLSCREEN, NULL);
+void DriftAppToggleFullscreen(void){
+	DriftAssertMainThread();
+	APP->fullscreen = !APP->fullscreen;
+	APP->shell_func(DRIFT_SHELL_TOGGLE_FULLSCREEN, NULL);
 }
 
-void DriftAppAssertMainThread(void){
+void DriftAssertMainThread(void){
 	DRIFT_ASSERT_HARD(ThreadID == DRIFT_THREAD_ID_MAIN, "Must be called from the main queue.");
 }
 
-void DriftAppAssertGfxThread(void){
+void DriftAssertGfxThread(void){
 	DRIFT_ASSERT_HARD(ThreadID == DRIFT_THREAD_ID_GFX, "Must be called from the gfx queue.");
 }
 
-void* DriftShellConsole(DriftApp* app, DriftShellEvent event, void* shell_value){
+void* DriftShellConsole(DriftShellEvent event, void* shell_value){
 	switch(event){
 		case DRIFT_SHELL_START:{
 			DRIFT_LOG("Using Console");

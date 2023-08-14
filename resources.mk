@@ -26,8 +26,9 @@ SHADER_INCLUDES = \
 	shaders/lighting.hlsl \
 
 SHADERS = \
-	resources/shaders/primitive_linear.hlsl \
 	resources/shaders/primitive_overlay.hlsl \
+	resources/shaders/primitive_linear.hlsl \
+	resources/shaders/plasma.hlsl \
 	resources/shaders/terrain.hlsl \
 	resources/shaders/terrain_map.hlsl \
 	resources/shaders/sprite.hlsl \
@@ -46,23 +47,26 @@ SHADERS = \
 	resources/shaders/debug_terrain.hlsl \
 	resources/shaders/debug_delta.hlsl \
 	resources/shaders/resolve.hlsl \
+	resources/shaders/image_blit.hlsl \
 	resources/shaders/pause_blit.hlsl \
 	resources/shaders/map_blit.hlsl \
 	resources/shaders/present.hlsl \
 
+SFX = $(subst $(VPATH),resources,$(wildcard $(VPATH)/sfx/*.ogg))
 SCANS = $(subst $(VPATH),resources,$(wildcard $(VPATH)/gfx/scans/*.png))
+IMAGES =  $(subst $(VPATH),resources,$(wildcard $(VPATH)/gfx/images/*.png))
 
 FILES = \
-	$(SCANS:.png=.qoi) \
+	$(SCANS:.png=.qoi) $(IMAGES:.png=.qoi) \
 	$(subst $(VPATH),resources,$(wildcard $(VPATH)/bin/*.bin)) \
 	$(subst $(VPATH),resources,$(wildcard $(VPATH)/bin/*.txt)) \
-	$(subst $(VPATH),resources,$(wildcard $(VPATH)/sfx/*.ogg)) \
+	$(SFX) \
 	$(subst $(VPATH),resources,$(wildcard $(VPATH)/music/*.ogg)) \
 	$(SHADERS:%.hlsl=%.vert.spv) $(SHADERS:%.hlsl=%.frag.spv) \
 	$(SHADERS:%.hlsl=%.vert) $(SHADERS:%.hlsl=%.frag) \
 	resources/gfx/cursor.qoi \
 
-drift-game-assets: resources.zip
+drift-game-assets: resources.zip sound_inc
 .PHONY: drift-game-assets
 
 clean:
@@ -81,6 +85,11 @@ resources/gfx/scans%.qoi: gfx/scans%.png qoiconv $$(@D)/.dir
 	pngquant --quality 80 --nofs -f --output $(@:.qoi=.png) $<
 	./qoiconv $(@:.qoi=.png) $@
 
+resources/gfx/images%.qoi: gfx/images%.png qoiconv $$(@D)/.dir
+	# pngquant -f --output $(@:.qoi=.png) $<
+	# ./qoiconv $(@:.qoi=.png) $@
+	./qoiconv $< $@
+
 resources/%: % $$(@D)/.dir
 	"$(CMAKE_COMMAND)" -E copy $< $@
 
@@ -96,11 +105,11 @@ resources/gfx/%.png resources/gfx/%.json: gfx/%.ase $$(@D)/.dir
 resources/%.json: resources/%.png
 
 onelua.o: ext/lua/onelua.c
-	gcc -DMAKE_LIB -Os -c $< -o $@
+	gcc -DMAKE_LIB -O -c $< -o $@
 
 packer: tools/packer.c onelua.o
 # The -Wl... bit is to force the removal of the .exe suffix on Windows.
-	gcc -std=c99 -O0 -g -I $(VPATH)/ext $^ -Wl,-o$@ -lm
+	gcc -std=c99 -O0 -I $(VPATH)/ext $^ -Wl,-o$@ -lm
 	
 %.lua: tools/%.lua
 	"$(CMAKE_COMMAND)" -E copy $< $@
@@ -111,10 +120,17 @@ atlas: packer packer.lua json.lua $(ATLAS:.ase=.json) $(ART_ASE:.ase=.json) $(AR
 	"$(CMAKE_COMMAND)" -E touch $@
 
 qoiconv: ext/qoi/qoiconv.c
-	gcc -std=c99 -Os -I $(VPATH)/ext/stb $< -Wl,-o$@
+	gcc -std=c99 -O -I $(VPATH)/ext/stb $< -Wl,-o$@
 
 %.qoi: %.png qoiconv
 	./qoiconv $< $@
+
+lua: ext/lua/onelua.c
+	gcc -DMAKE_LUA -O $< -Wl,-o$@ -lm
+
+sound_inc: lua sounds.lua $(SFX)
+	./lua sounds.lua $(SFX)
+	touch sound_inc
 
 resources/%.vert.spv: %.hlsl $(SHADER_INCLUDES) $$(@D)/.dir
 	"$(GLSLANG)" -D -V -S vert -e VShader -o $@ $<

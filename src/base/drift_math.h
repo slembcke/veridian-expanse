@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #pragma once
 
 #include <math.h>
@@ -5,6 +15,9 @@
 
 #define LIFFT_FLOAT_TYPE float
 #include "lifft/lifft.h"
+#include "lifft/lifft_dct.h"
+
+void lifft_multiply_accumulate(lifft_complex_t* acc, lifft_complex_t* x, lifft_complex_t* y, uint size);
 
 static inline float DriftClamp(float x, float min, float max){return fmaxf(min, fminf(x, max));}
 static inline float DriftSaturate(float x){return fmaxf(0.0f, fminf(x, 1.0f));}
@@ -13,6 +26,8 @@ static inline float DriftLerp(float a, float b, float t){return (1 - t)*a + t*b;
 static inline float DriftLogerp(float a, float b, float t){return a*powf(b/a, t);}
 static inline float DriftHermite3(float x){return (3 - 2*x)*x*x;}
 static inline float DriftHermite5(float x){return ((6*x - 15)*x + 10)*x*x*x;}
+static float DriftSmoothstep(float min, float max, float x){return DriftHermite3(DriftSaturate((x - min)/(max - min)));}
+static float DriftDecibelsToGain(float db){return DriftClamp(powf(10, db/10), 0, 1);}
 
 typedef struct {float x, y;} DriftVec2;
 #define DRIFT_VEC2_ZERO ((DriftVec2){0, 0})
@@ -29,12 +44,15 @@ static inline float DriftVec2Dot(DriftVec2 v1, DriftVec2 v2){return v1.x*v2.x + 
 static inline float DriftVec2Cross(DriftVec2 v1, DriftVec2 V2){return v1.x*V2.y - v1.y*V2.x;}
 static inline float DriftVec2LengthSq(DriftVec2 v){return DriftVec2Dot(v, v);}
 static inline float DriftVec2Length(DriftVec2 v){return sqrtf(DriftVec2LengthSq(v));}
+static inline float DriftVec2DistanceSq(DriftVec2 v1, DriftVec2 v2){return DriftVec2LengthSq(DriftVec2Sub(v2, v1));}
 static inline float DriftVec2Distance(DriftVec2 v1, DriftVec2 v2){return DriftVec2Length(DriftVec2Sub(v2, v1));}
+static inline bool DriftVec2Near(DriftVec2 v1, DriftVec2 v2, float dist){return DriftVec2LengthSq(DriftVec2Sub(v2, v1)) <= dist*dist;}
 static inline DriftVec2 DriftVec2Normalize(DriftVec2 v){return DriftVec2Mul(v, 1/(DriftVec2Length(v) + FLT_MIN));}
 static inline DriftVec2 DriftVec2Clamp(DriftVec2 v, float l){return DriftVec2Mul(v, fminf(1.0f, l/(DriftVec2Length(v) + FLT_MIN)));}
 static inline DriftVec2 DriftVec2LerpConst(DriftVec2 a, DriftVec2 b, float d){return DriftVec2Add(a, DriftVec2Clamp(DriftVec2Sub(b, a), d));}
 static inline DriftVec2 DriftVec2Rotate(DriftVec2 v1, DriftVec2 v2){return (DriftVec2){v1.x*v2.x - v1.y*v2.y, v1.x*v2.y + v1.y*v2.x};}
 static inline DriftVec2 DriftVec2RotateInv(DriftVec2 v1, DriftVec2 v2){return (DriftVec2){v1.x*v2.x + v1.y*v2.y, v1.y*v2.x - v1.x*v2.y};}
+static inline DriftVec2 DriftVec2ForAngle(float angle){return (DriftVec2){cosf(angle), sinf(angle)};}
 
 typedef struct {
 	float l, b, r, t;
@@ -46,6 +64,7 @@ static inline bool DriftAABB2Test(DriftAABB2 a, DriftVec2 p){return a.l <= p.x &
 static inline DriftAABB2 DriftAABB2Merge(DriftAABB2 a, DriftAABB2 b){return (DriftAABB2){fminf(a.l, b.l), fminf(a.b, b.b), fmaxf(a.r, b.r), fmaxf(a.t, b.t)};}
 static DriftVec2 DriftAABB2Center(DriftAABB2 bb){return (DriftVec2){(bb.r + bb.l)/2, (bb.t + bb.b)/2};}
 static DriftVec2 DriftAABB2Extents(DriftAABB2 bb){return (DriftVec2){(bb.r - bb.l)/2, (bb.t - bb.b)/2};}
+static inline float DriftAABB2Area(DriftAABB2 bb){return (bb.r - bb.l)*(bb.t - bb.b);}
 
 #define DRIFT_AABB2_ALL ((DriftAABB2){-INFINITY, -INFINITY, INFINITY, INFINITY})
 #define DRIFT_AABB2_UNIT ((DriftAABB2){-1, -1, 1, 1})
@@ -87,11 +106,33 @@ static inline DriftVec4 DriftVec4Add(DriftVec4 v1, DriftVec4 v2){return (DriftVe
 static inline DriftVec4 DriftVec4Mul(DriftVec4 v, float s){return (DriftVec4){{v.x*s, v.y*s, v.z*s, v.w*s}};}
 
 typedef struct {u8 r, g, b, a;} DriftRGBA8;
-static inline DriftRGBA8 DriftRGBA8FromColor(DriftVec4 color){return (DriftRGBA8){
+static inline DriftRGBA8 DriftRGBA8FromColor(DriftVec4 color){
+	return (DriftRGBA8){
 		(u8)(DriftSaturate(color.r)*255),
 		(u8)(DriftSaturate(color.g)*255),
 		(u8)(DriftSaturate(color.b)*255),
 		(u8)(DriftSaturate(color.a)*255),
+	};
+}
+
+static inline DriftRGBA8 DriftRGBA8Fade(DriftRGBA8 color, float alpha){
+	return (DriftRGBA8){
+		(u8)(color.r*alpha),
+		(u8)(color.g*alpha),
+		(u8)(color.b*alpha),
+		(u8)(color.a*alpha),
+	};
+}
+
+static inline u8 _DriftSaturate8(uint n){return n <=255 ? n : 255;}
+
+static inline DriftRGBA8 DriftRGBA8Composite(DriftRGBA8 a, DriftRGBA8 b){
+	uint coef = 255 - b.a;
+	return (DriftRGBA8){
+		_DriftSaturate8(a.r*coef/255 + b.r),
+		_DriftSaturate8(a.g*coef/255 + b.g),
+		_DriftSaturate8(a.b*coef/255 + b.b),
+		_DriftSaturate8(a.a*coef/255 + b.a),
 	};
 }
 
@@ -132,7 +173,7 @@ static inline DriftAffine DriftAffineInverse(DriftAffine m){
 }
 
 static inline DriftAffine DriftAffineTRS(DriftVec2 t, float r, DriftVec2 s){
-	DriftVec2 rot = {cosf(r), sinf(r)};
+	DriftVec2 rot = DriftVec2ForAngle(r);
 	return DriftAffineMakeTranspose(
 		 s.x*rot.x, s.y*rot.y, t.x,
 		-s.x*rot.y, s.y*rot.x, t.y
@@ -163,11 +204,6 @@ static inline DriftVec2 DriftAffinePoint(DriftAffine t, DriftVec2 p){
 	return (DriftVec2){t.a*p.x + t.c*p.y + t.x, t.b*p.x + t.d*p.y + t.y};
 }
 
-// static inline pvec4 DriftAffinePoint4(DriftAffine t, DriftVec2 p){
-// 	pvec2 p2 = DriftAffinePoint(t, p);
-// 	return (pvec4){{p2.x, p2.y, 0, 1}};
-// }
-
 typedef struct {float m[8];} DriftGPUMatrix;
 
 static inline DriftGPUMatrix DriftAffineToGPU(DriftAffine m){
@@ -186,6 +222,24 @@ static inline bool DriftAffineVisibility(DriftAffine mvp, DriftVec2 center, Drif
 	return ((fabsf(csc.x) - cshw < 1) && (fabsf(csc.y) - cshh < 1));
 }
 
+
+// MARK: Random
+
+#define DRIFT_RAND_MAX 0xFFFFFFFF
+typedef struct {u64 state;} DriftRandom;
+u32 DriftRand32(DriftRandom rand[1]);
+
+float DriftRandomUNorm(DriftRandom rand[1]);
+float DriftRandomSNorm(DriftRandom rand[1]);
+
+DriftVec2 DriftRandomInUnitCircle(DriftRandom rand[1]);
+DriftVec2 DriftRandomOnUnitCircle(DriftRandom rand[1]);
+
+typedef struct {float rand, sum;} DriftReservoir;
+DriftReservoir DriftReservoirMake(DriftRandom state[1]);
+bool DriftReservoirSample(DriftReservoir* ctx, float weight);
+
+
 //MARK: Waves and noise.
 
 static inline float DriftWaveSaw(u64 nanos, float hz){
@@ -194,8 +248,7 @@ static inline float DriftWaveSaw(u64 nanos, float hz){
 }
 
 static inline DriftVec2 DriftWaveComplex(u64 nanos, float hz){
-	float phase = (float)(2*M_PI)*DriftWaveSaw(nanos, hz);
-	return (DriftVec2){cosf(phase), sinf(phase)};
+	return DriftVec2ForAngle((float)(2*M_PI)*DriftWaveSaw(nanos, hz));
 }
 
 #define DRIFT_PHI 1.618033988749895

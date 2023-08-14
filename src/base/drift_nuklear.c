@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <limits.h>
 #include <stddef.h>
 #include <string.h>
@@ -39,6 +49,7 @@ void query_glyph(nk_handle handle, float font_height, struct nk_user_font_glyph 
 
 DriftNuklear* DriftNuklearNew(void){
 	DriftNuklear* ctx = DriftAlloc(DriftSystemMem, sizeof(*ctx));
+	memset(ctx, 0, sizeof(*ctx));
 	
 	nk_init_default(&ctx->nk, 0);
 	nk_buffer_init_default(&ctx->commands);
@@ -73,6 +84,7 @@ DriftNuklear* DriftNuklearNew(void){
 		[NK_COLOR_SCROLLBAR_CURSOR_ACTIVE] = nk_rgba(75, 95, 105, 255),
 		[NK_COLOR_TAB_HEADER] = nk_rgba(181, 45, 69, 220),
 	});
+	ctx->nk.style.button.rounding = false;
 	
 	return ctx;
 }
@@ -108,8 +120,7 @@ void DriftNuklearSetupGFX(DriftNuklear* ctx, DriftDrawShared* draw_shared){
 	
 	ctx->convert_config = (struct nk_convert_config){
 		.vertex_layout = layout, .vertex_size = sizeof(DriftNuklearVertex), .vertex_alignment = NK_ALIGNOF(DriftNuklearVertex),
-		.circle_segment_count = 22, .curve_segment_count = 22, .arc_segment_count = 22,
-		.null = {.texture.ptr = draw_shared->atlas_texture, .uv = {}}, .global_alpha = 1.0f, .shape_AA = true, .line_AA = true,
+		.global_alpha = 1.0f, .circle_segment_count = 16, .arc_segment_count = 8,
 	};
 }
 
@@ -197,11 +208,10 @@ void DriftNuklearDraw(DriftNuklear* ctx, DriftDraw* draw){
 	nk_draw_foreach(cmd, &ctx->nk, &ctx->commands){
 		if(!cmd->elem_count) continue;
 		
-		DRIFT_ASSERT(cmd->texture.ptr, "No texture?");
 		DriftGfxPipelineBindings* bindings = DriftGfxRendererPushBindPipelineCommand(renderer, ctx->pipeline);
 		bindings->uniforms[0] = draw->globals_binding,
 		bindings->samplers[0] = draw->shared->nearest_sampler;
-		bindings->textures[1] = cmd->texture.ptr;
+		bindings->textures[1] = cmd->texture.ptr ?: draw->shared->atlas_texture;
 		bindings->vertex = vertexes.binding;
 		
 		struct nk_rect rect = cmd->clip_rect;

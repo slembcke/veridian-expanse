@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,78 +18,164 @@
 
 #define HIGHLIGHT "{#00FFFFFF}"
 
+#define SCAN_DURATION 4
+#define RESEARCH_DURATION 20
+
 const DriftScan DRIFT_SCANS[_DRIFT_SCAN_COUNT] = {
-	[DRIFT_SCAN_NONE].name = "none",
+	[DRIFT_SCAN_NONE] = {.name = "none"},
 	[DRIFT_SCAN_VIRIDIUM] = {
-		.name = "Viridium", .radius = 8,
-		.description =
-			"A versatile metal that is ideal for industrial fabrication. "
-			"Its name derives from the deep green color of its most common ore, viridium oxide. "
-			"In its metalic form, it is often anodized with a violet color for durability."
+		.name = "Viridium", .radius = 12, .duration = SCAN_DURATION,
+		.description = "A versatile metal that is ideal for industrial fabrication. Its name derives from the deep green color of its most common ore, viridium oxide. In its metallic form, it is often anodized with a violet color for durability."
+	},
+	[DRIFT_SCAN_BORONITE] = {
+		.name = "Boronite", .radius = 12, .duration = SCAN_DURATION,
+		.description = "TODO need some description text here.",
+	},
+	[DRIFT_SCAN_RADONITE] = {
+		.name = "Radonite", .radius = 12, .duration = SCAN_DURATION,
+		.description = "TODO need some description text here.",
+	},
+	[DRIFT_SCAN_METRIUM] = {
+		.name = "Metrium", .radius = 12, .duration = SCAN_DURATION,
+		.description = "TODO need some description text here.",
 	},
 	[DRIFT_SCAN_LUMIUM] = {
-		.name = "Lumium", .radius = 8,
-		.description =
-			"A crystaline semiconductor that is incredibly efficient at converting light to and from other sources of energy. "
-			"Its discovery could revolutionize energy back on the homeworld. "
-			"Can be obtained by destroying "HIGHLIGHT"GLOW BUGS"DRIFT_TEXT_WHITE"."
+		.name = "Lumium", .radius = 8, .duration = SCAN_DURATION,
+		.description = "A crystalline semiconductor that is incredibly efficient at converting light to and from other sources of energy. Its discovery could revolutionize energy back on the homeworld. Can be obtained by destroying "HIGHLIGHT"GLOW BUGS"DRIFT_TEXT_WHITE"."
+	},
+	[DRIFT_SCAN_FLOURON] = {
+		.name = "Flouron", .radius = 8, .duration = SCAN_DURATION,
+		.description = "TODO need some description text here.",
+	},
+	[DRIFT_SCAN_FUNGICITE] = {
+		.name = "Fungicite", .radius = 8, .duration = SCAN_DURATION,
+		.description = "TODO need some description text here.",
+	},
+	[DRIFT_SCAN_MORPHITE] = {
+		.name = "Morphite", .radius = 8, .duration = SCAN_DURATION,
+		.description = "TODO need some description text here.",
 	},
 	[DRIFT_SCAN_SCRAP] = {
-		.name = "Scrap", .radius = 10,
-		.description = "Broken parts. Useful as a fabrication material.",
+		.name = "Scrap", .radius = 10, .duration = SCAN_DURATION,
+		.description = "Scrap metal remnants of a bio-mechanoid. Useful as a fabrication material, and can be obtained by destroying " HIGHLIGHT "HIVE WORKERS" DRIFT_TEXT_WHITE ".",
+	},
+	[DRIFT_SCAN_COPPER] = {
+		.name = "Copper", .radius = 12, .duration = SCAN_DURATION,
+		.description = "A conductive metal useful for constructing high power systems.",
+	},
+	[DRIFT_SCAN_SILVER] = {
+		.name = "Silver", .radius = 12, .duration = SCAN_DURATION,
+		.description = "TODO needs some description text here.",
+	},
+	[DRIFT_SCAN_GOLD] = {
+		.name = "Gold", .radius = 12, .duration = SCAN_DURATION,
+		.description = "TODO needs some description text here.",
+	},
+	[DRIFT_SCAN_GRAPHENE] = {
+		.name = "Graphene", .radius = 12, .duration = SCAN_DURATION,
+		.description = "TODO needs some description text here.",
 	},
 	[DRIFT_SCAN_GLOW_BUG] = {
-		.name = "Glow Bug", .radius = 12,
-		.description =
-			"A harmless biomechanical insectoid found abundantly in the Bright Caverns biome. "
-			"Glow bugs accumulate ultra pure "HIGHLIGHT"LUMIUM"DRIFT_TEXT_WHITE" in their abdomens which can be obtained by destroying them."
+		.name = "Glow Bug", .radius = 12, .duration = SCAN_DURATION,
+		.description = "A harmless biomechanical insectoid found abundantly in the Bright Caverns biome. Glow bugs accumulate ultra pure "HIGHLIGHT"LUMIUM"DRIFT_TEXT_WHITE" in their abdomens which can be obtained by destroying them."
 	},
 	[DRIFT_SCAN_HIVE_WORKER] = {
-		.name = "Hive Worker", .radius = 14,
+		.name = "Hive Worker", .radius = 14, .duration = SCAN_DURATION,
 		.description =
-			"A mostly harmless biomechanical insectoid. Accumulates precious resources and stores them in their "HIGHLIGHT"HIVE"DRIFT_TEXT_WHITE". "
-			"Drops "HIGHLIGHT"SCRAP"DRIFT_TEXT_WHITE" when destroyed."
+			"A mostly harmless biomechanical insectoid. Accumulates resources and stores them in their " HIGHLIGHT "HIVE" DRIFT_TEXT_WHITE ". Drops "HIGHLIGHT"SCRAP"DRIFT_TEXT_WHITE" when destroyed."
 	},
 	[DRIFT_SCAN_HIVE_FIGHTER] = {
-		.name = "Hive Worker", .radius = 14,
-		.description =
-			"An aggressive biomechanical insectoid. Needs more description."
+		.name = "Hive Fighter", .radius = 14, .duration = SCAN_DURATION,
+		.description = "An aggressive biomechanical insectoid usually found near a " HIGHLIGHT "HIVE" DRIFT_TEXT_WHITE " Drops "HIGHLIGHT"SCRAP"DRIFT_TEXT_WHITE" when destroyed.",
 	},
-	[DRIFT_SCAN_FACTORY] = {
-		.name = "Fabricator", .radius = 12, .offset = {30, 10}, .interactive = true,
-		.description =
-			"An industrial fabricator that can construct tools and other items from raw materials. "
-			"Press {@SCAN} to activate the fabricator interface with your "HIGHLIGHT"SCANNER"DRIFT_TEXT_WHITE".",
+	[DRIFT_SCAN_HIVE] = {
+		.name = "Hive", .radius = 48, .duration = 2*SCAN_DURATION,
+		.description = "A biomechanical insectoid hive. Hive workers accumulate precious resources and store them within the hive. A large deposit of " HIGHLIGHT "CONDUCTIVE METAL" DRIFT_TEXT_WHITE " can be detected within. You'll need to break it open to harvest resources within."
 	},
-	[DRIFT_SCAN_CRASHED_SHIP] = {
-		.name = "Crashed Ship", .radius = 12,
-		.description = "Your broken ship. You'll need to fix this.",
+	[DRIFT_SCAN_TRILOBYTE_LARGE] = {
+		.name = "Trilobyte", .radius = 24, .duration = SCAN_DURATION,
+		.description = "A dangerous creature without an interesting scan entry.",
+	},
+	[DRIFT_SCAN_NAUTILUS_HEAVY] = {
+		.name = "Alpha Nautilus", .radius = 24, .duration = SCAN_DURATION,
+		.description = "A large unfinished creature.",
+	},
+	[DRIFT_SCAN_CONSTRUCTION_SKIFF] = {
+		.name = "Construction Skiff", .radius = 12, .duration = SCAN_DURATION,
+		.description = "A damaged construction skiff with an onboard industrial fabricator and power reactor. Don't get to attached to it though. It's just a placeholder asset after all.",
 	},
 	[DRIFT_SCAN_POWER_NODE] = {
-		.name = "Power Node", .radius = 12, .interactive = true,
-		.description =
-			"An industrial scale power and data transmision module. "
-			"They allow for an efficient centralized infrastructure and allow a "
-			"high power to weight ratio on connected machinery such as your idustrial pod."
+		.name = "Power Nodes", .radius = 12, .duration = 5,
+		.description = "An industrial scale power and data transmision node. They allow for an efficient centralized infrastructure and allow a high power to weight ratio on connected machinery.",
 	},
-	
-	// TODO should I include descriptions for craftables?
-	// [DRIFT_SCAN_OPTICS] = {
-	// 	.name = "Optical Parts",
-	// 	.description = "Used to build stuff.",
-	// },
-	// [DRIFT_SCAN_HEADLIGHT] = {
-	// 	.name = "Lumium Headlight",
-	// 	.description = "See more with the power of Lumium.",
-	// },
-	// [DRIFT_SCAN_AUTOCANNON] = {
-	// 	.name = "Autocannon",
-	// 	.description = "Shoots faster than a rusty cannon.",
-	// },
-	// [DRIFT_SCAN_LASER] = {
-	// 	.name = "Mining Laser",
-	// 	.description = "Mines 50% faster than an autospoon.",
-	// },
+	[DRIFT_SCAN_DRONE] = {
+		.name = "Task Drone", .duration = RESEARCH_DURATION,
+		.description = "Work smarter, not harder by delegating basic tasks to drones.",
+	},
+	[DRIFT_SCAN_OPTICS] = {
+		.name = "Optical Parts", .duration = RESEARCH_DURATION/2,
+		.description = "Optical parts are used to build upgrades that need to manipulate light.",
+	},
+	[DRIFT_SCAN_POWER_SUPPLY] = {
+		.name = "Power Supply", .duration = RESEARCH_DURATION/2,
+		.description = "Electrical power supply circuit used to build upgrades requiring up to 20 kW of continuous power.",
+	},
+	[DRIFT_SCAN_HEADLIGHT] = {
+		.name = "Lumium Lights", .duration = 5,
+		.description = "See more of the world with the power of Lumium.",
+		.usage = "Press {@LIGHT} to toggle headlight.",
+	},
+	[DRIFT_SCAN_AUTOCANNON] = {
+		.name = "Autocannon", .duration = RESEARCH_DURATION,
+		.description = "Upgrades your cannon to fire a high speed burst of projectiles.",
+		.usage = "Press {@FIRE} to fire.",
+	},
+	[DRIFT_SCAN_ZIP_CANNON] = {
+		.name = "Zip Cannon", .duration = RESEARCH_DURATION,
+		.description = "Placeholder",
+	},
+	[DRIFT_SCAN_LASER] = {
+		.name = "Mining Laser", .duration = RESEARCH_DURATION,
+		.description = "A high powered mining laser. Capable of cutting through solid rock in mere seconds.",
+		.usage = "Press {@LASER} to use the laser.",
+	},
+	[DRIFT_SCAN_FAB_RADIO] = {
+		.name = "Fab Radio", .duration = RESEARCH_DURATION,
+		.description = "A radio module that allows remote control of your fabricator. You can start research or build items while out exploring.",
+		.usage = "Press {@MAP} and then select \"Craft\".",
+	},
+	[DRIFT_SCAN_SHIELD_L2] = {
+		.name = "Super Shield", .duration = RESEARCH_DURATION,
+		.description = "A high powered shield module that can take absorb double the damage.",
+	},
+	[DRIFT_SCAN_SHIELD_L3] = {
+		.name = "Mirror Shield", .duration = RESEARCH_DURATION,
+		.description = "Reflect your cares away... (TODO)",
+	},
+	[DRIFT_SCAN_CARGO_L2] = {
+		.name = "Cargo L2", .duration = RESEARCH_DURATION,
+		.description = "Increase your cargo capacity by 50%.",
+	},
+	[DRIFT_SCAN_CARGO_L3] = {
+		.name = "Cargo L3", .duration = RESEARCH_DURATION,
+		.description = "Double your cargo capacity",
+	},
+	[DRIFT_SCAN_NODES_L2] = {
+		.name = "Nodes L2", .duration = RESEARCH_DURATION,
+		.description = "Increase your node capacity by 50%.",
+	},
+	[DRIFT_SCAN_NODES_L3] = {
+		.name = "Nodes L3", .duration = RESEARCH_DURATION,
+		.description = "Double your node capacity.",
+	},
+	[DRIFT_SCAN_STORAGE_L2] = {
+		.name = "Storage L2", .duration = RESEARCH_DURATION,
+		.description = "Increase your storage capacity by 50%.",
+	},
+	[DRIFT_SCAN_STORAGE_L3] = {
+		.name = "Storage L3", .duration = RESEARCH_DURATION,
+		.description = "Double your storage capacity.",
+	},
 };
 
 typedef struct {
@@ -98,21 +194,18 @@ static void row(RowContext* ctx, DriftScanType type){
 	if(win->ve_row == win->ve_inc) ctx->selected = type;
 	
 	mu_layout_row(mu, 1, ROW, 16);
-	if(ctx->state->scan_progress[type] < 1){
-		mu_begin_group(mu, 0);
+	mu_begin_group(mu, 0);
+	if(ctx->state->scan_progress[type] == 1){
 		mu_layout_row(mu, 1, ROW, 0);
-		mu_label(mu, "{#60300030}(undiscovered)");
-		mu_end_group(mu);
+		mu_labelf(mu, "{#CBCBCA95}%s", DRIFT_SCANS[type].name ?: "!!NO NAME!!");
 	} else {
-		mu_begin_group(mu, 0);
 		mu_layout_row(mu, 1, ROW, 0);
-		mu_labelf(mu, "{#C0C0C0FF}%s", DRIFT_SCANS[type].name ?: "!!NO NAME!!");
-		mu_end_group(mu);
+		mu_label(mu, "{#8418185E}(undiscovered)");
 	}
+	mu_end_group(mu);
 }
 
-void DriftScanUI(DriftDraw* draw, DriftUIState* ui_state, DriftScanType select){
-	mu_Context* mu = draw->ctx->mu;
+void DriftScanUI(mu_Context* mu, DriftDraw* draw, DriftScanType* select, DriftUIState* ui_state){
 	DriftVec2 extents = draw->internal_extent;
 	mu_Vec2 size = {400, 200};
 	
@@ -121,37 +214,58 @@ void DriftScanUI(DriftDraw* draw, DriftUIState* ui_state, DriftScanType select){
 	win->rect = (mu_Rect){(int)(extents.x - size.x)/2, (int)(extents.y - size.y)/2, size.x, size.y};
 	win->open = (*ui_state == DRIFT_UI_STATE_SCAN);
 	
-	RowContext ctx = {.state = draw->state, .mu = mu, .win = win, .select = select};
+	RowContext ctx = {.state = draw->state, .mu = mu, .win = win, .select = *select};
+	*select = DRIFT_SCAN_NONE;
+	
 	static const int ROW[] = {-1};
 	
 	if(mu_begin_window_ex(mu, TITLE, win->rect, 0)){
-		mu_layout_row(mu, 2, (int[]){-1}, 18);
-		mu_begin_box(mu, MU_COLOR_GROUPBG, 0);
-		mu_layout_row(mu, 2, (int[]){-60, -1}, -1);
-		mu_label(mu, "Scans:");
-		if(mu_button(mu, "Close {@CANCEL}") || mu->key_down & MU_KEY_ESCAPE) *ui_state = DRIFT_UI_STATE_NONE;
-		mu_end_box(mu);
+		mu_bring_to_front(mu, win);
 		
 		mu_layout_row(mu, 2, (int[]){-260, -1}, -1);
 		
-		// Draw scans list
 		mu_begin_panel(mu, "list");
 		mu_layout_row(mu, 1, ROW, 0);
 		mu_label(mu, "Technology:");
 		row(&ctx, DRIFT_SCAN_POWER_NODE);
-		row(&ctx, DRIFT_SCAN_CRASHED_SHIP);
-		row(&ctx, DRIFT_SCAN_FACTORY);
+		row(&ctx, DRIFT_SCAN_CONSTRUCTION_SKIFF);
+		row(&ctx, DRIFT_SCAN_HIVE);
 		
 		mu_layout_row(mu, 1, ROW, 0);
 		mu_label(mu, "Light Creatures:");
 		row(&ctx, DRIFT_SCAN_GLOW_BUG);
 		row(&ctx, DRIFT_SCAN_HIVE_WORKER);
+		row(&ctx, DRIFT_SCAN_HIVE_FIGHTER);
 		
 		mu_layout_row(mu, 1, ROW, 0);
 		mu_label(mu, "Light Resources:");
 		row(&ctx, DRIFT_SCAN_VIRIDIUM);
 		row(&ctx, DRIFT_SCAN_LUMIUM);
 		row(&ctx, DRIFT_SCAN_SCRAP);
+		row(&ctx, DRIFT_SCAN_COPPER);
+		
+		mu_layout_row(mu, 1, ROW, 0);
+		mu_label(mu, "Cryo Creatures:");
+		row(&ctx, DRIFT_SCAN_NAUTILUS_HEAVY);
+		row(&ctx, DRIFT_SCAN_TRILOBYTE_LARGE);
+		
+		mu_layout_row(mu, 1, ROW, 0);
+		mu_label(mu, "Cryo Resources:");
+		row(&ctx, DRIFT_SCAN_BORONITE);
+		row(&ctx, DRIFT_SCAN_FLOURON);
+		row(&ctx, DRIFT_SCAN_SILVER);
+		
+		mu_layout_row(mu, 1, ROW, 0);
+		mu_label(mu, "Radio Resources:");
+		row(&ctx, DRIFT_SCAN_RADONITE);
+		row(&ctx, DRIFT_SCAN_FUNGICITE);
+		row(&ctx, DRIFT_SCAN_GOLD);
+		
+		mu_layout_row(mu, 1, ROW, 0);
+		mu_label(mu, "Dark Resources:");
+		row(&ctx, DRIFT_SCAN_METRIUM);
+		row(&ctx, DRIFT_SCAN_MORPHITE);
+		row(&ctx, DRIFT_SCAN_GRAPHENE);
 		mu_end_panel(mu);
 		
 		// Draw item details.
@@ -179,8 +293,8 @@ void DriftScanUI(DriftDraw* draw, DriftUIState* ui_state, DriftScanType select){
 			}
 			DRIFT_LOG("loading scan image '%s'", filename);
 			
-			DriftImage img = DriftAssetLoadImage(DriftSystemMem, filename);
-			img.pixels = DriftRealloc(DriftSystemMem, img.pixels, img.w*img.h*4, DRIFT_ATLAS_SIZE*DRIFT_ATLAS_SIZE*4);
+			DriftImage img = DriftAssetLoadImage(draw->mem, filename);
+			img.pixels = DriftRealloc(draw->mem, img.pixels, img.w*img.h*4, DRIFT_ATLAS_SIZE*DRIFT_ATLAS_SIZE*4);
 			
 			const DriftGfxDriver* driver = draw->shared->driver;
 			uint queue = tina_job_switch_queue(draw->job, DRIFT_JOB_QUEUE_GFX);
@@ -204,7 +318,7 @@ void DriftScanUI(DriftDraw* draw, DriftUIState* ui_state, DriftScanType select){
 		mu->style = _style;
 		mu_layout_end_column(mu);
 		
-		mu_check_close(mu);
+		DriftUICloseIndicator(mu, win);
 		if(!win->open) *ui_state = DRIFT_UI_STATE_NONE;
 		mu_end_window(mu);
 	}

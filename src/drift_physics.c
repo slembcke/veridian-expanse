@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <string.h>
 
 #include "tracy/TracyC.h"
@@ -10,6 +20,9 @@ enum {
 	CATEGORY_ITEM = 0x0004,
 	CATEGORY_ENEMY = 0x0008,
 	CATEGORY_PLAYER_BULLET = 0x0010,
+	CATEGORY_HIVE = 0x0020,
+	CATEGORY_ENEMY_BULLET = 0x0040,
+	CATEGORY_DRONE = 0x0080,
 	
 	CATEGORY_GROUP_NPC = CATEGORY_TERRAIN | CATEGORY_PLAYER | CATEGORY_PLAYER_BULLET | CATEGORY_ITEM | CATEGORY_ENEMY,
 };
@@ -18,28 +31,24 @@ static struct {
 	u32 categories, mask;
 } COLLISION_TYPES[] = {
 	[DRIFT_COLLISION_TERRAIN] = {.categories = CATEGORY_TERRAIN, .mask = -1},
-	[DRIFT_COLLISION_PLAYER] = {.categories = CATEGORY_PLAYER, .mask = CATEGORY_TERRAIN | CATEGORY_ENEMY},
+	[DRIFT_COLLISION_PLAYER] = {.categories = CATEGORY_PLAYER, .mask = CATEGORY_TERRAIN | CATEGORY_ENEMY | CATEGORY_ENEMY_BULLET},
+	[DRIFT_COLLISION_PLAYER_DRONE] = {.categories = CATEGORY_DRONE, .mask = CATEGORY_DRONE | CATEGORY_TERRAIN},
 	[DRIFT_COLLISION_ITEM] = {.categories = CATEGORY_ITEM, .mask = -1},
-	[DRIFT_COLLISION_PLAYER_BULLET] = {.categories = CATEGORY_PLAYER_BULLET, .mask = CATEGORY_TERRAIN | CATEGORY_ENEMY},
+	[DRIFT_COLLISION_PLAYER_BULLET] = {.categories = CATEGORY_PLAYER_BULLET, .mask = CATEGORY_TERRAIN | CATEGORY_ENEMY | CATEGORY_HIVE},
 	[DRIFT_COLLISION_NON_HOSTILE] = {.categories = CATEGORY_ENEMY, .mask = CATEGORY_GROUP_NPC},
-	[DRIFT_COLLISION_WORKER_DRONE] = {.categories = CATEGORY_ENEMY, .mask = CATEGORY_GROUP_NPC},
+	[DRIFT_COLLISION_HIVE_DRONE] = {.categories = CATEGORY_ENEMY, .mask = CATEGORY_GROUP_NPC},
+	[DRIFT_COLLISION_HIVE] = {.categories = CATEGORY_HIVE, .mask = CATEGORY_PLAYER_BULLET},
+	[DRIFT_COLLISION_ENEMY_BULLET] = {.categories = CATEGORY_ENEMY_BULLET, .mask = CATEGORY_PLAYER},
 };
 
 static bool do_nothing(DriftUpdate* update, DriftPhysics* phys, DriftIndexPair pair){return true;}
-
-static bool fatal_player_contact(DriftUpdate* update, DriftPhysics* phys, DriftIndexPair pair){
-	DriftGameState* state = update->state;
-	DriftHealthApplyDamage(update, state->bodies.entity[pair.idx0], 10);
-	DriftHealthApplyDamage(update, state->bodies.entity[pair.idx1], INFINITY);
-	return true;
-}
 
 static const struct {
 	DriftCollisionType types[2];
 	DriftCollisionCallback* callback;
 } COLLISION_CALLBACKS[] = {
 	{{}, do_nothing},
-	{{DRIFT_COLLISION_PLAYER, DRIFT_COLLISION_WORKER_DRONE}, DriftWorkerDroneCollide},
+	{{DRIFT_COLLISION_PLAYER, DRIFT_COLLISION_HIVE_DRONE}, DriftWorkerDroneCollide},
 	{},
 };
 
@@ -59,6 +68,11 @@ bool DriftCollisionFilter(DriftCollisionType a, DriftCollisionType b){
 static DriftVec2 linearized_rotation(DriftVec2 q, float w, float dt){
 	return DriftVec2Normalize((DriftVec2){q.x - q.y*w*dt, q.y + q.x*w*dt});
 }
+
+// void DriftPhysicsSyncTransform(DriftGameState* state, uint body_idx, uint transform_idx){
+// 	DriftVec2 p = state->bodies.position[body_idx], q = state->bodies.rotation[body_idx];
+// 	state->transforms.matrix[transform_idx] = (DriftAffine){q.x, q.y, -q.y, q.x, p.x, p.y};
+// }
 
 void DriftPhysicsSyncTransforms(DriftUpdate* update, float dt_diff){
 	DriftAffine* transform_arr = update->state->transforms.matrix;
@@ -180,33 +194,28 @@ static PhysicsJobContext* phys_job_enqueue(DriftUpdate* update, DriftPhysics* ph
 		};
 	}
 	
-	tina_scheduler_enqueue_batch(update->scheduler, descs, desc_count, &ctx->group, 0);
+	tina_scheduler_enqueue_batch(APP->scheduler, descs, desc_count, &ctx->group, 0);
 	TracyCZoneEnd(ZONE);
 	return ctx;
 }
 
-static void bounds_job(const DriftPhysics* phys, uint i0, uint i1){
+static void bounds_func(uint* indexes, DriftAABB2* bounds, uint count, void* user_data){
+	const DriftPhysics* phys = user_data;
+	
 	TracyCZoneN(ZONE_BOUNDS, "Bounds", true);
-	for(uint i = i0; i < i1; i++){
-		DriftVec2 center = phys->x[i];
-		float radius = phys->r[i];
-		DriftVec2 displacement = DriftVec2Mul(phys->v[i], phys->dt);
+	for(uint i = 0; i < count; i++){
+		uint idx = indexes[i] + 1;
+		DRIFT_ASSERT(idx < phys->body_count, "Bad bound index.");
 		
-		DriftAABB2 bb = phys->bounds[i] = (DriftAABB2){
-			.l = center.x - radius + fmaxf(0.0f, -displacement.x),
-			.b = center.y - radius + fmaxf(0.0f, -displacement.y),
-			.r = center.x + radius + fmaxf(0.0f, +displacement.x),
-			.t = center.y + radius + fmaxf(0.0f, +displacement.y),
+		float radius = phys->r[idx];
+		DriftVec2 x = phys->x[idx], dx = DriftVec2Mul(phys->v[idx], phys->dt);
+		DriftAABB2 bb = bounds[i] = (DriftAABB2){
+			.l = (x.x - radius) + fminf(0.0f, dx.x),
+			.b = (x.y - radius) + fminf(0.0f, dx.y),
+			.r = (x.x + radius) + fmaxf(0.0f, dx.x),
+			.t = (x.y + radius) + fmaxf(0.0f, dx.y),
 		};
-		
-		DriftVec2 dialate = DriftVec2Mul((DriftVec2){bb.r - bb.l, bb.t - bb.b}, 0.25f);
-		DriftVec2 delta = DriftVec2Mul(phys->v[i], 4*phys->dt);
-		phys->loose_bounds[i] = (DriftAABB2){
-			.l = bb.l + fminf(-dialate.x, delta.x),
-			.b = bb.b + fminf(-dialate.y, delta.y),
-			.r = bb.r + fmaxf(+dialate.x, delta.x),
-			.t = bb.t + fmaxf(+dialate.y, delta.y),
-		};
+		DRIFT_ASSERT(DriftAABB2Area(bb) > 0, "Non-positive area for object.");
 	}
 	TracyCZoneEnd(ZONE_BOUNDS);
 }
@@ -221,17 +230,13 @@ static void terrain_job(const DriftPhysics* phys, uint i0, uint i1){
 	TracyCZoneEnd(ZONE_TERRAIN);
 }
 
-void DriftPhysicsTick(DriftUpdate* update){
+void DriftPhysicsTick(DriftUpdate* update, DriftMem* mem){
 	DriftGameState* state = update->state;
-	
-	if(state->physics) DriftZoneMemRelease(state->physics->mem);
-	DriftMem* mem = DriftZoneMemAquire(update->ctx->app->zone_heap, "Physics");
 	
 	uint body_count = update->state->bodies.c.table.row_count;
 	uint substeps = 4, iterations = 2;
 	DriftPhysics* phys = state->physics = DRIFT_COPY(mem, ((DriftPhysics){
-		.mem = mem,
-		.dt = update->dt,
+		.dt = update->tick_dt,
 		.dt_sub = update->tick_dt/substeps,
 		.dt_sub_inv = substeps/update->tick_dt,
 		
@@ -246,28 +251,21 @@ void DriftPhysicsTick(DriftUpdate* update){
 		.r = state->bodies.radius,
 		.ctype = state->bodies.collision_type,
 		
-		.x_bias = DriftAlloc(mem, body_count*sizeof(*phys->x_bias)),
-		.q_bias = DriftAlloc(mem, body_count*sizeof(*phys->q_bias)),
-		.bounds = DriftAlloc(mem, body_count*sizeof(*phys->bounds)),
-		.loose_bounds = DriftAlloc(mem, body_count*sizeof(*phys->loose_bounds)),
+		.x_bias = DRIFT_ARRAY_NEW(mem, body_count, typeof(*phys->x_bias)),
+		.q_bias = DRIFT_ARRAY_NEW(mem, body_count, typeof(*phys->q_bias)),
 		// TODO should come up with real hueristics for these eventually.
-		.ground_plane = DriftAlloc(mem, body_count*sizeof(*phys->ground_plane)),
+		.ground_plane = DRIFT_ARRAY_NEW(mem, body_count, typeof(*phys->ground_plane)),
 		.cpair = DRIFT_ARRAY_NEW(mem, body_count/2, DriftCollisionPair),
 		.contact = DRIFT_ARRAY_NEW(mem, body_count/2, DriftContact),
 	}));
 	
 	TracyCZoneN(ZONE_COLLISION_PAIRS, "Collision Pairs", true);
-	PhysicsJobContext* bounds_job_ctx = phys_job_enqueue(update, phys, 0, body_count, 1024, bounds_job);
 	PhysicsJobContext* terrain_job_ctx = phys_job_enqueue(update, phys, 1, body_count, 1024, terrain_job);
-	
-	TracyCZoneN(ZONE_WAIT_JOBS, "Wait For Bounds", true);
-	tina_job_wait(update->job, &bounds_job_ctx->group, 0);
-	TracyCZoneEnd(ZONE_WAIT_JOBS);
 	
 	TracyCZoneN(ZONE_BROADPHASE, "Broadphase", true);
 	// TODO A bit awkward, the RTree indexes start at 0, but the component arrays start at 1.
-	DriftRTreeUpdate(&state->rtree, phys->bounds + 1, phys->loose_bounds + 1, body_count - 1, update->mem);
-	DRIFT_ARRAY(DriftIndexPair) overlap_pairs = DriftRTreePairs(&state->rtree, phys->bounds + 1, update->job, update->mem);
+	DriftRTreeUpdate(&state->rtree, body_count - 1, bounds_func, phys, update->job, update->mem);
+	DRIFT_ARRAY(DriftIndexPair) overlap_pairs = DriftRTreePairs(&state->rtree, update->job, update->mem);
 	
 	uint overlap_pair_count = DriftArrayLength(overlap_pairs);
 	for(uint i = 0; i < overlap_pair_count; i++){
@@ -300,7 +298,7 @@ void DriftPhysicsTick(DriftUpdate* update){
 		DriftIndexPair pair = phys->cpair[i].ipair;
 		DriftCollisionType t0 = phys->ctype[pair.idx0], t1 = phys->ctype[pair.idx1];
 		uint idx = DriftMapFind(&COLLISION_MAP, collision_hash(t0, t1));
-		// Swap the order if the it doesn't match the definition.
+		// Swap the order if it doesn't match the definition.
 		if(COLLISION_CALLBACKS[idx].types[0] != t0) pair = (DriftIndexPair){pair.idx1, pair.idx0};
 		// TODO Need to pass contact info or fixup swapped normals?
 		COLLISION_CALLBACKS[idx].callback(update, phys, pair);

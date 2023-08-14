@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include "drift_common.hlsl"
 
 struct VertInput {
@@ -39,6 +49,7 @@ const float3 BIOME_TINT[] = {
 	{0.5, 1.0, 0.5},
 	{0.5, 1.0, 1.0},
 	{1.0, 0.5, 0.5},
+	{0.1, 0.1, 0.1},
 };
 
 float4 FShader(in FragInput FRAG) : SV_TARGET0{
@@ -57,10 +68,19 @@ float4 FShader(in FragInput FRAG) : SV_TARGET0{
 	// float err = 10*(dot(biome, float4(1)) - 1);
 	// return float4(-err, +err, 0, 1);
 	
-	float terrain_mask = biome.r + biome.g + biome.b + biome.a;
+	float terrain_mask = step(0.5, biome.r + biome.g + biome.b + biome.a);
 	float4 biome_rb_ga = lerp(float4(0, 2, biome.rb), float4(1, 3, biome.ga), step(biome.rb, biome.ga).xyxy);
 	float biome_idx = lerp(biome_rb_ga.x, biome_rb_ga.y, step(biome_rb_ga.z, biome_rb_ga.w));
-	color.rgb *= BIOME_TINT[biome_idx]*terrain_mask;
+	color.rgb *= lerp(BIOME_TINT[4], BIOME_TINT[biome_idx], terrain_mask);
+	
+	float max_biome = 0;
+	max_biome = max(max_biome, biome.r);
+	max_biome = max(max_biome, biome.g);
+	max_biome = max(max_biome, biome.b);
+	max_biome = max(max_biome, biome.a);
+	max_biome = max(max_biome, 1 - (biome.r + biome.g + biome.b + biome.a));
+	if(max_biome < 0.6) color.rgb = float3(1, 0, 0);
+	if(max_biome < 1.0 )color.rgb += 0.2*float3(1, 0, 1);
 	
 	// Draw contour
 	color.rgb *= smoothstep(0, fwidth(density), abs(density - 0.5));

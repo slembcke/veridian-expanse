@@ -1,23 +1,25 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <stdio.h>
 #include <string.h>
 
 #include <volk/volk.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
-#include <tina/tina_jobs.h>
 #include <tracy/TracyC.h>
 
-#include "drift_types.h"
-#include "drift_math.h"
-#include "drift_util.h"
-#include "drift_mem.h"
-#include "drift_table.h"
-#include "drift_map.h"
-#include "drift_gfx.h"
+#include "drift_base.h"
 #include "drift_gfx_internal.h"
-#include "drift_app.h"
 
-#define DRIFT_VULKAN_VALIDATE 0
+#define DRIFT_VULKAN_VALIDATE DRIFT_DEBUG
 
 static const char* VALIDATION_LAYERS[] = {"VK_LAYER_KHRONOS_validation"};
 static const u32 VALIDATION_LAYERS_COUNT = sizeof(VALIDATION_LAYERS)/sizeof(*VALIDATION_LAYERS);
@@ -25,7 +27,7 @@ static const u32 VALIDATION_LAYERS_COUNT = sizeof(VALIDATION_LAYERS)/sizeof(*VAL
 static const char* REQUIRED_EXTENSIONS[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_MAINTENANCE1_EXTENSION_NAME};
 static const u32 REQUIRED_EXTENSIONS_COUNT = sizeof(REQUIRED_EXTENSIONS)/sizeof(*REQUIRED_EXTENSIONS);
 
-#define DRIFT_VK_STAGING_BUFFER_SIZE (1024*1024)
+#define DRIFT_VK_STAGING_BUFFER_SIZE (2*1024*1024)
 #define DRIFT_VK_STAGING_JOB_COUNT 32
 #define MAX_SWAP_CHAIN_IMAGE_COUNT 8
 #define DRIFT_VK_RENDERER_COUNT 4
@@ -156,7 +158,7 @@ static void NameObject(DriftVkContext* ctx, VkObjectType type, u64 handle, const
 #endif
 }
 
-DriftVkQueueFamilies find_queue_families(DriftVkContext* app, VkPhysicalDevice device){
+DriftVkQueueFamilies find_queue_families(DriftVkContext* ctx, VkPhysicalDevice device){
 	DriftVkQueueFamilies indices = {.graphics_idx = -1, .present_idx = -1};
 	
 	u32 queue_family_count = 0;
@@ -170,7 +172,7 @@ DriftVkQueueFamilies find_queue_families(DriftVkContext* app, VkPhysicalDevice d
 		}
 		
 		VkBool32 present_support = false;
-		vkGetPhysicalDeviceSurfaceSupportKHR(device, i, app->surface, &present_support);
+		vkGetPhysicalDeviceSurfaceSupportKHR(device, i, ctx->surface, &present_support);
 		if(present_support) indices.present_idx = i;
 	}
 	
@@ -240,10 +242,13 @@ static VkExtent2D DriftVkCreateSwapChain(DriftVkContext* ctx, DriftVec2 fb_exten
 	if(extent.height == ~0u) extent.height = DriftClamp(fb_extent.y, min.height, max.height);
 	ctx->swap_chain.extent = extent;
 	
+	// Require at least 2 swap images.
+	uint image_count = DRIFT_MAX(2, capabilities.minImageCount);
+	DRIFT_ASSERT_HARD(capabilities.maxImageCount == 0 || capabilities.maxImageCount >= 2, "Must support at least 2 swap images.");
+	
 	VkSwapchainCreateInfoKHR info = {
 		.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-		.surface = ctx->surface,
-		.minImageCount = capabilities.minImageCount,
+		.surface = ctx->surface, .minImageCount = image_count,
 		.imageFormat = ctx->swap_chain.format.format,
 		.imageColorSpace = ctx->swap_chain.format.colorSpace,
 		.imageExtent = extent, .imageArrayLayers = 1,
@@ -518,19 +523,16 @@ static DriftVkBuffer DriftVkCreateBuffer(DriftVkContext* ctx, VkBufferUsageFlags
 	return buffer;
 }
 
-static DriftVkContext* DriftVkCreateContext(DriftApp* app){
-	DriftVkContext* ctx = DriftAlloc(DriftSystemMem, sizeof(*ctx));
-	(*ctx) = (DriftVkContext){};
-	app->shell_context = ctx;
-	
+static DriftVkContext* DriftVkCreateContext(void){
+	DriftVkContext* ctx = DRIFT_COPY(DriftSystemMem, ((DriftVkContext){}));
 	DriftMapInit(&ctx->destructors, DriftSystemMem, "#VKDestructors", 0);
 	
 	u32 extensions_count;
-	bool success = SDL_Vulkan_GetInstanceExtensions(app->shell_window, &extensions_count, NULL);
+	bool success = SDL_Vulkan_GetInstanceExtensions(APP->shell_window, &extensions_count, NULL);
 	DRIFT_ASSERT_HARD(success, "Failed to recieve Vulkan extensions from SDL");
 	
 	const char* extensions[extensions_count + 1];
-	success = SDL_Vulkan_GetInstanceExtensions(app->shell_window, &extensions_count, extensions);
+	success = SDL_Vulkan_GetInstanceExtensions(APP->shell_window, &extensions_count, extensions);
 	DRIFT_ASSERT_HARD(success, "Failed to recieve Vulkan extensions from SDL");
 	
 	if(DRIFT_DEBUG) extensions[extensions_count++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
@@ -565,7 +567,7 @@ static DriftVkContext* DriftVkCreateContext(DriftApp* app){
 	}, NULL, &ctx->messenger);
 #endif
 	
-	success = SDL_Vulkan_CreateSurface(app->shell_window, ctx->instance, &ctx->surface);
+	success = SDL_Vulkan_CreateSurface(APP->shell_window, ctx->instance, &ctx->surface);
 	DRIFT_ASSERT(success, "Failed to create SDL Vulkan surfaces.");
 	
 	u32 device_count = 0;
@@ -606,7 +608,7 @@ static DriftVkContext* DriftVkCreateContext(DriftApp* app){
 		.pQueueCreateInfos = infos, .queueCreateInfoCount = (same_queue ? 1 : 2),
 		.pEnabledFeatures = &(VkPhysicalDeviceFeatures){},
 		.ppEnabledExtensionNames = REQUIRED_EXTENSIONS, .enabledExtensionCount = REQUIRED_EXTENSIONS_COUNT,
-#if DRIFT_DEBUG
+#if DRIFT_VULKAN_VALIDATE
 		.ppEnabledLayerNames = VALIDATION_LAYERS, .enabledLayerCount = VALIDATION_LAYERS_COUNT,
 #endif
 	}, NULL, &ctx->device);
@@ -751,9 +753,8 @@ static void DriftVkSamplerFree(const DriftGfxDriver* driver, void* obj){
 
 static DriftGfxSampler* DriftVkSamplerNew(const DriftGfxDriver* driver, DriftGfxSamplerOptions options){
 	DriftVkContext* ctx = driver->ctx;
-	DriftVkSampler* sampler = DriftAlloc(DriftSystemMem, sizeof(*sampler));
-	(*sampler) = (DriftVkSampler){};
-	DriftMapInsert(&ctx->destructors, (uintptr_t)sampler, (uintptr_t)DriftVkSamplerFree);
+	DriftVkSampler* sampler = DRIFT_COPY(DriftSystemMem, ((DriftVkSampler){}));
+	DriftAssertGfxThread();
 	
 	vkCreateSampler(ctx->device, &(VkSamplerCreateInfo){
 		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -765,16 +766,25 @@ static DriftGfxSampler* DriftVkSamplerNew(const DriftGfxDriver* driver, DriftGfx
 		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
 	}, NULL, &sampler->sampler);
 	
+	DriftMapInsert(&ctx->destructors, (uintptr_t)sampler, (uintptr_t)DriftVkSamplerFree);
 	return &sampler->base;
 }
 
 static DriftVkStagingJob* DriftVkAquireStagingJob(DriftVkContext* ctx, size_t job_size){
+	DRIFT_ASSERT_HARD(job_size <= DRIFT_VK_STAGING_BUFFER_SIZE, "Data size exceeds Vulkan staging buffer size!");
+	
 	TracyCZoneN(ZONE_STAGING, "Staging", true);
 	// Check if there is enough space remaining before wraparound.
-	size_t remaining = -ctx->staging.buffer_write & (DRIFT_VK_STAGING_BUFFER_SIZE - 1);
-	if(remaining < job_size) ctx->staging.buffer_write += remaining;
+	size_t remaining = DRIFT_VK_STAGING_BUFFER_SIZE - (ctx->staging.buffer_write % DRIFT_VK_STAGING_BUFFER_SIZE);
+	if(remaining < job_size){
+		// Jump forward to the wrap point.
+		ctx->staging.buffer_write += remaining;
+		// Add the space to the most recent job.
+		uint last_idx = (ctx->staging.job_head - 1) % DRIFT_VK_STAGING_JOB_COUNT;
+		ctx->staging.jobs[last_idx].advance = ctx->staging.buffer_write;
+	}
 	
-	size_t buffer_offset = ctx->staging.buffer_write & (DRIFT_VK_STAGING_BUFFER_SIZE - 1);
+	size_t buffer_offset = ctx->staging.buffer_write % DRIFT_VK_STAGING_BUFFER_SIZE;
 	ctx->staging.buffer_write += job_size;
 	
 	// Check for finished jobs if not enough buffer memory is available.
@@ -786,7 +796,7 @@ static DriftVkStagingJob* DriftVkAquireStagingJob(DriftVkContext* ctx, size_t jo
 	}
 	
 	// Aquire a job.
-	uint job_idx = ctx->staging.job_head++ & (DRIFT_VK_STAGING_JOB_COUNT - 1);
+	uint job_idx = ctx->staging.job_head++ % DRIFT_VK_STAGING_JOB_COUNT;
 	DriftVkStagingJob* job = ctx->staging.jobs + job_idx;
 	VkResult result = vkWaitForFences(ctx->device, 1, &job->fence, true, UINT64_MAX);
 	AssertSuccess(result, "Failed to wait on Vulkan fence.");
@@ -821,7 +831,7 @@ static void TransitionImage(VkCommandBuffer command_buffer, VkImage image, VkIma
 
 struct {
 	VkFormat format;
-	uint bpp;
+	uint bytes_per_pixel;
 } DriftVkFormatMap[_DRIFT_GFX_TEXTURE_FORMAT_COUNT] = {
 	[DRIFT_GFX_TEXTURE_FORMAT_RGBA8] = {VK_FORMAT_R8G8B8A8_UNORM, 4},
 	[DRIFT_GFX_TEXTURE_FORMAT_RGBA16F] = {VK_FORMAT_R16G16B16A16_SFLOAT, 8},
@@ -837,6 +847,7 @@ static void DriftVkTextureFree(const DriftGfxDriver* driver, void* obj){
 
 static DriftGfxTexture* DriftVkTextureNew(const DriftGfxDriver* driver, uint width, uint height, DriftGfxTextureOptions options){
 	DriftVkContext* ctx = driver->ctx;
+	DriftAssertGfxThread();
 	
 	VkFormat format = DriftVkFormatMap[options.format].format;
 	DRIFT_ASSERT(format, "Unhandled texture format.");
@@ -847,9 +858,9 @@ static DriftGfxTexture* DriftVkTextureNew(const DriftGfxDriver* driver, uint wid
 		[DRIFT_GFX_TEXTURE_2D_ARRAY] = VK_IMAGE_TYPE_2D,
 	};
 	
-	DriftVkTexture *texture = DriftAlloc(DriftSystemMem, sizeof(*texture));
-	(*texture) = (DriftVkTexture){.base = {.options = options, .width = width, .height = height}};
-	DriftMapInsert(&ctx->destructors, (uintptr_t)texture, (uintptr_t)DriftVkTextureFree);
+	DriftVkTexture *texture = DRIFT_COPY(DriftSystemMem, ((DriftVkTexture){
+		.base = {.options = options, .width = width, .height = height}
+	}));
 	
 	VkResult result = vkCreateImage(ctx->device, &(VkImageCreateInfo){
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -889,10 +900,9 @@ static DriftGfxTexture* DriftVkTextureNew(const DriftGfxDriver* driver, uint wid
 	NameObject(ctx, VK_OBJECT_TYPE_IMAGE_VIEW, (u64)texture->view, "%s view", options.name);
 	
 	// TODO wasn't there a simpler way to set initial layout than a barrier?
-	DriftVkStagingJob* job = DriftVkAquireStagingJob(ctx, 0);
 	// TODO can I clear the pixels with a transfer job of some sort?
+	DriftVkStagingJob* job = DriftVkAquireStagingJob(ctx, 0);
 	TransitionImage(job->command_buffer, texture->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, options.layers);
-	
 	result = vkEndCommandBuffer(job->command_buffer);
 	AssertSuccess(result, "Failed to end Vulkan command buffer.");
 	
@@ -902,6 +912,7 @@ static DriftGfxTexture* DriftVkTextureNew(const DriftGfxDriver* driver, uint wid
 	}, job->fence);
 	AssertSuccess(result, "Failed to commit Vulkan command buffer.");
 	
+	DriftMapInsert(&ctx->destructors, (uintptr_t)texture, (uintptr_t)DriftVkTextureFree);
 	return &texture->base;
 }
 
@@ -909,25 +920,20 @@ void DriftVkLoadTextureLayer(const DriftGfxDriver* driver, DriftGfxTexture* text
 	DriftVkContext* ctx = driver->ctx;
 	DriftVkTexture* _texture = (DriftVkTexture*)texture;
 	DriftGfxTextureOptions options = texture->options;
-	DriftAppAssertGfxThread();
+	DriftAssertGfxThread();
 	
-	size_t job_size = DriftVkFormatMap[options.format].bpp*texture->width*texture->height;
-	DRIFT_ASSERT_HARD(job_size < DRIFT_VK_STAGING_BUFFER_SIZE, "Image data exceeds Vulkan staging buffer size!");
+	size_t job_size = DriftVkFormatMap[options.format].bytes_per_pixel*texture->width*texture->height;
 	DriftVkStagingJob* job = DriftVkAquireStagingJob(ctx, job_size);
-	
-	// Copy job data.
 	memcpy(ctx->staging.buffer.ptr + job->offset, pixels, job_size);
 	
 	// Setup command buffer to copy data to the texture.
 	TransitionImage(job->command_buffer, _texture->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layer, 1);
-	
 	vkCmdCopyBufferToImage(job->command_buffer, ctx->staging.buffer.buffer, _texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &(VkBufferImageCopy){
 		.bufferOffset = job->offset, .imageExtent = {texture->width, texture->height, 1},
 		.imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = layer, .layerCount = 1},
 	});
 	
 	TransitionImage(job->command_buffer, _texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, layer, 1);
-	
 	VkResult result = vkEndCommandBuffer(job->command_buffer);
 	AssertSuccess(result, "Failed to end Vulkan command buffer.");
 	
@@ -942,7 +948,7 @@ void DriftVkLoadTextureLayer(const DriftGfxDriver* driver, DriftGfxTexture* text
 static VkShaderModule DriftVkShaderModule(DriftVkContext* ctx, const char* shader_name, const char* extension){
 	u8 buffer[64*1024];
 	DriftMem* mem = DriftLinearMemInit(buffer, sizeof(buffer), "Shader Mem");
-	DriftData spirv = DriftAssetLoad(mem, "shaders/%s%s", shader_name, extension);
+	DriftData spirv = DriftAssetLoadf(mem, "shaders/%s%s", shader_name, extension);
 	
 	VkShaderModule module;
 	VkResult result = vkCreateShaderModule(ctx->device, &(VkShaderModuleCreateInfo){
@@ -963,13 +969,14 @@ static void DriftVkShaderFree(const DriftGfxDriver* driver, void* obj){
 
 static DriftGfxShader* DriftVkShaderLoad(const DriftGfxDriver* driver, const char* name, const DriftGfxShaderDesc* desc){
 	DriftVkContext* ctx = driver->ctx;
-	DriftVkShader* shader = DriftAlloc(DriftSystemMem, sizeof(*shader));
-	(*shader) = (DriftVkShader){
+	DriftAssertGfxThread();
+	
+	DriftVkShader* shader = DRIFT_COPY(DriftSystemMem, ((DriftVkShader){
 		.base.desc = desc,
 		.base.name = name,
 		.vshader = DriftVkShaderModule(ctx, name, ".vert.spv"),
 		.fshader = DriftVkShaderModule(ctx, name, ".frag.spv"),
-	};
+	}));
 	
 	DriftMapInsert(&ctx->destructors, (uintptr_t)shader, (uintptr_t)DriftVkShaderFree);
 	return &shader->base;
@@ -1029,11 +1036,9 @@ static void AddLayoutBindings(VkDescriptorSetLayoutBinding bindings[], uint* cou
 
 static DriftGfxPipeline* DriftVkPipelineNew(const DriftGfxDriver* driver, DriftGfxPipelineOptions options){
 	DriftVkContext* ctx = driver->ctx;
+	DriftAssertGfxThread();
 	
-	DriftVkPipeline* pipeline = DriftAlloc(DriftSystemMem, sizeof(*pipeline));
-	(*pipeline) = (DriftVkPipeline){.base = {.options = options}};
-	DriftMapInsert(&ctx->destructors, (uintptr_t)pipeline, (uintptr_t)DriftVkPipelineFree);
-	
+	DriftVkPipeline* pipeline = DRIFT_COPY(DriftSystemMem, ((DriftVkPipeline){.base = {.options = options}}));
 	DriftVkShader* _shader = (DriftVkShader*)options.shader;
 	DriftVkRenderTarget* _target = (DriftVkRenderTarget*)options.target;
 	
@@ -1166,6 +1171,7 @@ static DriftGfxPipeline* DriftVkPipelineNew(const DriftGfxDriver* driver, DriftG
 	AssertSuccess(result, "Failed to create Vulkan pipeline.");
 	NameObject(ctx, VK_OBJECT_TYPE_PIPELINE, (u64)pipeline->pipeline, "%s pipeline", options.shader->name);
 
+	DriftMapInsert(&ctx->destructors, (uintptr_t)pipeline, (uintptr_t)DriftVkPipelineFree);
 	return &pipeline->base;
 }
 
@@ -1192,12 +1198,13 @@ static VkAttachmentStoreOp DriftGfxStoreOpMap[_DRIFT_GFX_STORE_ACTION_COUNT] = {
 
 static DriftGfxRenderTarget* DriftVkRenderTargetNew(const DriftGfxDriver* driver, DriftGfxRenderTargetOptions options){
 	DriftVkContext* ctx = driver->ctx;
+	DriftAssertGfxThread();
+	
 	uint width = options.bindings[0].texture->width;
 	uint height = options.bindings[0].texture->height;
-	
-	DriftVkRenderTarget *target = DriftAlloc(DriftSystemMem, sizeof(*target));
-	(*target) = (DriftVkRenderTarget){.base = {.load = options.load, .store = options.store, .framebuffer_size = {width, height}}};
-	DriftMapInsert(&ctx->destructors, (uintptr_t)target, (uintptr_t)DriftVkRenderTargetFree);
+	DriftVkRenderTarget *target = DRIFT_COPY(DriftSystemMem, ((DriftVkRenderTarget){
+		.base = {.load = options.load, .store = options.store, .framebuffer_size = {width, height}}
+	}));
 	
 	VkAttachmentDescription attachments[DRIFT_GFX_RENDER_TARGET_COUNT] = {};
 	VkAttachmentReference color_refs[DRIFT_GFX_RENDER_TARGET_COUNT];
@@ -1256,11 +1263,14 @@ static DriftGfxRenderTarget* DriftVkRenderTargetNew(const DriftGfxDriver* driver
 	}, NULL, &target->framebuffer);
 	NameObject(ctx, VK_OBJECT_TYPE_FRAMEBUFFER, (u64)target->framebuffer, "%s framebuffer", options.name);
 	
+	DriftMapInsert(&ctx->destructors, (uintptr_t)target, (uintptr_t)DriftVkRenderTargetFree);
 	return &target->base;
 }
 
 static void DriftVkFreeObjects(const DriftGfxDriver* driver, void* objects[], uint count){
 	DriftVkContext* ctx = driver->ctx;
+	DriftAssertGfxThread();
+	
 	vkDeviceWaitIdle(ctx->device);
 	DriftGfxFreeObjects(driver, &ctx->destructors, objects, count);
 }
@@ -1295,14 +1305,14 @@ static VkExtent2D DriftVkAquireImage(DriftVkContext* ctx, DriftVec2 fb_extent){
 	return ctx->swap_chain.extent;
 }
 
-static DriftVec2 drawable_size(DriftApp* app){
+static DriftVec2 drawable_size(void){
 	int w, h;
-	SDL_Vulkan_GetDrawableSize(app->shell_window, &w, &h);
+	SDL_Vulkan_GetDrawableSize(APP->shell_window, &w, &h);
 	return (DriftVec2){w, h};
 }
 
-void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
-	DriftVkContext* ctx = app->shell_context;
+void* DriftShellSDLVk(DriftShellEvent event, void* shell_value){
+	DriftVkContext* ctx = APP->shell_context;
 	
 	switch(event){
 		case DRIFT_SHELL_START:{
@@ -1322,23 +1332,23 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 			TracyCZoneEnd(ZONE_VOLK);
 			
 			TracyCZoneN(ZONE_WINDOW, "Open Window", true);
-			if(app->window_w == 0){
-				app->window_x = SDL_WINDOWPOS_CENTERED;
-				app->window_y = SDL_WINDOWPOS_CENTERED;
-				app->window_w = DRIFT_APP_DEFAULT_SCREEN_W;
-				app->window_h = DRIFT_APP_DEFAULT_SCREEN_H;
+			if(APP->window_w == 0){
+				APP->window_x = SDL_WINDOWPOS_CENTERED;
+				APP->window_y = SDL_WINDOWPOS_CENTERED;
+				APP->window_w = DRIFT_APP_DEFAULT_SCREEN_W;
+				APP->window_h = DRIFT_APP_DEFAULT_SCREEN_H;
 			}
 			
 			u32 window_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;
-			if(app->fullscreen) window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+			if(APP->fullscreen) window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 			
-			app->shell_window = SDL_CreateWindow("Veridian Expanse", app->window_x, app->window_y, app->window_w, app->window_h, window_flags);
-			DRIFT_ASSERT_HARD(app->shell_window, "Failed to create SDL Vulkan window.");
-			SDL_SetWindowMinimumSize(app->shell_window, 640, 360);
+			APP->shell_window = SDL_CreateWindow("Veridian Expanse", APP->window_x, APP->window_y, APP->window_w, APP->window_h, window_flags);
+			DRIFT_ASSERT_HARD(APP->shell_window, "Failed to create SDL Vulkan window.");
+			SDL_SetWindowMinimumSize(APP->shell_window, 640, 360);
 			TracyCZoneEnd(ZONE_WINDOW);
 			
 			SDL_PumpEvents();
-			SDL_SetWindowPosition(app->shell_window, app->window_x, app->window_y);
+			SDL_SetWindowPosition(APP->shell_window, APP->window_x, APP->window_y);
 			
 			{
 				u8 mem_buf[64*1024];
@@ -1348,15 +1358,17 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 				SDL_Surface* cursor_surface = SDL_CreateRGBSurfaceWithFormatFrom(img.pixels, img.w, img.h, 32, img.w*4, SDL_PIXELFORMAT_RGBA32);
 				DRIFT_ASSERT(cursor_surface, "Failed to create surface for cursor: %s", SDL_GetError());
 				SDL_Cursor* cursor = SDL_CreateColorCursor(cursor_surface, 1, 1);
+				SDL_FreeSurface(cursor_surface);
+				
 				DRIFT_ASSERT(cursor, "Failed to create cursor: %s", SDL_GetError());
 				SDL_SetCursor(cursor);
 			}
 			
 			TracyCZoneN(ZONE_CONTEXT, "Context", true);
-			ctx = DriftVkCreateContext(app);
+			APP->shell_context = ctx = DriftVkCreateContext();
 			TracyCZoneEnd(ZONE_CONTEXT);
 			TracyCZoneN(ZONE_SWAP, "Swap Chain", true);
-			VkExtent2D extent = DriftVkCreateSwapChain(ctx, drawable_size(app));
+			VkExtent2D extent = DriftVkCreateSwapChain(ctx, drawable_size());
 			TracyCZoneEnd(ZONE_SWAP);
 			
 			DriftVkSwapChain* swap = &ctx->swap_chain;
@@ -1365,8 +1377,7 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 				extent.width, extent.height, swap->present_mode
 			);
 			
-			DriftGfxDriver* driver = DriftAlloc(DriftSystemMem, sizeof(*driver));
-			(*driver) = (DriftGfxDriver){
+			APP->gfx_driver = DRIFT_COPY(DriftSystemMem, ((DriftGfxDriver){
 				.ctx = ctx,
 				.load_shader = DriftVkShaderLoad,
 				.new_pipeline = DriftVkPipelineNew,
@@ -1376,17 +1387,17 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 				.load_texture_layer = DriftVkLoadTextureLayer,
 				.free_objects = DriftVkFreeObjects,
 				.free_all = DriftVkFreeAll,
-			};
-			app->gfx_driver = driver;
+			}));
 		} break;
 		
-		case DRIFT_SHELL_SHOW_WINDOW: SDL_ShowWindow(app->shell_window); break;
+		case DRIFT_SHELL_SHOW_WINDOW: SDL_ShowWindow(APP->shell_window); break;
 		
 		case DRIFT_SHELL_STOP:{
 			VkDevice device = ctx->device;
 			
 			// Free the user loaded objects.
-			DriftVkFreeAll(app->gfx_driver);
+			DriftVkFreeAll(APP->gfx_driver);
+			DriftMapDestroy(&ctx->destructors);
 			
 			vkDestroyCommandPool(device, ctx->command_pool, NULL);
 			vkDestroyBuffer(ctx->device, ctx->staging.buffer.buffer, NULL);
@@ -1415,6 +1426,9 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 #endif
 			
 			vkDestroyInstance(ctx->instance, NULL);
+			for(uint i = 0; i < DRIFT_VK_RENDERER_COUNT; i++) DriftDealloc(DriftSystemMem, ctx->renderers[i], sizeof(DriftVkRenderer));
+			DriftDealloc(DriftSystemMem, ctx, sizeof(*ctx));
+			DriftDealloc(DriftSystemMem, (void*)APP->gfx_driver, sizeof(APP->gfx_driver));
 			
 			DRIFT_LOG("SDL Shutdown.");
 			SDL_Quit();
@@ -1430,10 +1444,10 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 			AssertSuccess(result, "Failed to reset Vulkan fence.");
 			TracyCZoneEnd(ZONE_FENCE);
 			
-			SDL_GetWindowPosition(app->shell_window, &app->window_x, &app->window_y);
-			SDL_GetWindowSize(app->shell_window, &app->window_w, &app->window_h);
+			SDL_GetWindowPosition(APP->shell_window, &APP->window_x, &APP->window_y);
+			SDL_GetWindowSize(APP->shell_window, &APP->window_w, &APP->window_h);
 
-			DriftGfxRendererPrepare(&renderer->base, drawable_size(app), shell_value);
+			DriftGfxRendererPrepare(&renderer->base, drawable_size(), shell_value);
 			return renderer;
 		} break;
 		
@@ -1441,7 +1455,7 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 			DriftVkRenderer* renderer = shell_value;
 			
 			TracyCZoneN(ZONE_AQUIRE, "VkAquire", true);
-			VkExtent2D fb_extent = DriftVkAquireImage(app->shell_context, drawable_size(app));
+			VkExtent2D fb_extent = DriftVkAquireImage(APP->shell_context, drawable_size());
 			renderer->base.default_extent = (DriftVec2){fb_extent.width, fb_extent.height};
 			TracyCZoneEnd(ZONE_AQUIRE);
 			
@@ -1455,14 +1469,14 @@ void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value){
 				.pSwapchains = &ctx->swap_chain.swap_chain, .pImageIndices = &ctx->swap_chain.image_index, .swapchainCount = 1,
 			});
 			if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR){
-				DriftVKRecreateSwapChain(ctx, drawable_size(app));
+				DriftVKRecreateSwapChain(ctx, drawable_size());
 			} else {
 				AssertSuccess(result, "Failed to present Vulkan swapchain image.");
 			}
 		} break;
 		
 		case DRIFT_SHELL_TOGGLE_FULLSCREEN:{
-			SDL_SetWindowFullscreen(app->shell_window, app->fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+			SDL_SetWindowFullscreen(APP->shell_window, APP->fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
 		} break;
 	}
 	

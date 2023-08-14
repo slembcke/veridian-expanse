@@ -1,18 +1,29 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <stdalign.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
-#include "tinycthread/tinycthread.h"
+#include <SDL.h>
 
-#include "drift_types.h"
-#include "drift_util.h"
-#include "drift_mem.h"
-#include "drift_app.h"
+#include "drift_base.h"
 
-uint DriftAppGetThreadID(void);
-
+#if DRIFT_SANITIZE
+#include <sanitizer/asan_interface.h>
+#else
+#define ASAN_POISON_MEMORY_REGION(...)
+#define ASAN_UNPOISON_MEMORY_REGION(...)
+#endif
 
 typedef void* DriftMemFunc(DriftMem* mem, void* ptr, size_t osize, size_t nsize);
 
@@ -112,7 +123,7 @@ typedef struct {
 struct DriftZoneMemHeap {
 	const char* label;
 	DriftMem* parent_mem;
-	mtx_t lock;
+	SDL_mutex* lock;
 	
 	DRIFT_ARRAY(void*) blocks;
 	DRIFT_ARRAY(void*) pooled_blocks;
@@ -133,7 +144,7 @@ static void* alloc_block(DriftZoneMemHeap* heap){
 }
 
 static void* get_block(DriftZoneMemHeap* heap){
-	mtx_lock(&heap->lock);
+	SDL_LockMutex(heap->lock);
 	if(DriftArrayLength(heap->pooled_blocks) == 0){
 		// Allocate a new one if there are no free blocks.
 		DRIFT_ARRAY_PUSH(heap->pooled_blocks, alloc_block(heap));
@@ -142,13 +153,12 @@ static void* get_block(DriftZoneMemHeap* heap){
 	}
 	
 	void* block = DRIFT_ARRAY_POP(heap->pooled_blocks);
-	mtx_unlock(&heap->lock);
+	SDL_UnlockMutex(heap->lock);
 	
 	return block;
 }
 
 DriftZoneMemHeap* DriftZoneMemHeapNew(DriftMem* mem, const char* label){
-	
 	DriftZoneMemHeap* heap = DRIFT_COPY(mem, ((DriftZoneMemHeap){
 		.label = label, .parent_mem = mem,
 		.blocks = DRIFT_ARRAY_NEW(mem, MAX_BLOCKS, void*),
@@ -162,25 +172,33 @@ DriftZoneMemHeap* DriftZoneMemHeapNew(DriftMem* mem, const char* label){
 	// Allocate some initial blocks for the pool.
 	for(uint i = 0; i < 16; i++) DRIFT_ARRAY_PUSH(heap->pooled_blocks, alloc_block(heap));
 	
-	mtx_init(&heap->lock, mtx_plain);
+	heap->lock = SDL_CreateMutex();
 	return heap;
 }
 
-// static void DriftZoneHeapFree(DriftZoneMemHeap* heap){
-// 	DRIFT_NYI(); // TODO This has never actually been tested?
-// 	mtx_destroy(&heap->lock);
+void DriftZoneMemHeapFree(DriftZoneMemHeap* heap){
+	SDL_DestroyMutex(heap->lock);
+	DRIFT_ARRAY_FOREACH(heap->blocks, block) DriftDealloc(heap->parent_mem, *block, BLOCK_SIZE);
+	DriftArrayFree(heap->blocks);
+	DriftArrayFree(heap->pooled_blocks);
+	DriftArrayFree(heap->pooled_zones);
+	DriftDealloc(DriftSystemMem, heap, sizeof(*heap));
+}
+
+DriftZoneHeapInfo DriftZoneHeapGetInfo(DriftZoneMemHeap* heap){
+	uint blocks = DriftArrayLength(heap->blocks);
+	DriftZoneHeapInfo info = {
+		.blocks_allocated = blocks, .blocks_used = blocks - DriftArrayLength(heap->pooled_blocks),
+		.zones_allocated = MAX_ZONES, .zones_used = MAX_ZONES - DriftArrayLength(heap->pooled_zones),
+	};
 	
-// 	// Free blocks in reverse order.
-// 	DriftZoneMemNode* cursor = heap->blocks;
-// 	while(cursor){
-// 		DriftZoneMemNode* node = cursor;
-// 		cursor = cursor->next;
-// 		DriftDealloc(heap->parent_mem, node->ptr, node->size);
-// 	}
-// }
+	for(uint i = 0; i < MAX_ZONES; i++) info.zone_names[i] = heap->zones[i].mem.label;
+	
+	return info;
+}
 
 static void* DriftZoneMemAlloc(DriftZone* zone, size_t size){
-	uint thread_id = DriftAppGetThreadID();
+	uint thread_id = DriftGetThreadID();
 	DRIFT_ASSERT_HARD(thread_id < DRIFT_APP_MAX_THREADS, "DriftZoneMalloc(): Invalid thread id.");
 	
 	// Fast path when there is an allocator with enough space.
@@ -196,6 +214,7 @@ static void* DriftZoneMemAlloc(DriftZone* zone, size_t size){
 	// Claim the block.
 	zone->blocks[zone->block_count++] = block;
 	// Initialize the allocator.
+	ASAN_UNPOISON_MEMORY_REGION(block + block_size - sizeof(DriftLinearMem), sizeof(DriftLinearMem));
 	zone->current_allocator[thread_id] = _DriftLinearMemInit(block, block_size, zone->mem.label);
 	return DriftLinearMemAlloc(zone->current_allocator[thread_id], size);
 }
@@ -207,14 +226,15 @@ static void* DriftZoneMemFunc(DriftMem* mem, void* ptr, size_t osize, size_t nsi
 	} else {
 		// Combined alloc/grow.
 		void* new_ptr = DriftZoneMemAlloc((DriftZone*)mem, nsize);
+		ASAN_UNPOISON_MEMORY_REGION(new_ptr, nsize);
 		return (osize > 0 ? memcpy(new_ptr, ptr, osize) : new_ptr);
 	}
 }
 
 DriftMem* DriftZoneMemAquire(DriftZoneMemHeap* heap, const char* label){
-	mtx_lock(&heap->lock);
+	SDL_LockMutex(heap->lock);
 	DriftZone* zone = DRIFT_ARRAY_POP(heap->pooled_zones);
-	mtx_unlock(&heap->lock);
+	SDL_UnlockMutex(heap->lock);
 	
 	DRIFT_ASSERT(zone, "Ran out of pooled zones.");
 	*zone = (DriftZone){.mem.func = DriftZoneMemFunc, .mem.label = label, .parent_heap = heap};
@@ -230,10 +250,11 @@ void DriftZoneMemRelease(DriftMem* mem){
 	
 	// Re-pool the resources.
 	zone->mem.label = "<pooled>";
-	mtx_lock(&heap->lock);
+	SDL_LockMutex(heap->lock);
+	for(uint i = 0; i < zone->block_count; i++) ASAN_POISON_MEMORY_REGION(zone->blocks[i], BLOCK_SIZE);
 	while(zone->block_count--) DRIFT_ARRAY_PUSH(heap->pooled_blocks, zone->blocks[zone->block_count]);
 	DRIFT_ARRAY_PUSH(heap->pooled_zones, zone);
-	mtx_unlock(&heap->lock);
+	SDL_UnlockMutex(heap->lock);
 }
 
 

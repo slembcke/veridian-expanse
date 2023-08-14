@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -5,57 +15,119 @@
 
 #include "drift_game.h"
 
+DriftEntity TEMP_WAYPOINT_NODE;
+
+static float spline_ratio(DriftVec2 p0, DriftVec2 v0, DriftVec2 p1, DriftVec2 v1, float speed, float cutoff){
+	float dist = DriftVec2Distance(p0, p1) + FLT_MIN;
+	float v_avg = 0.5f*(DriftVec2Length(v0) + DriftVec2Length(v1));
+	return fmaxf(v_avg/dist, 0.5f*speed/dist);
+}
+
+static DriftVec2 hermite_pos(float t, float ratio, DriftVec2 p0, DriftVec2 v0, DriftVec2 p1, DriftVec2 v1){
+	t = DriftSaturate(t*ratio);
+	DriftVec2 p = DRIFT_VEC2_ZERO;
+	p = DriftVec2FMA(p, p0, (( 2*t - 3)*t*t + 1));
+	p = DriftVec2FMA(p, v0, (( 1*t - 2)*t*t + t)/ratio);
+	p = DriftVec2FMA(p, p1, ((-2*t + 3)*t*t));
+	p = DriftVec2FMA(p, v1, (( 1*t - 1)*t*t)/ratio);
+	return p;
+}
+
+static DriftVec2 hermite_vel(float t, float ratio, DriftVec2 p0, DriftVec2 v0, DriftVec2 p1, DriftVec2 v1){
+	t = DriftSaturate(t*ratio);
+	DriftVec2 p = DRIFT_VEC2_ZERO;
+	p = DriftVec2FMA(p, p0, (( 6*t - 6)*t + 0)*ratio);
+	p = DriftVec2FMA(p, v0, (( 3*t - 4)*t + 1));
+	p = DriftVec2FMA(p, p1, ((-6*t + 6)*t + 0)*ratio);
+	p = DriftVec2FMA(p, v1, (( 3*t - 2)*t + 0));
+	return p;
+}
+
+static DriftVec2 hermite_acc(float t, float ratio, DriftVec2 p0, DriftVec2 v0, DriftVec2 p1, DriftVec2 v1){
+	t = DriftSaturate(t*ratio);
+	DriftVec2 p = DRIFT_VEC2_ZERO;
+	p = DriftVec2FMA(p, p0, ( 12*t - 6)*ratio*ratio);
+	p = DriftVec2FMA(p, v0, (  6*t - 4)*ratio);
+	p = DriftVec2FMA(p, p1, (-12*t + 6)*ratio*ratio);
+	p = DriftVec2FMA(p, v1, (  6*t - 2)*ratio);
+	return p;
+}
+
+bool DRIFT_DEBUG_SHOW_PATH = false;
+static void vis_path(DriftGameState* state, DriftEntity e, float dt, float desired_speed, float cutoff){
+	uint nav_idx = DriftComponentFind(&state->navs.c, e);
+	if(nav_idx){
+		uint body_idx = DriftComponentFind(&state->bodies.c, e);
+		DriftVec2 pos = state->bodies.position[body_idx];
+		DriftVec2 vel = state->bodies.velocity[body_idx];
+		
+		DriftVec2 target_pos = state->navs.data[nav_idx].target_pos;
+		DriftVec2 target_vel = DriftVec2Mul(state->navs.data[nav_idx].target_dir, desired_speed);
+		float ratio = spline_ratio(pos, vel, target_pos, target_vel, desired_speed, cutoff);
+		DriftVec2 p1 = pos;
+		float t = dt;
+		for(uint i = 0; i < 100; i++){
+			if(t > 1/ratio) break;
+			DriftVec2 p1 = hermite_pos(t, ratio, pos, vel, target_pos, target_vel);
+			DriftVec2 v1 = hermite_vel(t, ratio, pos, vel, target_pos, target_vel);
+			DriftDebugRay(state, target_pos, v1, 0.2f, DRIFT_RGBA8_RED);
+			DriftDebugCircle(state, p1, 3, DRIFT_RGBA8_GREEN);
+			t += dt;
+		}
+		
+		DriftDebugRay(state, target_pos, vel, 0.2f, DRIFT_RGBA8_GREEN);
+		DriftDebugRay(state, target_pos, target_vel, 0.2f, DRIFT_RGBA8_CYAN);
+	}
+}
+
+static void table_init(DriftGameState* state, DriftTable* table, const char* name, DriftColumnSet columns, uint capacity){
+	DriftTableInit(table, (DriftTableDesc){.name = name, .mem = DriftSystemMem, .min_row_capacity = capacity, .columns = columns});
+	DRIFT_ARRAY_PUSH(state->tables, table);
+}
+
 static void component_init(DriftGameState* state, DriftComponent* component, const char* name, DriftColumnSet columns, uint capacity){
-	DriftMem* mem = DriftSystemMem;
-	DriftComponentInit(component, (DriftTableDesc){.name = name, .mem = mem, .min_row_capacity = capacity, .columns = columns});
+	DriftComponentInit(component, (DriftTableDesc){.name = name, .mem = DriftSystemMem, .min_row_capacity = capacity, .columns = columns});
 	DRIFT_ARRAY_PUSH(state->components, component);
 }
 
-const uint PLASMA_N = 32, PLASMA_n = PLASMA_N/2 + 1;
-static lifft_complex_t PLASMA_SPECTRUM[] = {
-	{+0.000f, +0.000f}, {-0.107f, +0.037f}, {+0.518f, -0.159f}, {-0.133f, +1.001f},
-	{+1.091f, +0.625f}, {+0.515f, +1.146f}, {+0.699f, -0.841f}, {-0.613f, -0.616f},
-	{-0.292f, +0.577f}, {-0.330f, +0.317f}, {-0.269f, -0.157f}, {-0.071f, -0.193f},
-	{+0.022f, -0.131f}, {+0.066f, +0.051f}, {+0.044f, -0.027f}, {+0.020f, -0.024f},
-	{-0.019f, -0.000f},
+static lifft_complex_t PLASMA_SPECTRUM[16] = {
+	[0] = {+0.000f, +0.000f}, {-0.107f, +0.037f}, {+0.518f, -0.159f}, {-0.133f, +1.001f},
+	[4] = {+1.091f, +0.625f}, {+0.515f, +1.146f}, {+0.699f, -0.841f}, {-0.613f, -0.616f},
+	[8] = {-0.292f, +0.577f}, {-0.330f, +0.317f}, {-0.269f, -0.157f}, {-0.071f, -0.193f},
 };
 
-static float* plasma(DriftDraw* draw){
+float* DriftGenPlasma(DriftDraw* draw){
 	float phase = draw->ctx->update_nanos*1e-9f/1.5f;
-	float* wave = DriftAlloc(draw->mem, PLASMA_N*sizeof(*wave));
+	float* wave = DRIFT_ARRAY_NEW(draw->mem, DRIFT_PLASMA_N, typeof(*wave));
 	
 	// Calculate phases.
-	lifft_complex_t phases[PLASMA_n];
-	for(uint i = 0; i < PLASMA_n; i++){
+	lifft_complex_t phases[DRIFT_PLASMA_N/2 + 1] = {};
+	for(uint i = 0; i < 16; i++){
 		phases[i] = lifft_cmul(PLASMA_SPECTRUM[i], lifft_cispi(-powf(i, 1.5f)*phase));
 	}
 	
 	// Calculate wave and apply cosine window.
-	lifft_inverse_real(phases, 1, wave, 1, PLASMA_N);
-	for(uint i = 0; i < PLASMA_N; i++) wave[i] *= 25.0f*sinf(3.14f*i/(PLASMA_N - 1));
+	lifft_complex_t scratch[DRIFT_PLASMA_N];
+	lifft_inverse_real(phases, 1, wave, 1, scratch, DRIFT_PLASMA_N);
+	for(uint i = 0; i < DRIFT_PLASMA_N; i++) wave[i] *= DRIFT_PLASMA_N*sinf(3.14f*i/(DRIFT_PLASMA_N - 1));
 	
 	return wave;
 }
 
-static void draw_plasma(DriftDraw* draw, DriftVec2 start, DriftVec2 end, float* plasma_wave){
-	DriftVec2 t = DriftVec2Perp(DriftVec2Normalize(DriftVec2Sub(end, start)));
-	DriftVec2 p0 = start;
+void DriftDrawPlasma(DriftDraw* draw, DriftVec2 start, DriftVec2 end, float* plasma_wave){
+	DRIFT_ARRAY_PUSH(draw->plasma_strands, ((DriftSegment){start, end}));
 	
-	DriftPrimitive* prims = DRIFT_ARRAY_RANGE(draw->bg_prims, PLASMA_N - 1);
-	for(uint i = 0; i < PLASMA_N - 1; i++){
-		DriftVec4 beam_color = DriftVec4Mul((DriftVec4){{0.04f, 0.17f, 0.47f, 0.18f}}, fabsf(plasma_wave[i]));
-		
-		DriftVec2 p1 = DriftVec2FMA(DriftVec2Lerp(start, end, (float)(i + 1)/(PLASMA_N - 1)), t, plasma_wave[i + 1]);
-		*prims++ = (DriftPrimitive){.p0 = p0, .p1 = p1, .radii = {0.8f}, .color = DriftRGBA8FromColor(beam_color)};
-		
-		if(beam_color.g > 0.1f)
-		DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
-			.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = DriftVec4Mul(beam_color, 0.2f), .matrix = {20, 0, 0, 20, p0.x, p0.y},
-		}));
-		
-		p0 = p1;
+	DriftVec4 plasma_color = {{0.12f, 0.35f, 1.00f, 0.2f}};
+	DriftVec2 t = DriftVec2Perp(DriftVec2Normalize(DriftVec2Sub(end, start)));
+	DriftLight* lights = DRIFT_ARRAY_RANGE(draw->lights, DRIFT_PLASMA_N/2);
+	for(uint i = 0; i < DRIFT_PLASMA_N; i += 2){
+		DriftVec2 p0 = DriftVec2FMA(DriftVec2Lerp(start, end, (float)i/(DRIFT_PLASMA_N - 1)), t, -plasma_wave[i]);
+		*lights++ = ((DriftLight){
+			.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .matrix = {25, 0, 0, 25, p0.x, p0.y},
+			.color = DriftVec4Mul(plasma_color, fabsf(plasma_wave[i])*0.12f),
+		});
 	}
-	DriftArrayRangeCommit(draw->bg_prims, prims);
+	DriftArrayRangeCommit(draw->lights, lights);
 }
 
 static DriftVec3 DriftMul3xN(const DriftVec3 M[], float x[], uint n){
@@ -90,7 +162,7 @@ static void DriftPseudoInverseNx3(const DriftVec3 M[], DriftVec3 p_inv[], uint n
 }
 
 static DriftVec3 DriftRCS(DriftVec3* matrix, DriftVec3* inverse, DriftVec3 desired, float solution[], uint n){
-	for(uint i = 0; i < 4; i++){
+	for(uint i = 0; i < 6; i++){
 		float ease = expf(-1.5f*i);
 		DriftVec3 b_approx = DriftMul3xN(matrix, solution, n);
 		DriftVec3 b_proj = DriftVec3Mul(desired, DriftVec3Dot(b_approx, desired)/(DriftVec3Dot(desired, desired) + FLT_MIN));
@@ -110,10 +182,6 @@ static DriftVec3 DriftRCS(DriftVec3* matrix, DriftVec3* inverse, DriftVec3 desir
 	return DriftMul3xN(matrix, solution, n);
 }
 
-static void DriftAnimStateUpdate(DriftAnimState* state, float dt){
-	state->value = DriftLerpConst(state->value, state->target, dt*state->rate);
-}
-
 static const DriftVec2 nacelle_in = {12, -11}, nacelle_out = {28, -14};
 
 DriftEntity DriftTempPlayerInit(DriftGameState* state, DriftEntity e, DriftVec2 position){
@@ -122,17 +190,18 @@ DriftEntity DriftTempPlayerInit(DriftGameState* state, DriftEntity e, DriftVec2 
 	uint player_idx = DriftComponentAdd(&state->players.c, e);
 	DriftPlayerData* player = state->players.data + player_idx;
 	player->energy = 0;
-	player->energy_cap = 100;
-	player->cargo_slots[DRIFT_PLAYER_CARGO_SLOT_COUNT - 1].request = DRIFT_ITEM_POWER_NODE;
 	player->headlight = true;
-	player->tool_idx = DRIFT_TOOL_NONE;
+	player->tool_idx = player->tool_select = DRIFT_TOOL_NONE;
 	
 	uint health_idx = DriftComponentAdd(&state->health.c, e);
-	state->health.data[health_idx] = (DriftHealth){.value = 0, .maximum = 100, .timeout = 0.2f};
+	state->health.data[health_idx] = (DriftHealth){
+		.value = 0, .maximum = 100, .timeout = 0.4f,
+		.hit_sfx = DRIFT_SFX_SHIELD_SPARK, .die_sfx = DRIFT_SFX_EXPLODE,
+	};
 	
 	float radius = DRIFT_PLAYER_SIZE, mass = 10;
 	state->bodies.position[body_idx] = position;
-	state->bodies.rotation[body_idx] = (DriftVec2){cosf(0.5f), sinf(0.5f)};
+	state->bodies.rotation[body_idx] = DriftVec2ForAngle(0.5);
 	state->bodies.radius[body_idx] = radius;
 	state->bodies.collision_type[body_idx] = DRIFT_COLLISION_PLAYER,
 	
@@ -142,19 +211,41 @@ DriftEntity DriftTempPlayerInit(DriftGameState* state, DriftEntity e, DriftVec2 
 	return e;
 }
 
+static void tool_select(DriftUpdate* update, DriftPlayerData* player, u64 button_mask, DriftToolType tool, const char* name){
+	if(DriftInputButtonPress(button_mask)){
+		if(tool == DRIFT_TOOL_NONE){
+			player->tool_select = tool;
+		} else if(tool == DRIFT_TOOL_DIG && update->state->inventory.skiff[DRIFT_ITEM_MINING_LASER] == 0){
+			DriftAudioPlaySample(DRIFT_BUS_HUD, DRIFT_SFX_DENY, (DriftAudioParams){.gain = 1});
+			DriftHudPushToast(update->ctx, 0, DRIFT_TEXT_RED"%s not available", name);
+		} else if(player->energy == 0){
+			DriftAudioPlaySample(DRIFT_BUS_HUD, DRIFT_SFX_DENY, (DriftAudioParams){.gain = 1});
+			DriftHudPushToast(update->ctx, 0, DRIFT_TEXT_RED"%s is unpowered", name);
+		} else {
+			DriftToolType tool_restrict = update->state->status.tool_restrict;
+			if(tool_restrict == DRIFT_TOOL_NONE || tool_restrict == tool) player->tool_select = tool;
+		}
+	}
+}
+
 static void UpdatePlayer(DriftUpdate* update){
 	DriftGameState* state = update->state;
 	float dt = update->dt;
 	float input_smoothing = expf(-20*dt);
 	
-	// TODO this really shouldn't go here
-	DriftPlayerInput* input = &update->ctx->input.player;
+	// TODO Player respawning really shouldn't go here
 	if(
-		!DriftEntitySetCheck(&update->state->entities, update->ctx->player) &&
-		DriftInputButtonRelease(input, DRIFT_INPUT_ACCEPT)
+		!DriftEntitySetCheck(&update->state->entities, update->state->player) &&
+		DriftInputButtonRelease(DRIFT_INPUT_ACCEPT)
 	){
-		DriftEntity entity = update->ctx->player = DriftMakeEntity(state);
-		DriftTempPlayerInit(state, entity, DRIFT_HOME_POSITION);
+		DriftEntity entity = update->state->player = DriftMakeEntity(state);
+		DriftTempPlayerInit(state, entity, state->status.spawn_at_start ? DRIFT_START_POSITION : DRIFT_SKIFF_POSITION);
+		
+		for(uint i = 0; i < _DRIFT_ITEM_COUNT; i++){
+			// Lose half your cargo, but not power nodes.
+			if(i == DRIFT_ITEM_POWER_NODE) continue;
+			state->inventory.cargo[i] = (state->inventory.cargo[i] + 1)/2;
+		}
 	}
 	
 	uint player_idx, transform_idx;
@@ -166,112 +257,84 @@ static void UpdatePlayer(DriftUpdate* update){
 	
 	while(DriftJoinNext(&join)){
 		DriftPlayerData* player = state->players.data + player_idx;
-		DriftPlayerAnimState* anim = &player->anim_state;
 		
-		// Reset animation states
-		anim->hatch_l.target = 1, anim->hatch_l.rate = 1/0.2f;
-		anim->hatch_r.target = 1, anim->hatch_r.rate = 1/0.2f;
-		anim->laser.target = 0, anim->laser.rate = 1/0.2f;
-		anim->cannons.target = 0, anim->cannons.rate = 1/0.2f;
-		
-		if(state->status.enable_controls){
-			if(DriftInputButtonPress(input, DRIFT_INPUT_LIGHT)){
-				DriftAudioPlaySample(update->audio, DRIFT_SFX_CLICK, 1, 0, 1, false);
-				player->headlight = !player->headlight;
-			}
-			
-			// Is the button pressed, but ignore the first frame.
-			u64 press_after = input->bstate & ~input->bpress;
-			
-			DriftToolType tool_idx = player->tool_idx;
-			if(DriftInputButtonPress(input, DRIFT_INPUT_CANCEL)) tool_idx = DRIFT_TOOL_NONE;
-			if(press_after & DRIFT_INPUT_FIRE) tool_idx = DRIFT_TOOL_GUN;
-			if(press_after & DRIFT_INPUT_GRAB) tool_idx = DRIFT_TOOL_GRAB;
-			if(press_after & DRIFT_INPUT_SCAN) tool_idx = DRIFT_TOOL_SCAN;
-			if(press_after & DRIFT_INPUT_LASER && state->inventory[DRIFT_ITEM_MINING_LASER]) tool_idx = DRIFT_TOOL_DIG;
-			if(DriftInputButtonPress(input, DRIFT_INPUT_DROP)) tool_idx = DRIFT_TOOL_GRAB;
-			
-			// TODO energy is a hack for the tutorial, is it annoying later?
-			if(player->energy > 0 && tool_idx != player->tool_idx){
-				DriftAudioPlaySample(update->audio, DRIFT_SFX_CLICK, 1, 0, 1, false);
-				player->tool_idx = tool_idx;
-				player->arm_l = (DriftArmPose){.angle = {(float)M_PI/4, (float)M_PI, (float)M_PI}};
-				player->arm_r = (DriftArmPose){.angle = {(float)M_PI/4, (float)M_PI, (float)M_PI}};
-			}
-			
-			// DriftVec2 prev_velocity = player->desired_velocity, prev_rotation = player->desired_rotation;
-			DriftToolUpdate(update, player, state->transforms.matrix[transform_idx]);
-			
-			// // Apply input smoothing.
-			// player->desired_velocity = DriftVec2Lerp(player->desired_velocity, prev_velocity, input_smoothing);
-			// player->desired_rotation = DriftVec2Lerp(player->desired_rotation, prev_rotation, input_smoothing);
-		} else {
-			player->desired_velocity = DRIFT_VEC2_ZERO;
-			player->desired_rotation = DRIFT_VEC2_ZERO;
+		if(DriftInputButtonPress(DRIFT_INPUT_LIGHT) && state->inventory.skiff[DRIFT_ITEM_HEADLIGHT]){
+			DriftAudioPlaySample(DRIFT_BUS_SFX, DRIFT_SFX_CLICK, (DriftAudioParams){.gain = 1});
+			player->headlight = !player->headlight;
 		}
 		
-		DriftAnimStateUpdate(&anim->hatch_l, dt);
-		DriftAnimStateUpdate(&anim->hatch_r, dt);
-		DriftAnimStateUpdate(&anim->laser, dt);
-		DriftAnimStateUpdate(&anim->cannons, dt);
-
+		u64 grabber_mask = DRIFT_INPUT_GRAB | DRIFT_INPUT_QUICK_GRAB | DRIFT_INPUT_DROP;
+		if(DriftInputButtonPress(-1)){
+			tool_select(update, player, DRIFT_INPUT_CANCEL, DRIFT_TOOL_NONE, NULL);
+			tool_select(update, player, DRIFT_INPUT_FIRE, DRIFT_TOOL_GUN, "Gun");
+			tool_select(update, player, grabber_mask, DRIFT_TOOL_GRAB, "Grabber");
+			tool_select(update, player, DRIFT_INPUT_SCAN, DRIFT_TOOL_SCAN, "Scanner");
+			tool_select(update, player, DRIFT_INPUT_LASER, DRIFT_TOOL_DIG, "Laser");
+		}
+		
+		DriftToolType tool_target = (player->energy >0 && !player->is_overheated ? player->tool_select : DRIFT_TOOL_NONE);
+		float tool_anim_target = player->tool_idx == tool_target;
+		player->tool_anim = DriftLerpConst(player->tool_anim, tool_anim_target, dt/0.4f);
+		if(player->tool_anim == 0){
+			player->tool_idx = tool_target;
+			// Push the reticle out further to avoid it being really close on tools like the scanner.
+			player->reticle = DriftVec2Mul(player->reticle, 200/(DriftVec2Length	(player->reticle) + FLT_MIN));
+		}
+		
+		DriftToolUpdate(update, player, state->transforms.matrix[transform_idx]);
+		
+		float retract_target = (player->energy == 0 || player->tool_idx == DRIFT_TOOL_DIG ? 0.25f : 1);
+		
 		DriftAffine transform_r = state->transforms.matrix[transform_idx];
 		DriftAffine transform_l = DriftAffineMul(transform_r, (DriftAffine){-1, 0, 0, 1, 0, 0});
 		float nacelle_l = DriftTerrainRaymarch(state->terra, DriftAffinePoint(transform_l, nacelle_in), DriftAffinePoint(transform_l, nacelle_out), 4, 2);
-		player->nacelle_l = fminf(nacelle_l, DriftLerpConst(player->nacelle_l, 1, dt/0.25f));
+		player->nacelle_l = fminf(nacelle_l, DriftLerpConst(player->nacelle_l, retract_target, dt/0.25f));
 		
 		float nacelle_r = DriftTerrainRaymarch(state->terra, DriftAffinePoint(transform_r, nacelle_in), DriftAffinePoint(transform_r, nacelle_out), 4, 2);
-		player->nacelle_r = fminf(nacelle_r, DriftLerpConst(player->nacelle_r, 1, dt/0.25f));
+		player->nacelle_r = fminf(nacelle_r, DriftLerpConst(player->nacelle_r, retract_target, dt/0.25f));
 		
-		float volume = 0;
-		for(uint i = 0; i < 5; i++) volume += player->thrusters[i]*player->thrusters[i];
+		DriftAudioParams params = {.loop = true};
+		for(uint i = 0; i < 5; i++) params.gain += player->thrusters[i]*player->thrusters[i];
+		if(params.gain > 1e-2) DriftImAudioSet(DRIFT_BUS_SFX, DRIFT_SFX_ENGINE, &state->thruster_sampler, params);
 		
-		if(volume > 1e-2){
-			if(DriftAudioSourceActive(update->audio, state->thruster_sampler.source)){
-				DriftSamplerSetParams(update->audio, state->thruster_sampler, 3*volume, 0, 1, true);
-			} else {
-				state->thruster_sampler = DriftAudioPlaySample(update->audio, DRIFT_SFX_ENGINE, 0, 0, 1, true);
-			}
-		} else {
-			DriftSamplerSetParams(update->audio, state->thruster_sampler, 0, 0, 1, false);
-		}
+		if(DRIFT_DEBUG_SHOW_PATH) vis_path(state, join.entity, update->tick_dt, DRIFT_PLAYER_AUTOPILOT_SPEED, 200);
 	}
 }
 
-static void player_cargo_exchange(DriftUpdate* update, DriftPlayerData* player){
-	bool is_request[DRIFT_PLAYER_CARGO_SLOT_COUNT] = {};
-	
-	// Fixup state for empty slots and decide if they are requests.
-	for(uint i = 0; i < DRIFT_PLAYER_CARGO_SLOT_COUNT; i++){
-		DriftCargoSlot* slot = player->cargo_slots + i;
-		if(slot->count == 0) slot->type = slot->request;
-		is_request[i] = slot->request && slot->request == slot->type;
-	}
-
-	// Fill one request slot
-	for(uint i = 0; i < DRIFT_PLAYER_CARGO_SLOT_COUNT; i++){
-		DriftCargoSlot* slot = player->cargo_slots + i;
-		if(is_request[i] && update->state->inventory[slot->type]){
-			update->state->inventory[slot->request]--;
-			slot->count++;
-			DriftAudioPlaySample(update->audio, DRIFT_SFX_PING, 0.5f, 0, 1, false);
-			DriftContextPushToast(update->ctx, "Loaded %s", DRIFT_ITEMS[slot->type].name);
-			break;
-		}
-	}
-
-	// Empty one transfer slot.
-	for(uint i = 0; i < DRIFT_PLAYER_CARGO_SLOT_COUNT; i++){
-		DriftCargoSlot* slot = player->cargo_slots + i;
-		if(!is_request[i] && slot->count > 0){
-			slot->count--;
-			update->state->inventory[slot->type]++;
-			DriftAudioPlaySample(update->audio, DRIFT_SFX_PING, 0.5f, 0, 1, false);
-			DriftContextPushToast(update->ctx, "Stored %s", DRIFT_ITEMS[slot->type].name);
-			break;
-		}
-	}
+uint DriftPlayerEnergyCap(DriftGameState* state){
+	return 100;
 }
+
+uint DriftPlayerNodeCap(DriftGameState* state){
+	if(state->inventory.skiff[DRIFT_ITEM_NODES_L3]) return 20;
+	if(state->inventory.skiff[DRIFT_ITEM_NODES_L2]) return 15;
+	return 10;
+}
+
+uint DriftPlayerCargoCap(DriftGameState* state){
+	if(state->inventory.skiff[DRIFT_ITEM_CARGO_L3]) return 200;
+	if(state->inventory.skiff[DRIFT_ITEM_CARGO_L2]) return 150;
+	return 100;
+}
+
+uint DriftPlayerItemCount(DriftGameState* state, DriftItemType item){
+	return state->inventory.cargo[item] + state->inventory.transit[item] + state->inventory.skiff[item];
+}
+
+uint DriftPlayerItemCap(DriftGameState* state, DriftItemType item){
+	uint limit = DRIFT_ITEMS[item].limit;
+	if(state->inventory.skiff[DRIFT_ITEM_STORAGE_L3]) return 2*limit/1;
+	if(state->inventory.skiff[DRIFT_ITEM_STORAGE_L2]) return 3*limit/2;
+	return limit;
+}
+
+uint DriftPlayerCalculateCargo(DriftGameState* state){
+	uint sum = 0;
+	for(uint i = 0; i < _DRIFT_ITEM_COUNT; i++) sum += state->inventory.cargo[i]*DRIFT_ITEMS[i].mass;
+	return sum;
+}
+
+#define RCS_ROWS 5
 
 static void TickPlayer(DriftUpdate* update){
 	DriftGameState* state = update->state;	
@@ -280,18 +343,18 @@ static void TickPlayer(DriftUpdate* update){
 	float rcs_smoothing = expf(-30*tick_dt);
 	
 	float w_bias = 5;
-	
 	// TODO cache this and the inverse if it's going to be static.
-	DriftVec3 rcs_matrix[] = {
-		{{0.0e0f, 1.2e3f,  0.0e1f*w_bias}}, // main
-		{{3.0e2f, 0.0e0f,  4.0e1f*w_bias}}, // right x
-		{{0.0e0f, 3.0e2f, -8.0e1f*w_bias}}, // right y
-		{{3.0e2f, 0.0e0f,  4.0e1f*w_bias}}, // left x
-		{{0.0e0f, 3.0e2f,  8.0e1f*w_bias}}, // left y
+	DriftVec3 rcs_matrix[RCS_ROWS] = {
+		// {{0.0e0f, 1.2e3f,  0.0e1f*w_bias}}, // main
+		{{0.0e0f, 0.0e0f,  0.0e0f*w_bias}}, // main
+		{{1.2e3f, 0.0e0f,  4.0e1f*w_bias}}, // right x
+		{{0.0e0f, 1.2e3f, -8.0e1f*w_bias}}, // right y
+		{{1.2e3f, 0.0e0f,  4.0e1f*w_bias}}, // left x
+		{{0.0e0f, 1.2e3f,  8.0e1f*w_bias}}, // left y
 	};
 	
-	DriftVec3 rcs_inverse[5];
-	DriftPseudoInverseNx3(rcs_matrix, rcs_inverse, 5);
+	DriftVec3 rcs_inverse[RCS_ROWS];
+	DriftPseudoInverseNx3(rcs_matrix, rcs_inverse, RCS_ROWS);
 	
 	uint player_idx, transform_idx, body_idx, health_idx, nav_idx;
 	DriftJoin join = DriftJoinMake((DriftComponentJoin[]){
@@ -306,31 +369,55 @@ static void TickPlayer(DriftUpdate* update){
 	while(DriftJoinNext(&join)){
 		DriftPlayerData* player = &state->players.data[player_idx];
 		DriftVec2 player_pos = state->bodies.position[body_idx];
+		DriftVec2 player_vel = state->bodies.velocity[body_idx];
 		
 		DriftVec2 desired_velocity = player->desired_velocity;
 		DriftVec2 desired_rotation = player->desired_rotation;
-		
-		// TODO temp dock with factory code
-		if(update->ctx->ui_state == DRIFT_UI_STATE_CRAFT){
-			DriftVec2 dock_delta = DriftVec2Sub(DRIFT_FACTORY_POSITION, player_pos);
-			desired_velocity = DriftVec2FMA(desired_velocity, dock_delta, 2);
-			if(DriftVec2Length(dock_delta) < 32 && update->tick % 8 == 0) player_cargo_exchange(update, player);
-		}
 
 		DriftAffine m = state->transforms.matrix[transform_idx];
 		DriftAffine m_inv = DriftAffineInverse(m);
 		
-		if(state->navs.data[nav_idx].node.id){
-			DriftVec2 target_pos = state->navs.data[nav_idx].target_pos;
-			DriftVec2 delta = DriftVec2Sub(target_pos, player_pos);
-			desired_velocity = DriftVec2Clamp(DriftVec2Mul(delta, 0.15f/tick_dt), 1.5f*DRIFT_PLAYER_SPEED);
+		// TODO temporary pathing stuff
+		bool do_nav = (
+			TEMP_WAYPOINT_NODE.id != 0 &&
+			DriftVec2Length(DriftInputJoystick(DRIFT_INPUT_AXIS_MOVE_X, DRIFT_INPUT_AXIS_MOVE_Y)) < 0.25f
+		);
+		if(do_nav){
+			DriftVec2 nav_pos = state->power_nodes.position[DriftComponentFind(&state->power_nodes.c, TEMP_WAYPOINT_NODE)];
+			do_nav &= !DriftVec2Near(player_pos, nav_pos, 5);
+		}
+			
+		if(do_nav && nav_idx == 0){
+			nav_idx = DriftComponentAdd(&state->navs.c, state->player);
+			state->navs.data[nav_idx].flow_map = DRIFT_FLOW_MAP_WAYPOINT;
+		} else if(!do_nav && nav_idx != 0){
+			DriftComponentRemove(&state->navs.c, state->player);
+			TEMP_WAYPOINT_NODE = (DriftEntity){};
 		}
 		
-		if(player->energy == 0) desired_velocity = DriftVec2Clamp(desired_velocity, 0.4f*DRIFT_PLAYER_SPEED);
+		if(nav_idx && state->navs.data[nav_idx].is_valid){
+			float speed = DRIFT_PLAYER_AUTOPILOT_SPEED;
+			DriftVec2 target_pos = state->navs.data[nav_idx].target_pos;
+			DriftVec2 target_vel = DriftVec2Mul(state->navs.data[nav_idx].target_dir, speed);
+			
+			if(DriftVec2Length(target_vel)){
+				float ratio = spline_ratio(player_pos, player_vel, target_pos, target_vel, speed, 120);
+				desired_velocity = hermite_vel(tick_dt, ratio, player_pos, player_vel, target_pos, target_vel);
+				DriftVec2 thrust = hermite_acc(tick_dt, ratio, player_pos, player_vel, target_pos, target_vel);
+				desired_rotation = DriftVec2Normalize(DriftVec2FMA(desired_velocity, thrust, 0.25f));
+			} else {
+				DriftVec2 delta = DriftVec2Sub(target_pos, player_pos);
+				desired_velocity = DriftVec2Mul(delta, speed/fmaxf(150, DriftVec2Length(delta)));
+				desired_rotation = DriftVec2Normalize(delta);
+			}
+		}
+		
+		if(player->energy == 0 || player->tool_idx == DRIFT_TOOL_DIG){
+			desired_velocity = DriftVec2Clamp(desired_velocity, 0.4f*DRIFT_PLAYER_SPEED);
+		}
 		
 		// Calculate the change in body relative velocity to hit the desired.
-		DriftVec2 v = state->bodies.velocity[body_idx];
-		DriftVec2 delta_v = DriftVec2Sub(desired_velocity, v);
+		DriftVec2 delta_v = DriftVec2Sub(desired_velocity, player_vel);
 		DriftVec2 local_delta_v = DriftAffineDirection(m_inv, delta_v);
 		// local_delta_v = DriftVec2Clamp(local_delta_v, 2000.0f*dt);
 		
@@ -351,11 +438,8 @@ static void TickPlayer(DriftUpdate* update){
 		for(uint i = 0; i < 5; i++) thrusters[i] = player->thrusters[i]*rcs_damping;
 		
 		DriftVec3 impulse = {{local_delta_v.x/tick_dt, local_delta_v.y/tick_dt, delta_w*w_bias/tick_dt}};
-		impulse = DriftVec3Clamp(impulse, 2000);
-		
-		//impulse
-		DriftRCS(rcs_matrix, rcs_inverse, impulse, thrusters, 5);
-		state->bodies.velocity[body_idx] = DriftVec2Add(v, DriftAffineDirection(m, (DriftVec2){impulse.x*tick_dt, impulse.y*tick_dt}));
+		impulse = DriftRCS(rcs_matrix, rcs_inverse, impulse, thrusters, RCS_ROWS);
+		state->bodies.velocity[body_idx] = DriftVec2Add(player_vel, DriftAffineDirection(m, (DriftVec2){impulse.x*tick_dt, impulse.y*tick_dt}));
 		state->bodies.angular_velocity[body_idx] += impulse.z*tick_dt/w_bias;
 		
 		// Smooth out the RCS impulse
@@ -365,60 +449,65 @@ static void TickPlayer(DriftUpdate* update){
 		DriftHealth* health = state->health.data + health_idx;
 		if(update->ctx->debug.godmode){
 			player->is_powered = true;
-			player->energy = player->energy_cap;
+			player->energy = DriftPlayerEnergyCap(state);
 			player->power_tick0 = update->tick;
 			player->is_overheated = false;
 			player->temp = 0;
 			health->value = health->maximum;
+			player->shield_tick0 = update->tick;
 		} else {
 			float shield_rate = -10;
 			if(player->energy > 0){
 				bool waiting_to_recharge = update->tick - health->damage_tick0 < 4*DRIFT_TICK_HZ;
 				shield_rate = (waiting_to_recharge ? 0 : 30);
 			}
-			health->value = DriftClamp(health->value + shield_rate*tick_dt, 0, health->maximum);
+			if(state->inventory.skiff[DRIFT_ITEM_SHIELD_L2]) health->maximum = 200;
+			float prev_health = health->value, max = health->maximum;
+			health->value = DriftClamp(health->value + shield_rate*tick_dt, 0, max);
 			if(health->value > 0) player->shield_tick0 = update->tick;
+			if(prev_health < max && health->value == max){
+				DriftAudioPlaySample(DRIFT_BUS_HUD, DRIFT_SFX_SHIELD_NOTIFY, (DriftAudioParams){.gain = 1.0f});
+			}
 			
 			float power_draw = 5;
 			if(player->headlight) power_draw += 5;
 			if(player->is_digging) power_draw += 20;
-			player->energy = fmaxf(player->energy - power_draw*tick_dt, 0);
+			player->energy = DriftLerpConst(player->energy, 0, power_draw*tick_dt);
 
 			DriftNearbyNodesInfo info = DriftSystemPowerNodeNearby(state, player_pos, update->mem, 0);
 			player->is_powered = info.player_can_connect;
 			if(player->is_powered){
-				player->energy = fminf(player->energy + 50*tick_dt, player->energy_cap);
+				uint cap = DriftPlayerEnergyCap(state);
+				player->energy = DriftLerpConst(player->energy, cap, cap*tick_dt);
 				player->power_tick0 = update->tick;
 			}
 			
 			if(player->is_digging) player->temp += 0.3f*tick_dt;
 			if(player->temp >= 1) player->is_overheated = true;
-			player->temp = DriftLerpConst(player->temp, 0, 0.20f*tick_dt);
 			if(player->temp == 0) player->is_overheated = false;
+			
+			static const float HEAT_RATE[_DRIFT_BIOME_COUNT] = {
+				[DRIFT_BIOME_LIGHT] = -0.20f,
+				[DRIFT_BIOME_RADIO] = 0.30f,
+				[DRIFT_BIOME_CRYO] = -0.45f,
+				[DRIFT_BIOME_DARK] = -0.20f,
+				[DRIFT_BIOME_SPACE] = -0.20f,
+			};
+			
+			uint biome = DriftTerrainSampleBiome(state->terra, player_pos).idx;
+			player->temp = DriftSaturate(player->temp + HEAT_RATE[biome]*tick_dt);
 		}
 	}
 }
 
 static DriftAffine NacelleMatrix(DriftVec2 dir, DriftVec2 offset){
 	float mag = DriftVec2Length(dir);
-	dir = (mag > 0.1f ? DriftVec2Mul(dir, 0.5f/mag) : (DriftVec2){0, 0.5f});
+	dir = (mag > 0.1f ? DriftVec2Mul(dir, 1/mag) : (DriftVec2){0, 1});
 	return (DriftAffine){dir.y, -dir.x, dir.x, dir.y, offset.x, offset.y};
 }
 
 static DriftAffine FlameMatrix(float mag){
-	return (DriftAffine){0.5f*mag + 0.5f, 0, 0, 1.0f*mag + 0.5f, 0, -8.0f*DriftSaturate(mag)};
-}
-
-PlayerCannonTransforms CalculatePlayerCannonTransforms(float cannon_anim){
-	DriftAffine matrix_gun0 = {1, 0, 0, 1,  8, -7 - -7*cannon_anim - 3};
-	DriftAffine matrix_gun1 = {1, 0, 0, 1, 12, -5 - -5*cannon_anim - 5};
-	
-	return (PlayerCannonTransforms){{
-		DriftAffineMul((DriftAffine){-1, 0, 0, 1, 0, 0}, matrix_gun0),
-		DriftAffineMul((DriftAffine){+1, 0, 0, 1, 0, 0}, matrix_gun0),
-		DriftAffineMul((DriftAffine){-1, 0, 0, 1, 0, 0}, matrix_gun1),
-		DriftAffineMul((DriftAffine){+1, 0, 0, 1, 0, 0}, matrix_gun1),
-	}};
+	return (DriftAffine){0.25f*mag + 0.25f, 0, 0, 0.5f*mag + 0.25f, 0, -4.0f*DriftSaturate(mag)};
 }
 
 static void DrawPlayer(DriftDraw* draw){
@@ -432,11 +521,6 @@ static void DrawPlayer(DriftDraw* draw){
 	});
 	while(DriftJoinNext(&join)){
 		DriftPlayerData* player = &state->players.data[player_idx];
-		DriftPlayerAnimState* anim = &player->anim_state;
-		
-		float hatch_l = fmaxf(1 - anim->hatch_l.value, anim->cannons.value);
-		float hatch_r = fmaxf(1 - anim->hatch_r.value, anim->cannons.value);
-		
 		const DriftAffine matrix_model = state->transforms.matrix[transform_idx];
 		DriftToolDraw(draw, player, matrix_model);
 		
@@ -453,55 +537,39 @@ static void DrawPlayer(DriftDraw* draw){
 		DriftVec2 thrust_r = {player->thrusters[3], player->thrusters[4]};
 		float thrust_mag_r = DriftVec2Length(thrust_r);
 				
-		DriftAffine matrix_strut_l = DriftAffineTRS(nacelle_offset_l, 0.8f*retract_l, (DriftVec2){1, 1});
-		DriftAffine matrix_strut_r = DriftAffineTRS(nacelle_offset_r, 0.8f*retract_r, (DriftVec2){1, 1});
-		DriftAffine matrix_engine = DriftAffineMul(matrix_model_r, (DriftAffine){1, 0, 0, 1, 0, -10});
+		DriftAffine matrix_strut_l = DriftAffineMul(matrix_model_l, DriftAffineTRS(nacelle_offset_l, 0.8f*retract_l, (DriftVec2){1, 1}));
+		DriftAffine matrix_strut_r = DriftAffineMul(matrix_model_r, DriftAffineTRS(nacelle_offset_r, 0.8f*retract_r, (DriftVec2){1, 1}));
 		DriftAffine matrix_nacelle_l = DriftAffineMul(matrix_model_l, NacelleMatrix(thrust_l, nacelle_offset_l));
 		DriftAffine matrix_nacelle_r = DriftAffineMul(matrix_model_r, NacelleMatrix(thrust_r, nacelle_offset_r));
-		DriftAffine matrix_laser = DriftAffineTRS((DriftVec2){0, 9 + 7*DriftHermite3(anim->laser.value)}, 0, (DriftVec2){1, 1});
-		DriftAffine matrix_hatch_l = DriftAffineTRS((DriftVec2){0, 0}, 0.85f*hatch_l, (DriftVec2){DriftLerp(1, 0.9f, hatch_l), 1});
-		DriftAffine matrix_hatch_r = DriftAffineTRS((DriftVec2){0, 0}, 0.85f*hatch_r, (DriftVec2){DriftLerp(1, 0.9f, hatch_r), 1});
 		DriftAffine matrix_bay_l = DriftAffineTRS((DriftVec2){-3*retract_l, 3*retract_l}, 0, (DriftVec2){1, -1});
 		DriftAffine matrix_bay_r = DriftAffineTRS((DriftVec2){-3*retract_r, 3*retract_r}, 0, (DriftVec2){1, -1});
 		DriftAffine matrix_flame_light = (DriftAffine){128, 0, 0, -64, 0, 0};
 		
-		DriftAffine matrix_flame = FlameMatrix(player->thrusters[0]);
 		DriftAffine matrix_flame_l = FlameMatrix(thrust_mag_l);
 		DriftAffine matrix_flame_r = FlameMatrix(thrust_mag_r);
 		uint flame_frame = DRIFT_SPRITE_FLAME0 + draw->frame%_DRIFT_SPRITE_FLAME_COUNT;
 		
-		DriftVec4 flame_glow = (DriftVec4){{1.14f, 0.78f, 0.11f, 1.00f}};
+		const DriftVec4 flame_glow = (DriftVec4){{1.14f, 0.78f, 0.11f, 1.00f}};
 		const DriftRGBA8 color = {0xFF, 0xFF, 0xFF, 0xFF};
 		const DriftRGBA8 glow = {0xC0, 0xC0, 0xC0, 0x80};
+		const DriftAffine matrix_nav = {22, 27, -35, 16, 0*-8, 0*3};
+		
 		
 		DriftSprite* sprites = DRIFT_ARRAY_RANGE(draw->fg_sprites, 64);
 		DriftLight* lights = DRIFT_ARRAY_RANGE(draw->lights, 64);
 		
-		DriftSpritePush(&sprites, flame_frame, glow, DriftAffineMul(matrix_engine, matrix_flame));
-		DriftSpritePush(&sprites, DRIFT_SPRITE_NACELLE, color, matrix_engine);
-		DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_HEMI, DriftVec4Mul(flame_glow, player->thrusters[0]), DriftAffineMul(matrix_engine, matrix_flame_light), 0);
-		
-		DriftSpritePush(&sprites, DRIFT_SPRITE_STRUT, color, DriftAffineMul(matrix_model_l, matrix_strut_l));
+		DriftSpritePush(&sprites, DRIFT_SPRITE_STRUT, color, matrix_strut_l);
 		DriftSpritePush(&sprites, flame_frame, glow, DriftAffineMul(matrix_nacelle_l, matrix_flame_l));
 		DriftSpritePush(&sprites, DRIFT_SPRITE_NACELLE, color, matrix_nacelle_l);
 		DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_HEMI, DriftVec4Mul(flame_glow, thrust_mag_l), DriftAffineMul(matrix_nacelle_l, matrix_flame_light), 0);
-		// if(frame%256 < 4) DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_RADIAL, (DriftVec4){{0, 0.4f, 0, 1}}, DriftAffineMult(matrix_nacelle_l, (DriftAffine){256, 0, 0, 256, 0, 0}), 0);
+		DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_FLOOD, (DriftVec4){{0.29f, 0.04f, 0.04f, 0.00f}}, DriftAffineMul(matrix_strut_l, matrix_nav), 0);
 		
-		DriftSpritePush(&sprites, DRIFT_SPRITE_STRUT, color, DriftAffineMul(matrix_model_r, matrix_strut_r));
+		DriftSpritePush(&sprites, DRIFT_SPRITE_STRUT, color, matrix_strut_r);
 		DriftSpritePush(&sprites, flame_frame, glow, DriftAffineMul(matrix_nacelle_r, matrix_flame_r));
 		DriftSpritePush(&sprites, DRIFT_SPRITE_NACELLE, color, matrix_nacelle_r);
 		DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_HEMI, DriftVec4Mul(flame_glow, thrust_mag_r), DriftAffineMul(matrix_nacelle_r, matrix_flame_light), 0);
-		// if(frame%256 < 4) DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_RADIAL, (DriftVec4){{1, 0, 0, 1}}, DriftAffineMult(matrix_nacelle_r, (DriftAffine){256, 0, 0, 256, 0, 0}), 0);
+		DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_FLOOD, (DriftVec4){{0.06f, 0.25f, 0.04f, 0.00f}}, DriftAffineMul(matrix_strut_r, matrix_nav), 0);
 		
-		DriftSpritePush(&sprites, DRIFT_SPRITE_LASER, color, DriftAffineMul(matrix_model, matrix_laser));
-		PlayerCannonTransforms cannons = CalculatePlayerCannonTransforms(anim->cannons.value);
-		DriftSpritePush(&sprites, DRIFT_SPRITE_GUN, color, DriftAffineMul(matrix_model, cannons.arr[0]));
-		DriftSpritePush(&sprites, DRIFT_SPRITE_GUN, color, DriftAffineMul(matrix_model, cannons.arr[1]));
-		DriftSpritePush(&sprites, DRIFT_SPRITE_GUN, color, DriftAffineMul(matrix_model, cannons.arr[2]));
-		DriftSpritePush(&sprites, DRIFT_SPRITE_GUN, color, DriftAffineMul(matrix_model, cannons.arr[3]));
-		
-		DriftSpritePush(&sprites, DRIFT_SPRITE_HATCH, color, DriftAffineMul(matrix_model_l, matrix_hatch_l)); sprites[-1].shiny = 30;
-		DriftSpritePush(&sprites, DRIFT_SPRITE_HATCH, color, DriftAffineMul(matrix_model_r, matrix_hatch_r)); sprites[-1].shiny = 30;
 		DriftSpritePush(&sprites, DRIFT_SPRITE_HATCH, color, DriftAffineMul(matrix_model_l, matrix_bay_l)); sprites[-1].shiny = 30;
 		DriftSpritePush(&sprites, DRIFT_SPRITE_HATCH, color, DriftAffineMul(matrix_model_r, matrix_bay_r)); sprites[-1].shiny = 30;
 		DriftSpritePush(&sprites, DRIFT_SPRITE_HULL, color, matrix_model); sprites[-1].shiny = 30;
@@ -509,23 +577,8 @@ static void DrawPlayer(DriftDraw* draw){
 		DriftVec4 dim_glow = (DriftVec4){{0.01f, 0.01f, 0.01f, 10.00f}};
 		DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_RADIAL, dim_glow, DriftAffineMul(matrix_model, (DriftAffine){90, 0, 0, 90, 0, 0}), 0);
 		
-		DriftVec4 laser_glow = DriftVec4Mul((DriftVec4){{1.00f, 0.00f, 0.17f, 0.50f}}, anim->laser.value);
-		DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_RADIAL, laser_glow, DriftAffineMul(matrix_model, (DriftAffine){54, 0, 0, 54, 0, 23}), 0);
-		
-		if(player->headlight){
-			DriftVec4 headlight_color = (DriftVec4){{0.39f, 0.38f, 0.27f, 1.00f}};
-			DriftAffine headlight_matrix = {150, 0, 0, 120, 0, 4};
-			uint headlight_frame = DRIFT_SPRITE_LIGHT_HEMI;
-			
-			if(player->energy > 0 && state->inventory[DRIFT_ITEM_HEADLIGHT]){
-				headlight_color = (DriftVec4){{2, 2, 2, 1.00f}};
-				headlight_matrix = (DriftAffine){200, 0, 0, 300, 0, 4};
-				headlight_frame = DRIFT_SPRITE_LIGHT_HEMI;
-			}
-			
-			DriftLightPush(&lights, headlight_frame, headlight_color, DriftAffineMul(matrix_model, headlight_matrix), 10);
-		}
-		
+		float headlight_brightness = player->energy/DriftPlayerEnergyCap(state);
+		static DriftRandom rand[1];
 		{ // Draw shield
 			DriftHealth* health = state->health.data + health_idx;
 			float value = health->value/health->maximum;
@@ -533,7 +586,7 @@ static void DrawPlayer(DriftDraw* draw){
 			if((0 < value && value < 1) || timeout < 1){ // Draw a normal shield bubble.
 				float shield_fade = powf(1 - value, 0.2f);
 				DriftVec4 color = {{shield_fade*shield_fade*shield_fade, value*shield_fade, value*value*value*shield_fade, 0}};
-				DriftVec2 rot = DriftVec2Normalize(DriftRandomInUnitCircle());
+				DriftVec2 rot = DriftVec2Mul(DriftRandomOnUnitCircle(rand), 0.5f);
 				DriftAffine m = DriftAffineMul(matrix_model, (DriftAffine){rot.x, rot.y, -rot.y, rot.x});
 				
 				color = DriftVec4Mul(color, 1 + timeout*(4 - 5*timeout));
@@ -541,23 +594,31 @@ static void DrawPlayer(DriftDraw* draw){
 				m = DriftAffineMul(m, (DriftAffine){scale, 0, 0, scale});
 				
 				DriftSpritePush(&sprites, DRIFT_SPRITE_SHIELD, DriftRGBA8FromColor(color), m);
-				DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_RADIAL, color, DriftAffineMul(m, (DriftAffine){64, 0, 0, 64, 0, 0}), 0);
+				DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_RADIAL, color, DriftAffineMul(m, (DriftAffine){96, 0, 0, 96, 0, 0}), 0);
 				
 				DriftVec4 flash_color = (DriftVec4){{0.26f, 0.88f, 0.99f, 0.00f}};
 				float flash_fade = fminf(1, (draw->tick - health->damage_tick0)/(0.25f*DRIFT_TICK_HZ));
 				flash_color = DriftVec4Mul(flash_color, 1 - flash_fade*flash_fade);
 				DriftSpritePush(&sprites, DRIFT_SPRITE_SHIELD_FLASH, DriftRGBA8FromColor(flash_color), matrix_model);
+				
+				headlight_brightness *= DriftSaturate((draw->tick - health->damage_tick0)/(0.9f*DRIFT_TICK_HZ) + 0.08f*sinf(draw->tick));
 			} else { // Draw the flickering for a failed shield.
 				uint period = 30, tick = draw->tick;
 				float fade = 1 - (0.5f + 0.5f*cosf(tick))*(tick%period)/(float)period;
-				DriftVec4 color = {{0, fade*fade*0.15f, fade*fade*0.30f, 0}};
+				DriftVec4 color = {{0, fade*fade*0.20f, fade*fade*0.40f, 0}};
 				
 				float flash_phase = (tick/period)*(float)(2*M_PI/DRIFT_PHI);
-				DriftVec2 frot = {cosf(flash_phase), sinf(flash_phase)};
+				DriftVec2 frot = DriftVec2ForAngle(flash_phase);
 				DriftAffine m = DriftAffineMul(matrix_model, (DriftAffine){frot.x, frot.y, -frot.y, frot.x});
 				DriftSpritePush(&sprites, DRIFT_SPRITE_SHIELD_FLASH, DriftRGBA8FromColor(color), m);
-				DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_RADIAL, color, DriftAffineMul(matrix_model, (DriftAffine){64, 0, 0, 64, 0, 0}), 0);
+				DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_RADIAL, color, DriftAffineMul(matrix_model, (DriftAffine){96, 0, 0, 96, 8*frot.x, 8*frot.y}), 0);
 			}
+		}
+		
+		// Draw headlight.
+		if(player->headlight && state->inventory.skiff[DRIFT_ITEM_HEADLIGHT]){
+			DriftVec4 headlight_color = DriftVec4Mul((DriftVec4){{2, 2, 2, 1.00f}}, headlight_brightness);
+			DriftLightPush(&lights, DRIFT_SPRITE_LIGHT_HEMI, headlight_color, DriftAffineMul(matrix_model, (DriftAffine){200, 0, 0, 300, 0, 4}), 10);
 		}
 		
 		DriftArrayRangeCommit(draw->fg_sprites, sprites);
@@ -579,7 +640,7 @@ static void DrawPlayer(DriftDraw* draw){
 				}
 			}
 			
-			draw_plasma(draw, near_pos, pos, plasma(draw));
+			DriftDrawPlasma(draw, near_pos, pos, DriftGenPlasma(draw));
 		}
 	}
 }
@@ -592,50 +653,50 @@ bool DriftCheckSpawn(DriftUpdate* update, DriftVec2 pos, float terrain_dist){
 }
 
 DriftNearbyNodesInfo DriftSystemPowerNodeNearby(DriftGameState* state, DriftVec2 pos, DriftMem* mem, float beam_radius){
+	uint connect_count = 0, near_count = 0;
 	DriftNearbyNodesInfo info = {.pos = pos, .nodes = DRIFT_ARRAY_NEW(mem, 8, DriftNearbyNodeInfo)};
-	uint connect_count = 0, too_close_count = 0, near_count = 0;
 	
 	DRIFT_COMPONENT_FOREACH(&state->power_nodes.c, i){
 		DriftVec2 node_pos = state->power_nodes.position[i];
 		float dist = DriftVec2Distance(pos, node_pos);
 		if(dist < DRIFT_POWER_EDGE_MAX_LENGTH){
-			DriftEntity e = state->power_nodes.entity[i];
+			bool active = state->power_nodes.active[i];
+			info.active_count += active;
 			
-			bool is_too_close = dist < DRIFT_POWER_EDGE_MIN_LENGTH && state->power_nodes.active[i];
 			float t = DriftTerrainRaymarch(state->terra, node_pos, pos, beam_radius, 1);
-
 			bool unblocked = t == 1;
-			bool node_can_connect = !is_too_close && unblocked;
-			connect_count += node_can_connect;
-			too_close_count += is_too_close;
 			near_count += unblocked;
 			
-			bool active = state->power_nodes.active[i];
+			bool is_too_close = dist < DRIFT_POWER_EDGE_MIN_LENGTH && active;
+			info.too_close_count += is_too_close;
+			
+			bool node_can_connect = unblocked && !is_too_close;
+			connect_count += node_can_connect;
+			
 			info.player_can_connect |= unblocked && active;
 			DRIFT_ARRAY_PUSH(info.nodes, ((DriftNearbyNodeInfo){
-				.e = e, .pos = node_pos, .player_can_connect = unblocked && active,
-				.node_can_connect  = node_can_connect, .is_too_close = is_too_close, .blocked_at = t
+				.e = state->power_nodes.entity[i], .pos = node_pos, .player_can_connect = unblocked && active,
+				.node_can_connect = node_can_connect, .is_too_close = is_too_close, .blocked_at = t,
 			}));
 		}
 	}
 	
-	info.node_can_connect = connect_count > 0 && too_close_count == 0;
+	info.node_can_connect = connect_count > 0 && info.too_close_count == 0;
 	info.node_can_reach = near_count > 0;
-	info.too_close_count = too_close_count;
 	return info;
 }
 
 #define DRIFT_JOIN(__join_var__, __joins__)for(DriftJoin __join_var__ = DriftJoinMake(__joins__)
 
-static void flow_map_tick(DriftUpdate* update, uint fmap_idx){
+static void flow_map_tick(DriftUpdate* update, DriftFlowMapID fmap_id){
 	TracyCZoneN(ZONE_FLOW, "Flow Tick", true);
 	DriftGameState* state = update->state;
 	DriftComponentPowerNode* power_nodes = 	&state->power_nodes;
-	DriftComponentFlowMap* fmap = state->flow_maps + fmap_idx;
+	DriftComponentFlowMap* fmap = state->flow_maps + fmap_id;
 	
 	// Buffer the flow map nodes.
 	TracyCZoneN(ZONE_BUFFER, "buffer", true);
-	DriftFlowNode* copy = DriftAlloc(update->mem, power_nodes->c.table.row_count*sizeof(*copy));
+	DriftFlowNode* copy = DRIFT_ARRAY_NEW(update->mem, power_nodes->c.table.row_count, typeof(*copy));
 	DRIFT_COMPONENT_FOREACH(&power_nodes->c, node_idx){
 		DriftEntity e = power_nodes->entity[node_idx];
 		// TODO can't components on secondary threads.
@@ -646,7 +707,7 @@ static void flow_map_tick(DriftUpdate* update, uint fmap_idx){
 	
 	// Propagate new links.
 	TracyCZoneN(ZONE_PROPAGATE, "propagate", true);
-	uint tick0 = update->tick - 1;
+	uint stamp = fmap->stamp++;
 	DriftTablePowerNodeEdges* edges = &state->power_edges;
 	for(uint i = 0, count = edges->t.row_count; i < count; i++){
 		DriftPowerNodeEdge* edge = edges->edge + i;
@@ -656,11 +717,11 @@ static void flow_map_tick(DriftUpdate* update, uint fmap_idx){
 		if(idx0 && idx1){
 			float len = DriftVec2Distance(edge->p0, edge->p1);
 			// Weight by distance and their current age.
-			float d0 = copy[idx0].dist + 64*(tick0 - copy[idx0].mark);
-			float d1 = copy[idx1].dist + 64*(tick0 - copy[idx1].mark);
+			float d0 = copy[idx0].dist + 64*(stamp - copy[idx0].stamp);
+			float d1 = copy[idx1].dist + 64*(stamp - copy[idx1].stamp);
 			// Check both nodes connected by the link and propage values.
-			if(d0 > d1 + len) copy[idx0] = (DriftFlowNode){.next = edge->e1, .mark = fmap->flow[idx1].mark, .dist = fmap->flow[idx1].dist + len};
-			if(d1 > d0 + len) copy[idx1] = (DriftFlowNode){.next = edge->e0, .mark = fmap->flow[idx0].mark, .dist = fmap->flow[idx0].dist + len};
+			if(d0 > d1 + len) copy[idx0] = (DriftFlowNode){.next = edge->e1, .stamp = fmap->flow[idx1].stamp, .dist = fmap->flow[idx1].dist + len};
+			if(d1 > d0 + len) copy[idx1] = (DriftFlowNode){.next = edge->e0, .stamp = fmap->flow[idx0].stamp, .dist = fmap->flow[idx0].dist + len};
 		}
 	}
 	TracyCZoneEnd(ZONE_PROPAGATE);
@@ -674,9 +735,9 @@ static void flow_map_tick(DriftUpdate* update, uint fmap_idx){
 		{},
 	});
 	while(DriftJoinNext(&join)){
-		// A node is current if it's mark has been updated.
+		// A node is valid if it's stamp has been updated.
 		// This can have false positives, but is consistent after a short delay.
-		fmap->current[flow_idx] = copy[flow_idx].mark != fmap->flow[flow_idx].mark;
+		fmap->is_valid[flow_idx] = copy[flow_idx].stamp != fmap->flow[flow_idx].stamp;
 		// Zero out links to non-existant nodes.
 		if(!node_idx) copy[flow_idx].next = (DriftEntity){0};
 		// Copy back to the nodes.
@@ -684,7 +745,7 @@ static void flow_map_tick(DriftUpdate* update, uint fmap_idx){
 	}
 	TracyCZoneEnd(ZONE_WRITE);
 	
-	if(fmap_idx == 0){
+	if(fmap_id == 0){
 		TracyCZoneN(ZONE_SYNC, "sync", true);
 		// Set power nodes as active if flow0 is current.
 		DriftJoin join = DriftJoinMake((DriftComponentJoin[]){
@@ -692,7 +753,7 @@ static void flow_map_tick(DriftUpdate* update, uint fmap_idx){
 			{.component = &power_nodes->c, .variable = &node_idx},
 			{},
 		});
-		while(DriftJoinNext(&join)) power_nodes->active[node_idx] = fmap->current[flow_idx];
+		while(DriftJoinNext(&join)) power_nodes->active[node_idx] = fmap->is_valid[flow_idx];
 		
 		// Enforce e0 is closer than e1, swap if necessary.
 		for(uint i = 0, count = edges->t.row_count; i < count; i++){
@@ -712,34 +773,45 @@ static void flow_map_job(tina_job* job){
 	flow_map_tick(update, fmap_idx);
 }
 
-static void TickPower(DriftUpdate* update){
-	flow_map_tick(update, 0);
-	flow_map_tick(update, 1);
+static void TickFlows(DriftUpdate* update){
+	for(uint i = 0; i < _DRIFT_FLOW_MAP_COUNT; i++) flow_map_tick(update, i);
 	
 	DriftGameState* state = update->state;
 	
 	{ // Update power roots
 		state->power_nodes.active[1] = true;
-		state->flow_maps[0].flow[1].mark = update->tick;
-		state->flow_maps[0].current[1] = true;
+		DriftComponentFlowMap* fmap = state->flow_maps + DRIFT_FLOW_MAP_POWER;
+		fmap->flow[1].stamp = fmap->stamp;
+		fmap->is_valid[1] = true;
 	}
 	
 	{ // Update player path roots
-		uint transform_idx = DriftComponentFind(&state->transforms.c, update->ctx->player);
-		DriftVec2 player_pos = DriftAffineOrigin(state->transforms.matrix[transform_idx]);
-		DriftNearbyNodesInfo info = DriftSystemPowerNodeNearby(state, player_pos, update->mem, 0);
+		DriftComponentFlowMap* fmap = state->flow_maps + DRIFT_FLOW_MAP_PLAYER;
+		uint body_idx = DriftComponentFind(&state->bodies.c, update->state->player);
+		DriftVec2 player_pos = state->bodies.position[body_idx];
 		
-		DriftComponentFlowMap* fmap = state->flow_maps + 1;
+		DriftNearbyNodesInfo info = DriftSystemPowerNodeNearby(state, player_pos, update->mem, 0);
 		DRIFT_ARRAY_FOREACH(info.nodes, node){
 			if(node->blocked_at < 1) continue;
 			
 			uint fnode_idx = DriftComponentFind(&fmap->c, node->e);
 			DriftFlowNode* fnode = fmap->flow + fnode_idx;
 			DriftVec2 p1 = state->power_nodes.position[DriftComponentFind(&state->power_nodes.c, node->e)];
+			fnode->stamp = fmap->stamp;
 			fnode->dist = DriftVec2Distance(player_pos, p1);
-			fnode->mark = update->tick - 1;
 			fnode->next = node->e;
-			fmap->current[fnode_idx] = true;
+			fmap->is_valid[fnode_idx] = true;
+		}
+	}
+	
+	{ // Update waypoint
+		DriftComponentFlowMap* fmap = state->flow_maps + DRIFT_FLOW_MAP_WAYPOINT;
+		uint fnode_idx = DriftComponentFind(&fmap->c, TEMP_WAYPOINT_NODE);
+		if(fnode_idx){
+			fmap->flow[fnode_idx].stamp = fmap->stamp;
+			fmap->flow[fnode_idx].dist = 0;
+			fmap->flow[fnode_idx].next = TEMP_WAYPOINT_NODE;
+			fmap->is_valid[fnode_idx] = true;
 		}
 	}
 }
@@ -750,14 +822,14 @@ static void DrawPower(DriftDraw* draw){
 	DriftGameState* state = draw->state;
 	DriftPowerNodeEdge* edges = state->power_edges.edge;
 	DriftFrame light_frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL];
-	float* plasma_wave = plasma(draw);
+	float* plasma_wave = DriftGenPlasma(draw);
 	
 	DriftComponentFlowMap* fmap = state->flow_maps + 0;
 	float smoothing = expf(-10.0f*draw->dt);
 	
 	DRIFT_COMPONENT_FOREACH(&state->power_nodes.c, idx){
 		DriftVec2 pos = state->power_nodes.position[idx];
-		if(!DriftAffineVisibility(draw->vp_matrix, pos, DRIFT_VEC2_ZERO)) continue;
+		if(!DriftAffineVisibility(draw->vp_matrix, pos, (DriftVec2){64, 64})) continue;
 			
 		DriftVec2 rot = state->power_nodes.rotation[idx];
 		DriftAffine m = {rot.y, -rot.x, rot.x, rot.y, pos.x, pos.y};
@@ -769,22 +841,26 @@ static void DrawPower(DriftDraw* draw){
 		}));
 		DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){
 			.frame = DRIFT_FRAMES[DRIFT_SPRITE_POWER_NODE_SHELL], .color = DRIFT_RGBA8_WHITE,
-			.matrix = DriftAffineMul(m, (DriftAffine){+1, 0, 0, 1, +2*clam, 0}),
+			.matrix = DriftAffineMul(m, (DriftAffine){+1, 0, 0, 1, +2*clam, 0}), .shiny = 30,
 		}));
 		DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){
 			.frame = DRIFT_FRAMES[DRIFT_SPRITE_POWER_NODE_SHELL], .color = DRIFT_RGBA8_WHITE,
-			.matrix = DriftAffineMul(m, (DriftAffine){-1, 0, 0, 1, -2*clam, 0}),
+			.matrix = DriftAffineMul(m, (DriftAffine){-1, 0, 0, 1, -2*clam, 0}), .shiny = 30,
 		}));
 		
+		DriftEntity e = state->power_nodes.entity[idx];
+		unsigned flow_idx = DriftComponentFind(&fmap->c, e);
+		DriftFlowNode* flow = fmap->flow + flow_idx;
+		
+		float pulse = powf(0.5f + 0.5f*DriftWaveComplex(draw->nanos - (u64)(10e5f*flow->dist), 0.8f).x, 5);
+		float dimming = clam*(5*pulse + 1);
 		DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
-			.frame = light_frame, .color = DriftVec4Mul((DriftVec4){{0.08f, 0.12f, 0.12f, 0.00f}}, clam),
-			.matrix = {128, 0, 0, 128, pos.x, pos.y},
+			.frame = light_frame, .color = DriftVec4Mul((DriftVec4){{0.08f, 0.20f, 0.28f, 0.00f}}, dimming),
+			.matrix = {100, 0, 0, 100, pos.x, pos.y},
 		}));
 		
 		if(state->power_nodes.active[idx]){
-			DriftEntity e = state->power_nodes.entity[idx];
-			unsigned flow_idx = DriftComponentFind(&fmap->c, e);
-			DriftEntity next_e = fmap->flow[flow_idx].next;
+			DriftEntity next_e = flow->next;
 			if(e.id != next_e.id){
 				DriftVec2 next_pos = state->power_nodes.position[DriftComponentFind(&state->power_nodes.c, next_e)];
 				DriftVec2 dir = DriftVec2Normalize(DriftVec2Sub(next_pos, pos));
@@ -796,7 +872,7 @@ static void DrawPower(DriftDraw* draw){
 		}
 	}
 	
-	DriftRGBA8 flicker_color = DriftRGBA8FromColor(DriftVec4Mul((DriftVec4){{0.02f, 0.11f, 0.22f, 0.21f}}, 0.3f*plasma_wave[PLASMA_N/2]));
+	DriftRGBA8 flicker_color = DriftRGBA8FromColor(DriftVec4Mul((DriftVec4){{0.02f, 0.11f, 0.22f, 0.21f}}, 0.3f*plasma_wave[DRIFT_PLASMA_N/2]));
 	// Draw power links. (scale model matrix by 1/2 to avoid divide in center and extents)
 	DriftAffine mvp = DriftAffineMul(draw->vp_matrix, (DriftAffine){0.5f, 0, 0, 0.5f, 0, 0});
 	for(uint idx = 0; idx < state->power_edges.t.row_count; idx++){
@@ -804,7 +880,7 @@ static void DrawPower(DriftDraw* draw){
 		if(DriftAffineVisibility(mvp, DriftVec2Add(edge.p0, edge.p1), DriftVec2Sub(edge.p0, edge.p1))){
 			uint node_idx0 = DriftComponentFind(&state->power_nodes.c, edge.e0);
 			if(state->power_nodes.active[node_idx0]){
-				draw_plasma(draw, edge.p0, edge.p1, plasma_wave);
+				DriftDrawPlasma(draw, edge.p0, edge.p1, plasma_wave);
 			} else {
 				DRIFT_ARRAY_PUSH(draw->bg_prims, ((DriftPrimitive){
 					.p0 = edge.p0, .p1 = edge.p1, .radii = {0.8f}, .color = flicker_color
@@ -815,32 +891,29 @@ static void DrawPower(DriftDraw* draw){
 }
 
 void DriftDrawPowerMap(DriftDraw* draw, float scale){
-	static const DriftRGBA8 node_color = {0xFF, 0x80, 0x00, 0xFF}, beam_color = {0x00, 0x40, 0x40, 0x00};
+	static const DriftRGBA8 beam_color = {0x00, 0xB0, 0xB0, 0xC0}, node_color = {0xFF, 0x80, 0x00, 0xFF};
 	
 	DriftGameState* state = draw->state;
 	DriftPowerNodeEdge* edges = state->power_edges.edge;
-	
+	bool* node_active = state->power_nodes.active;
 	for(uint i = 0; i < state->power_edges.t.row_count; i++){
-		DRIFT_ARRAY_PUSH(draw->bg_prims, ((DriftPrimitive){.p0 = edges[i].p0, .p1 = edges[i].p1, .radii = {1.5f/scale}, .color = beam_color}));
+		bool active = node_active[DriftComponentFind(&state->power_nodes.c, edges[i].e0)];
+		DRIFT_ARRAY_PUSH(draw->bg_prims, ((DriftPrimitive){
+			.p0 = edges[i].p0, .p1 = edges[i].p1, .radii = {2.0f*scale}, .color = DriftRGBA8Fade(beam_color, active ? 1.0f : 0.25f),
+		}));
 	}
 	
+	DriftVec2* node_pos = state->power_nodes.position;
 	DRIFT_COMPONENT_FOREACH(&state->power_nodes.c, i){
-		if(state->power_nodes.active[i]){
-			DriftVec2 pos = state->power_nodes.position[i];
-			DRIFT_ARRAY_PUSH(draw->bg_prims, ((DriftPrimitive){
-				.p0 = pos, .p1 = pos, .radii = {5/scale}, .color = node_color,
-			}));
-		}
+		DriftVec2 pos = state->power_nodes.position[i];
+		DRIFT_ARRAY_PUSH(draw->bg_prims, ((DriftPrimitive){
+			.p0 = pos, .p1 = pos, .radii = {5*scale}, .color = DriftRGBA8Fade(node_color, node_active[i] ? 1.0f : 0.25f),
+		}));
 	}
 }
 
 static void TickNavs(DriftUpdate* update){
 	DriftGameState* state = update->state;
-	
-	// TODO temp
-	uint transform_idx = DriftComponentFind(&state->transforms.c, update->ctx->player);
-	DriftVec2 player_pos = DriftAffineOrigin(state->transforms.matrix[transform_idx]);
-	
 	DRIFT_VAR(navs, state->navs.data);
 	
 	uint nav_idx, body_idx;
@@ -851,17 +924,20 @@ static void TickNavs(DriftUpdate* update){
 	});
 	
 	while(DriftJoinNext(&join)){
-		DriftComponentFlowMap* flow_map = state->flow_maps + navs[nav_idx].flow_map;
+		DriftComponentFlowMap* fmap = state->flow_maps + navs[nav_idx].flow_map;
+		
 		DriftEntity node = navs[nav_idx].node;
-		DriftVec2 pos = state->bodies.position[body_idx];
+		DriftVec2 pos0 = state->bodies.position[body_idx];
 		
 		uint node_idx = DriftComponentFind(&state->power_nodes.c, node);
 		if(node_idx == 0){
+			DRIFT_LOG("attempting to find new node");
+			
 			// Target node does not exist. Try to find a new one.
-			DriftNearbyNodesInfo info = DriftSystemPowerNodeNearby(state, pos, update->mem, 0);
+			DriftNearbyNodesInfo info = DriftSystemPowerNodeNearby(state, pos0, update->mem, 0);
 			float min_dist = INFINITY;
 			DRIFT_ARRAY_FOREACH(info.nodes, inode){
-				float root_dist = flow_map->flow[DriftComponentFind(&flow_map->c, inode->e)].dist;
+				float root_dist = fmap->flow[DriftComponentFind(&fmap->c, inode->e)].dist;
 				if(inode->blocked_at == 1 && root_dist < min_dist){
 					min_dist = root_dist;
 					node = inode->e;
@@ -870,44 +946,35 @@ static void TickNavs(DriftUpdate* update){
 			
 			node_idx = DriftComponentFind(&state->power_nodes.c, node);
 			navs[nav_idx].node = node;
-			navs[nav_idx].target_pos = state->power_nodes.position[node_idx];
 		}
 		
-		DriftVec2 target_pos = navs[nav_idx].target_pos;
+		DriftVec2 node_pos = navs[nav_idx].target_pos = state->power_nodes.position[node_idx];
+		uint fnode_idx = DriftComponentFind(&fmap->c, node);
+		navs[nav_idx].is_valid = fmap->is_valid[fnode_idx];
 		
-		uint fnode_idx = DriftComponentFind(&flow_map->c, node);
-		DriftEntity next_node = flow_map->flow[fnode_idx].next;
-		
-		DriftVec2 next_pos = player_pos;
-		// DRIFT_LOG("match: %d, curr: %d", node.id == next_node.id, flow_map->current[fnode_idx]);
-		if(!(node.id == next_node.id && flow_map->current[fnode_idx])){
-			uint next_node_idx = DriftComponentFind(&state->power_nodes.c, next_node);
-			next_pos = state->power_nodes.position[next_node_idx];
-		}
-		
-		{
-			float radius = navs[nav_idx].radius, min = 0;
-			float t = DriftTerrainRaymarch2(state->terra, pos, target_pos, 0.0f*radius, 2, &min);
-			// DriftDebugSegment2(state, pos, target_pos, radius + min, radius - 1 + min, DRIFT_RGBA8_WHITE);
-			target_pos = DriftVec2LerpConst(target_pos, next_pos, 0.5f*fmaxf(0, min - 1));
+		DriftEntity next_node = fmap->flow[fnode_idx].next;
+		uint next_idx = DriftComponentFind(&state->power_nodes.c, next_node);
+		DriftVec2 next_pos = state->power_nodes.position[next_idx];
+		float d0 = DriftVec2Distance(pos0, node_pos), d1 = DriftVec2Distance(pos0, next_pos);
+		if(d0 < DRIFT_POWER_EDGE_MIN_LENGTH || d1 < d0) navs[nav_idx].node = next_node;
 			
-			// TODO this doesn't work very well to recover wayward drones.
-			if(t < 1) navs[nav_idx].node.id = 0;
+		if(node.id != next_node.id){
+			float dsum = d0 + DriftVec2Distance(node_pos, next_pos);
+			navs[nav_idx].target_dir = DriftVec2Mul(DriftVec2Sub(next_pos, pos0), 1/(dsum + FLT_MIN));
+		} else {
+			navs[nav_idx].target_dir = DRIFT_VEC2_ZERO;
 		}
-		
-		if(DriftVec2Distance(target_pos, next_pos) == 0){
-			navs[nav_idx].node = next_node;
-		}
-		
-		navs[nav_idx].target_pos = target_pos;
-		DriftDebugSegment(state, pos, target_pos, 1, DRIFT_RGBA8_ORANGE);
-		DriftDebugSegment(state, pos, next_pos, 1, DRIFT_RGBA8_RED);
 	}
 }
 
-DriftEntity DriftDroneMake(DriftGameState* state, DriftVec2 pos){
+#define DRIFT_DRONE_SPEED (DRIFT_PLAYER_SPEED)
+
+DriftEntity DriftDroneMake(DriftGameState* state, DriftVec2 pos, DriftDroneState drone_state, DriftItemType item, uint count){
 	DriftEntity e = DriftMakeEntity(state);
 	uint drone_idx = DriftComponentAdd(&state->drones.c, e);
+	state->drones.data[drone_idx].state = drone_state;
+	state->drones.data[drone_idx].item = item;
+	state->drones.data[drone_idx].count = count;
 	
 	uint transform_idx = DriftComponentAdd(&state->transforms.c, e);
 	uint body_idx = DriftComponentAdd(&state->bodies.c, e);
@@ -917,40 +984,49 @@ DriftEntity DriftDroneMake(DriftGameState* state, DriftVec2 pos){
 	state->bodies.radius[body_idx] = radius;
 	state->bodies.mass_inv[body_idx] = 1/mass;
 	state->bodies.moment_inv[body_idx] = 1/(mass*0.5f*radius*radius);
+	state->bodies.collision_type[body_idx] = DRIFT_COLLISION_PLAYER_DRONE;
 	
 	return e;
 }
 
-// #define NEAR_COUNT 4
-// typedef struct {
-// 	DriftEntity entity[NEAR_COUNT];
-// } Nears;
-
-// Nears NEARS[1000];
-
-// typedef struct {
-// 	DriftEntity entity;
-// 	DriftVec2 pos, rot;
-// 	float dist;
-// } Entry;
-
-// static int drone_comp(const void* _a, const void* _b){
-// 	const Entry* a = _a;
-// 	const Entry* b = _b;
-// 	return (a->dist == b->dist ? 0 : (a->dist < b->dist ? -1 : 1));
-// }
+static const DriftFlowMapID DRONE_FLOW[_DRIFT_DRONE_STATE_COUNT] = {
+	[DRIFT_DRONE_STATE_TO_POD] = DRIFT_FLOW_MAP_PLAYER,
+	[DRIFT_DRONE_STATE_TO_SKIFF] = DRIFT_FLOW_MAP_POWER,
+};
 
 static void TickDrones(DriftUpdate* update){
 	DriftGameState* state = update->state;
-	float subtick_dt = update->tick_dt;
+	float tick_dt = update->tick_dt;
 	
-	static uint check_idx;
-	DriftEntity check_e = state->drones.entity[check_idx];
-	DriftVec2 check_pos = state->bodies.position[DriftComponentFind(&state->bodies.c, check_e)];
+	uint pod_requests = 0;
+	for(uint i = 0; i < _DRIFT_ITEM_COUNT; i++){
+		if(i != DRIFT_ITEM_POWER_NODE) pod_requests += state->inventory.cargo[i];
+	}
 	
-	float period = 2e9;
-	float phase = 2*(float)M_PI/period*(update->ctx->tick_nanos % (u64)period), inc = (float)(2*M_PI/DRIFT_PHI);
-	DriftVec2 rot = {cosf(phase), sinf(phase)}, rinc = {cosf(inc), sinf(inc)};
+	uint node_cargo = state->inventory.cargo[DRIFT_ITEM_POWER_NODE];
+	uint node_skiff = state->inventory.skiff[DRIFT_ITEM_POWER_NODE];
+	uint node_cap = node_cap = DriftPlayerNodeCap(state);
+	uint nodes_wanted = node_cap - node_cargo;
+	if(nodes_wanted > node_skiff) nodes_wanted = node_skiff;
+	if(node_cargo < node_cap && nodes_wanted > pod_requests){
+		pod_requests = nodes_wanted;
+	}
+	
+	if(state->dispatch.count < state->inventory.skiff[DRIFT_ITEM_DRONE] && state->dispatch.pod < pod_requests){
+		DriftItemType item = DRIFT_ITEM_NONE; uint count = 0;
+		if(nodes_wanted) item = DRIFT_ITEM_POWER_NODE, count = 1;
+		
+		state->inventory.skiff[item] -= count;
+		state->inventory.transit[item] += count;
+		DriftDroneMake(state, DRIFT_SKIFF_POSITION, DRIFT_DRONE_STATE_TO_POD, item, count);
+		state->dispatch.count++;
+		state->dispatch.pod++;
+	}
+	
+	uint player_body_idx = DriftComponentFind(&state->bodies.c, state->player);
+	DriftVec2 player_pos = state->bodies.position[player_body_idx];
+	DriftVec2 player_vel = state->bodies.velocity[player_body_idx];
+	const float action_radius = 10;
 	
 	uint drone_idx, transform_idx, body_idx, nav_idx;
 	DriftJoin join = DriftJoinMake((DriftComponentJoin[]){
@@ -960,86 +1036,112 @@ static void TickDrones(DriftUpdate* update){
 		{&nav_idx, &state->navs.c, .optional = true},
 		{},
 	});
-	
 	while(DriftJoinNext(&join)){
 		DriftAffine m = state->transforms.matrix[transform_idx];
 		DriftAffine m_inv = DriftAffineInverse(m);
 		
 		DriftVec2 pos = state->bodies.position[body_idx];
-		DriftVec2 target_pos = pos;
+		DriftVec2 vel = state->bodies.velocity[body_idx];
 		
 		// TODO Should drones always have a nav node?
-		if(nav_idx == 0){
-			uint nav_idx = DriftComponentAdd(&state->navs.c, join.entity);
-			state->navs.data[nav_idx].flow_map = 1;
-			state->navs.data[nav_idx].radius = 8;
-		}
+		if(nav_idx == 0) DriftComponentAdd(&state->navs.c, join.entity);
 		
 		// Fly towards the nav target if it has one.
+		DriftVec2 desired_velocity = DRIFT_VEC2_ZERO;
+		DriftVec2 desired_rotation = vel;
 		if(state->navs.data[nav_idx].node.id){
-			target_pos = state->navs.data[nav_idx].target_pos;
+			float speed = DRIFT_DRONE_SPEED;
+			DriftVec2 dir = state->navs.data[nav_idx].target_dir;
+			float seed = fmodf((join.entity.id | state->navs.data[nav_idx].node.id)*(float)DRIFT_PHI, 256)/256;
+			dir = DriftVec2Rotate(dir, DriftVec2ForAngle(0.4f*(2*seed - 1)));
 			
-			// Temp drone movement.
-			DriftVec2 delta = DriftVec2Sub(pos, target_pos);
-			if(DriftVec2Length(delta) > 0){
-				state->bodies.position[body_idx] = DriftVec2LerpConst(pos, target_pos, 0.75f*DRIFT_PLAYER_SPEED*subtick_dt);
-				state->bodies.rotation[body_idx] = DriftVec2Normalize(DriftVec2Perp(delta));
+			DriftVec2 target_pos = DriftVec2FMA(state->navs.data[nav_idx].target_pos, DriftVec2Perp(dir), -8);
+			DriftVec2 target_vel = DriftVec2Mul(dir, speed);
+			
+			if(DriftVec2LengthSq(state->navs.data[nav_idx].target_dir) == 0){
+				DriftDroneState drone_state = state->drones.data[drone_idx].state;
+				if(drone_state == DRIFT_DRONE_STATE_TO_POD){
+					float t0 = DriftTerrainRaymarch(state->terra, pos, target_pos, 10, 2);
+					float t1 = DriftTerrainRaymarch(state->terra, pos, player_pos, 10, 2);
+					// DriftDebugSegment2(state, pos, DriftVec2Lerp(pos, target_pos, t0), 10, 9, DRIFT_RGBA8_GREEN);
+					// DriftDebugSegment2(state, pos, DriftVec2Lerp(pos, player_pos, t1), 10, 9, DRIFT_RGBA8_GREEN);
+					
+					if(t0*t1 == 1 && DriftVec2Distance(player_pos, target_pos) < DRIFT_POWER_EDGE_MAX_LENGTH){
+						target_pos = player_pos;
+						target_vel = DriftVec2Clamp(player_vel, speed);
+					}
+					
+					if(DriftVec2Distance(pos, player_pos) < action_radius){
+						DriftItemType item = state->drones.data[drone_idx].item;
+						uint count = state->drones.data[drone_idx].count;
+						if(item == DRIFT_ITEM_POWER_NODE){
+							// if the cargo is power nodes, make sure it's not overflowing the capacity
+							uint sum = state->inventory.cargo[DRIFT_ITEM_POWER_NODE] + count;
+							uint node_cap = DriftPlayerNodeCap(state);
+							if(sum > node_cap){
+								uint overflow = sum - node_cap;
+								count -= overflow;
+								
+								// transfer the extras back to the skiff instantaneously
+								state->inventory.transit[DRIFT_ITEM_POWER_NODE] -= overflow;
+								state->inventory.skiff[DRIFT_ITEM_POWER_NODE] += overflow;
+							}
+						} else if(count > 0) {
+							DRIFT_NYI();
+						}
+						
+						state->inventory.transit[item] -= count;
+						state->inventory.cargo[item] += count;
+						
+						// find items to take back to the skiff
+						item = DRIFT_ITEM_NONE, count = 0;
+						for(uint i = 0; i < _DRIFT_ITEM_COUNT; i++){
+							if(i != DRIFT_ITEM_POWER_NODE && state->inventory.cargo[i] > 0){
+								item = i, count = 1;
+								break;
+							}
+						}
+						
+						if(item){
+							state->inventory.cargo[item] -= count;
+							state->inventory.transit[item] += count;
+						}
+						
+						state->drones.data[drone_idx].item = item;
+						state->drones.data[drone_idx].count = count;
+						state->drones.data[drone_idx].state = DRIFT_DRONE_STATE_TO_SKIFF;
+						state->dispatch.pod--;
+					}
+				}
+				
+				if(drone_state == DRIFT_DRONE_STATE_TO_SKIFF && DriftVec2Distance(pos, target_pos) < action_radius){
+					DriftDestroyEntity(state, join.entity);
+					DriftItemType item = state->drones.data[drone_idx].item;
+					uint count = state->drones.data[drone_idx].count;
+					state->inventory.transit[item] -= count;
+					state->inventory.skiff[item] += count;
+					state->dispatch.count--;
+				}
+				
+				DriftVec2 delta = DriftVec2Sub(target_pos, pos);
+				desired_velocity = DriftVec2FMA(target_vel, delta, DRIFT_DRONE_SPEED/fmaxf(30, DriftVec2Length(delta)));
+				desired_velocity = DriftVec2Clamp(desired_velocity, DRIFT_DRONE_SPEED);
+				desired_rotation = desired_velocity;
+			} else {
+				float ratio = spline_ratio(pos, vel, target_pos, target_vel, speed, 2e-2f);
+				desired_velocity = hermite_vel(tick_dt, ratio, pos, vel, target_pos, target_vel);
+				DriftVec2 thrust = hermite_acc(tick_dt, ratio, pos, vel, target_pos, target_vel);
+				desired_rotation = DriftVec2FMA(desired_velocity, thrust, 2);
 			}
 		}
 		
-		// Entry entries[NEAR_COUNT + 1];
-		// for(uint i = 0; i < NEAR_COUNT; i++){
-		// 	DriftEntity near_e = NEARS[drone_idx].entity[i];
-		// 	DriftVec2 near_pos = state->bodies.position[DriftComponentFind(&state->bodies.c, near_e)];
-		// 	entries[i] = (Entry){.entity = near_e, .pos = near_pos, .dist = DriftVec2Distance(pos, near_pos)};
-		// }
-		// entries[NEAR_COUNT] = (Entry){.entity = check_e, .pos = check_pos, .dist = DriftVec2Distance(pos, check_pos)};
-		// qsort(entries, NEAR_COUNT + 1, sizeof(*entries), drone_comp);
+		state->bodies.velocity[body_idx] = DriftVec2LerpConst(state->bodies.velocity[body_idx], desired_velocity, 2000.0f*tick_dt);
+		DriftVec2 local_rot = DriftAffineDirection(m_inv, DriftVec2Normalize(desired_rotation));
+		float desired_w = -(1 - expf(-10.0f*tick_dt))*atan2f(local_rot.x, local_rot.y)/tick_dt;
+		state->bodies.angular_velocity[body_idx] = DriftLerpConst(state->bodies.angular_velocity[body_idx], desired_w, 50*tick_dt);
 		
-		// uint cursor = 0;
-		// DriftEntity prev_e = join.entity;
-		// Nears foo = {};
-		// for(uint i = 0; i < NEAR_COUNT + 1; i++){
-		// 	if(entries[i].entity.id == prev_e.id || cursor >= NEAR_COUNT) continue;
-		// 	prev_e = entries[i].entity;
-			
-		// 	foo.entity[cursor++] = entries[i].dist < 30 ? entries[i].entity : (DriftEntity){};
-		// 	DriftDebugRay(state, pos, DriftVec2Sub(entries[i].pos, pos), 0.3f, DRIFT_RGBA8_RED);
-		// }
-		
-		// Nears* bar = NEARS + drone_idx;
-		// if(memcmp(&foo, bar, sizeof(foo))){
-		// 	DRIFT_LOG("What?");
-		// 	DriftBreakpoint();
-		// 	*bar = foo;
-		// }
-		
-		// DRIFT_COMPONENT_FOREACH(&state->drones.c, check_idx){
-		// 	DriftEntity check_entity = state->drones.entity[check_idx];
-		// 	if(check_entity.id == join.entity.id) continue;
-		// 	DriftVec2 check_pos = state->bodies.position[DriftComponentFind(&state->bodies.c, check_entity)];
-			
-		// 	DriftVec2 delta = DriftVec2Sub(pos, check_pos);
-		// 	float dist = DriftVec2Length(delta) + FLT_MIN;
-		// 	target_pos = DriftVec2FMA(target_pos, delta, fmaxf(0, 32/dist - 1));
-		// }
-		
-		// if(check_entity.id != join.entity.id){
-		// }
-		
-		// DriftVec2 target_delta = DriftVec2Sub(target_pos, pos);
-		// DriftVec2 target_velocity = DriftVec2Mul(target_delta, expf(-100*subtick_dt)/subtick_dt);
-		// target_velocity = DriftVec2Clamp(target_velocity, 0.75f*DRIFT_PLAYER_SPEED);
-		// state->bodies.velocity[body_idx] = DriftVec2LerpConst(state->bodies.velocity[body_idx], target_velocity, 500.0f*subtick_dt);
-		
-		// DriftVec2 local_rot = DriftAffineDirection(m_inv, DriftVec2Normalize(target_delta));
-		// float desired_w = -(1 - expf(-10*subtick_dt))*atan2f(local_rot.x, local_rot.y)/subtick_dt;
-		// state->bodies.angular_velocity[body_idx] = DriftLerpConst(state->bodies.angular_velocity[body_idx], desired_w, 50*subtick_dt);
+		state->navs.data[nav_idx].flow_map = DRONE_FLOW[state->drones.data[drone_idx].state];
 	}
-	
-	// if(update->tick % 30 == 0)
-	check_idx++;
-	if(check_idx > state->drones.c.count) check_idx = 1;
 }
 
 static void DrawDrones(DriftDraw* draw){
@@ -1062,11 +1164,11 @@ static void DrawDrones(DriftDraw* draw){
 	});
 	while(DriftJoinNext(&join)){
 		DriftAffine m = state->transforms.matrix[transform_idx];
-		if(!DriftAffineVisibility(draw->vp_matrix, DriftAffineOrigin(m), DRIFT_VEC2_ZERO)) continue;
+		if(!DriftAffineVisibility(draw->vp_matrix, DriftAffineOrigin(m), (DriftVec2){64, 64})) continue;
 		
 		DriftVec2 v = state->bodies.velocity[body_idx];
-		float w = state->bodies.angular_velocity[body_idx]/10;
-		float vn = DriftVec2Dot((DriftVec2){m.c, m.d}, v)/200;
+		float w = state->bodies.angular_velocity[body_idx]/4;
+		float vn = DriftVec2Dot((DriftVec2){m.c, m.d}, v)/DRIFT_DRONE_SPEED;
 		
 		DriftAffine m_r = m, m_l = DriftAffineMul(m, (DriftAffine){-1, 0, 0, 1, 0, 0});
 		DriftSprite* sprites = DRIFT_ARRAY_RANGE(draw->fg_sprites, 16);
@@ -1080,7 +1182,6 @@ static void DrawDrones(DriftDraw* draw){
 		
 		float hatch_open = DriftSaturate(sinf(draw->tick/8.0f));
 		hatch_open *= 0*hatch_open;
-		DriftVec2 rot = {cosf(-hatch_open), sinf(-hatch_open)};
 		DriftAffine m_hatch = DriftAffineTRS(DriftVec2Mul((DriftVec2){4, -2}, hatch_open), 0.8f*hatch_open, DRIFT_VEC2_ONE);
 		DriftAffine m_hatchr = DriftAffineMul(m_r, m_hatch);
 		DriftAffine m_hatchl = DriftAffineMul(m_l, m_hatch);
@@ -1093,6 +1194,8 @@ static void DrawDrones(DriftDraw* draw){
 		*lights++ = (DriftLight){.frame = frame_flood, .color = {{1, 1, 1, 0}}, .matrix = DriftAffineMul(m_hatchr, (DriftAffine){40, 0, 0, 48, +4, 8})};
 		DriftArrayRangeCommit(draw->fg_sprites, sprites);
 		DriftArrayRangeCommit(draw->lights , lights);
+
+		if(DRIFT_DEBUG_SHOW_PATH) vis_path(state, join.entity, 1/DRIFT_TICK_HZ, DRIFT_DRONE_SPEED, 2e-2f);
 	}
 }
 
@@ -1101,14 +1204,23 @@ typedef struct {
 	DriftVec2 point, normal;
 } RayHit;
 
-static inline RayHit CircleSegmentQuery(DriftVec2 center, float r1, DriftVec2 a, DriftVec2 b, float r2){
-	DriftVec2 da = DriftVec2Sub(a, center);
-	DriftVec2 db = DriftVec2Sub(b, center);
+static inline RayHit circle_to_segment_query(DriftVec2 center, float r1, DriftVec2 a, DriftVec2 b, float r2){
 	float rsum = r1 + r2;
+	DriftVec2 da = DriftVec2Sub(a, center);
+	float da_da = DriftVec2Dot(da, da);
 	
-	float qa = DriftVec2Dot(da, da) - 2*DriftVec2Dot(da, db) + DriftVec2Dot(db, db);
-	float qb = DriftVec2Dot(da, db) - DriftVec2Dot(da, da);
-	float det = qb*qb - qa*(DriftVec2Dot(da, da) - rsum*rsum);
+	// Segment started inside.
+	if(da_da < rsum*rsum){
+		DriftVec2 n = DriftVec2Normalize(da);
+		return (RayHit){.alpha = 0, .point = DriftVec2Sub(a, DriftVec2Mul(n, r2)), .normal = n};
+	}
+	
+	DriftVec2 db = DriftVec2Sub(b, center);
+	float da_db = DriftVec2Dot(da, db);
+	
+	float qa = da_da - 2*da_db + DriftVec2Dot(db, db);
+	float qb = da_db - da_da;
+	float det = qb*qb - qa*(da_da - rsum*rsum);
 	
 	if(det >= 0.0f){
 		float t = -(qb + sqrtf(det))/qa;
@@ -1121,17 +1233,22 @@ static inline RayHit CircleSegmentQuery(DriftVec2 center, float r1, DriftVec2 a,
 	return (RayHit){.alpha = 1};
 }
 
-void DriftHealthApplyDamage(DriftUpdate* update, DriftEntity entity, float amount){
+bool DriftHealthApplyDamage(DriftUpdate* update, DriftEntity entity, float amount, DriftVec2 pos){
 	DriftGameState* state = update->state;
 	
 	uint health_idx = DriftComponentFind(&state->health.c, entity);
 	if(health_idx){
+		float pan = DriftClamp(DriftAffinePoint(update->prev_vp_matrix, pos).x, -1, 1);
+		
 		DriftHealth* health = state->health.data + health_idx;
 		if(update->tick - health->damage_tick0 > health->timeout*DRIFT_TICK_HZ){
 			health->damage_tick0 = update->tick;
 			health->value -= amount;
+			
+			DriftAudioPlaySample(DRIFT_BUS_SFX, health->hit_sfx, (DriftAudioParams){.gain = 1, .pan = pan});
 		}
 		
+		// TODO Is there a better place for this?
 		uint enemy_idx = DriftComponentFind(&state->enemies.c, entity);
 		if(enemy_idx) state->enemies.aggro_ticks[enemy_idx] = 10*DRIFT_TICK_HZ;
 		
@@ -1141,114 +1258,226 @@ void DriftHealthApplyDamage(DriftUpdate* update, DriftEntity entity, float amoun
 			uint body_idx = DriftComponentFind(&state->bodies.c, entity);
 			DriftVec2 pos = state->bodies.position[body_idx];
 			DriftVec2 vel = state->bodies.velocity[body_idx];
-			if(health->drop) DriftItemMake(update->state, health->drop, pos, vel);
+			if(health->drop) DriftItemMake(update->state, health->drop, pos, vel, state->enemies.tile_idx[enemy_idx]);
 			
-			DriftDestroyEntity(update, entity);
-			DriftAudioPlaySample(update->audio, DRIFT_SFX_EXPLODE, 1, 0, 1, false);
-			MakeBlast(update, pos);
-		} else {
-			DriftAudioPlaySample(update->audio, DRIFT_SFX_BULLET_HIT, 1, 0, 1, false);
+			DriftDestroyEntity(state, entity);
+			DriftAudioPlaySample(DRIFT_BUS_SFX, health->die_sfx, (DriftAudioParams){.gain = 1, .pan = pan});
+			DriftMakeBlast(update, pos, (DriftVec2){0, 1}, DRIFT_BLAST_EXPLODE);
 		}
+		
+		return true;
+	} else {
+		return false;
 	}
 }
 
-void FireProjectile(DriftUpdate* update, DriftVec2 pos, DriftVec2 vel){
+typedef struct {
+	float speed, damage, timeout;
+	DriftCollisionType collision;
+	uint frame, frame_count;
+	DriftRGBA8 sprite_color;
+	DriftVec2 size;
+	float light_size;
+	DriftVec4 light_color;
+	DriftBlastType ricochet;
+	DriftSFX sfx;
+	float gain;
+} DriftProjectileInfo;
+
+static const DriftProjectileInfo DRIFT_PROJECTILES[_DRIFT_PROJECTILE_COUNT] = {
+	[DRIFT_PROJECTILE_PLAYER] = {
+		.speed = 2000, .damage = 10, .timeout = 12, .collision = DRIFT_COLLISION_PLAYER_BULLET,
+		.frame = DRIFT_SPRITE_BULLET00, .frame_count = 8,
+		.size = {1.25f, 0.15f}, .sprite_color = {0xC0, 0xC0, 0xC0, 0xC0},
+		.light_size = 64, .light_color = (DriftVec4){{0.46f, 0.27f, 0.12f, 0.00f}},
+		.ricochet = DRIFT_BLAST_RICOCHET,
+		.sfx = DRIFT_SFX_SERVO_SHOT2, .gain = 0.3f
+	},
+	[DRIFT_PROJECTILE_HIVE] = {
+		.speed = 500, .damage = 1, .timeout = 100, .collision = DRIFT_COLLISION_ENEMY_BULLET,
+		.frame = DRIFT_SPRITE_HIVE_BULLET00, .frame_count = 30,
+		.sprite_color = {0xC0, 0xC0, 0xC0, 0x40}, .size = {1.0f, 1.0f},
+		.light_size = 100, .light_color = (DriftVec4){{0.35f, 0.03f, 0.37f, 0.00f}},
+		.ricochet = DRIFT_BLAST_VIOLET_ZAP,
+		.sfx = DRIFT_SFX_BULLET_FIRE1, .gain = 0.5f
+	},
+};
+
+void DriftFireProjectile(DriftUpdate* update, DriftProjectileType type, DriftVec2 pos, DriftVec2 dir){
 	DriftGameState* state = update->state;
 	DriftEntity e = DriftMakeEntity(state);
 	uint bullet_idx = DriftComponentAdd(&update->state->projectiles.c, e);
+	state->projectiles.type[bullet_idx] = type;
 	state->projectiles.origin[bullet_idx] = pos;
-	state->projectiles.velocity[bullet_idx] = vel;
+	state->projectiles.velocity[bullet_idx] = DriftVec2Mul(DriftVec2Normalize(dir), DRIFT_PROJECTILES[type].speed);
 	state->projectiles.tick0[bullet_idx] = update->tick;
-	state->projectiles.timeout[bullet_idx] = 2; // TODO should be in ticks?
+	state->projectiles.timeout[bullet_idx] = DRIFT_PROJECTILES[type].timeout; // TODO should be in ticks?
 	
-	float pitch = expf(0.2f*(2*(float)rand()/(float)RAND_MAX - 1));
-	DriftAudioPlaySample(update->audio, DRIFT_SFX_BULLET_FIRE, 0.5f, 0, pitch, false);
+	static DriftRandom rand[1];
+	float pan = DriftClamp(DriftAffinePoint(update->prev_vp_matrix, pos).x, -1, 1);
+	float pitch = expf(0.05f*DriftRandomSNorm(rand));
+	DriftAudioPlaySample(DRIFT_BUS_SFX, DRIFT_PROJECTILES[type].sfx, (DriftAudioParams){.gain = DRIFT_PROJECTILES[type].gain, .pan = pan, .pitch = pitch});
 }
 
 static void TickProjectiles(DriftUpdate* update){
 	DriftGameState* state = update->state;
 	
 	DRIFT_COMPONENT_FOREACH(&state->projectiles.c, i){
-		uint age = update->tick - state->projectiles.tick0[i];
+		uint age_ticks = update->tick - state->projectiles.tick0[i];
+		if(age_ticks > state->projectiles.timeout[i]){
+			DriftDestroyEntity(state, state->projectiles.entity[i]);
+			break;
+		}
+		
 		DriftVec2 origin = state->projectiles.origin[i], velocity = state->projectiles.velocity[i];
-		DriftVec2 p0 = DriftVec2FMA(origin, velocity, (age + 0)/DRIFT_TICK_HZ);
-		DriftVec2 p1 = DriftVec2FMA(origin, velocity, (age + 1)/DRIFT_TICK_HZ);
+		DriftVec2 p0 = DriftVec2FMA(origin, velocity, (age_ticks + 0)/DRIFT_TICK_HZ);
+		DriftVec2 p1 = DriftVec2FMA(origin, velocity, (age_ticks + 1)/DRIFT_TICK_HZ);
+		// DriftDebugSegment(state, p0, p1, 4, DRIFT_RGBA8_GREEN);
 		
 		float ray_t = DriftTerrainRaymarch(state->terra, p0, p1, 0, 1);
+		DriftVec2 hit_n = DriftTerrainSampleFine(state->terra, DriftVec2Lerp(p0, p1, ray_t)).grad;
 		DriftEntity hit_entity = {};
 		
+		DriftProjectileType type = state->projectiles.type[i];
+		DriftCollisionType collision = DRIFT_PROJECTILES[type].collision;
 		DRIFT_COMPONENT_FOREACH(&state->bodies.c, body_idx){
-			if(DriftCollisionFilter(DRIFT_COLLISION_PLAYER_BULLET, state->bodies.collision_type[body_idx])){
+			if(DriftCollisionFilter(collision, state->bodies.collision_type[body_idx])){
 				DriftEntity entity = state->bodies.entity[body_idx];
 				
-				RayHit hit = CircleSegmentQuery(state->bodies.position[body_idx], state->bodies.radius[body_idx], p0, p1, 0);
+				RayHit hit = circle_to_segment_query(state->bodies.position[body_idx], state->bodies.radius[body_idx], p0, p1, 0);
 				if(hit.alpha < ray_t){
 					ray_t = hit.alpha;
+					hit_n = hit.normal;
 					
 					hit_entity = entity;
+					// knockback?
 					// DriftVec2* body_v = state->bodies.velocity + body_idx;
 					// *body_v = DriftVec2FMA(*body_v, velocity, 0.5e-1f);
 				}
 			}
 		}
 		
-		if(ray_t < 1 || age/DRIFT_TICK_HZ > state->projectiles.timeout[i]){
-			DriftHealthApplyDamage(update, hit_entity, 25); // TODO store on projectile?
-			DriftDebugCircle(state, DriftVec2Lerp(p0, p1, ray_t), 8, DRIFT_RGBA8_RED);
-			// TODO sound?
-			DriftDestroyEntity(update, state->projectiles.entity[i]);
+		if(ray_t < 1){
+			DriftVec2 hit_pos = DriftVec2Lerp(p0, p1, ray_t);
+			DriftMakeBlast(update, hit_pos, hit_n, DRIFT_PROJECTILES[type].ricochet);
+			
+			bool hit_obj = DriftHealthApplyDamage(update, hit_entity, DRIFT_PROJECTILES[type].damage, hit_pos);
+			if(!hit_obj){
+				float pan = DriftClamp(DriftAffinePoint(update->prev_vp_matrix, hit_pos).x, -1, 1);
+				DriftAudioPlaySample(DRIFT_BUS_SFX, DRIFT_SFX_RICHOCHET_DIRT, (DriftAudioParams){.gain = 1.0f, .pan = pan});
+			}
+			
+			DriftDestroyEntity(state, state->projectiles.entity[i]);
 		}
 	}
 }
 
 static void DrawProjectiles(DriftDraw* draw){
 	DriftGameState* state = draw->state;
-	float t0 = draw->dt_since_tick - draw->dt/2;
-	float t1 = draw->dt_since_tick + draw->dt/2;
+	float t0 = draw->dt_since_tick + 0*draw->dt + 1/DRIFT_TICK_HZ;
+	float t1 = draw->dt_since_tick + 1*draw->dt + 1/DRIFT_TICK_HZ;
 	
 	DRIFT_COMPONENT_FOREACH(&state->projectiles.c, i){
-		float t = (draw->tick - state->projectiles.tick0[i])/DRIFT_TICK_HZ;
+		float time = (draw->tick - state->projectiles.tick0[i])/DRIFT_TICK_HZ;
 		float timeout = state->projectiles.timeout[i];
 		DriftVec2 origin = state->projectiles.origin[i], velocity = state->projectiles.velocity[i];
-		DriftVec2 p0 = DriftVec2FMA(origin, velocity, fmaxf(0, t + t0));
-		DriftVec2 p1 = DriftVec2FMA(origin, velocity, fmaxf(0, t + t1));
-		DRIFT_ARRAY_PUSH(draw->bg_prims, ((DriftPrimitive){.p0 = p0, .p1 = p1, .radii[0] = 2, .color = {0xFF, 0xB0, 0x40, 0xFF}}));
-
-		DriftVec4 color = (DriftVec4){{0.46f, 0.27f, 0.12f, 0.00f}};
-		DRIFT_ARRAY_PUSH(draw->lights, DriftLightMake(DRIFT_SPRITE_LIGHT_RADIAL, color, (DriftAffine){64, 0, 0, 64, p0.x, p0.y}, 0));
+		DriftVec2 p0 = DriftVec2FMA(origin, velocity, fmaxf(0, time + t0));
+		DriftVec2 p1 = DriftVec2FMA(origin, velocity, fmaxf(0, time + t1));
+		DriftVec2 delta = DriftVec2Sub(p1, p0);
+		float len = DriftVec2Length(delta);
+		
+		const DriftProjectileInfo* info = DRIFT_PROJECTILES + state->projectiles.type[i];
+		
+		DriftFrame frame = DRIFT_FRAMES[info->frame + (draw->frame/2 % info->frame_count)];
+		DriftVec2 scale = {info->size.x/(frame.bounds.r - frame.bounds.l + 1), info->size.y};
+		float foo = scale.y/(len + FLT_MIN);
+		DriftVec2 n = DriftVec2Mul(delta, fmaxf(foo, scale.x)), t = DriftVec2Mul(delta, foo);
+		DRIFT_ARRAY_PUSH(draw->bullet_sprites, ((DriftSprite){
+			.frame = frame, .color = info->sprite_color, .matrix = {n.x, n.y, -t.y, t.x, p0.x, p0.y},
+		}));
+		
+		// if(false){
+		// 	uint age_ticks = draw->tick - state->projectiles.tick0[i];
+		// 	DriftVec2 p0 = DriftVec2FMA(origin, velocity, (age_ticks + 0)/DRIFT_TICK_HZ);
+		// 	DriftVec2 p1 = DriftVec2FMA(origin, velocity, (age_ticks + 1)/DRIFT_TICK_HZ);
+		// 	DriftDebugSegment(state, p0, p1, 2, (DriftRGBA8){0x40, 0x00, 0x00, 0x40});
+		// }
+		
+		DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
+			.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = info->light_color,
+			.matrix = {info->light_size, 0, 0, info->light_size, p0.x, p0.y},
+		}));
 	}
 }
+
+typedef struct {
+	uint frame_count, frame0, frame1;
+	DriftRGBA8 sprite_color;
+	DriftVec4 light_color;
+	float light_size, light_radius;
+} DriftBlastInfo;
+
+static const DriftBlastInfo DRIFT_BLASTS[_DRIFT_BLAST_COUNT] = {
+	[DRIFT_BLAST_EXPLODE] = {
+		.frame_count = 11, .frame0 = DRIFT_SPRITE_EXPLOSION_SMOKE00, .frame1 = DRIFT_SPRITE_EXPLOSION_FLAME00, .sprite_color = {0xC0, 0xC0, 0xC0, 0x00},
+		.light_color = {{20.00f, 17.85f, 12.24f, 0.00f}}, .light_size = 350, .light_radius = 8,
+	},
+	[DRIFT_BLAST_RICOCHET] = {
+		.frame_count = 6, .frame0 = DRIFT_SPRITE_RICOCHET00, .sprite_color = {0xD8, 0xD8, 0xD8, 0x80},
+		.light_color = (DriftVec4){{2.24f, 1.92f, 1.27f, 0.00f}}, .light_size = 100, .light_radius = 0,
+	},
+	[DRIFT_BLAST_VIOLET_ZAP] = {
+		.frame_count = 6, .frame0 = DRIFT_SPRITE_VIOLET_ZAP00, .sprite_color = {0xD8, 0xD8, 0xD8, 0x80},
+		.light_color = (DriftVec4){{2.77f, 0.52f, 6.35f, 0.00f}}, .light_size = 150, .light_radius = 0,
+	},
+};
 
 // TODO
 typedef struct {
 	DriftTable t;
+	uint* type;
 	DriftVec2* position;
+	DriftVec2* normal;
 	uint* tick0;
 } DriftTableBlast;
 static DriftTableBlast blasts;
 
-void MakeBlast(DriftUpdate* update, DriftVec2 position){
+void DriftMakeBlast(DriftUpdate* update, DriftVec2 position, DriftVec2 normal, DriftBlastType type){
 	uint idx = DriftTablePushRow(&blasts.t);
+	blasts.type[idx] = type;
 	blasts.position[idx] = position;
+	blasts.normal[idx] = normal;
 	blasts.tick0[idx] = update->tick;
 }
 
-static void DrawBlasts(DriftDraw* draw){
+static void draw_blasts(DriftDraw* draw){
 	DriftGameState* state = draw->state;
 	uint tick = draw->tick;
 	
 	uint i = 0;
 	while(i < blasts.t.row_count){
 		uint frame = (tick - blasts.tick0[i])/2;
-		if(frame < 11){
-			DriftVec2 pos = blasts.position[i];
-			DriftAffine transform = {1, 0, 0, 1, pos.x, pos.y};
-			DRIFT_ARRAY_PUSH(draw->fg_sprites, DriftSpriteMake(DRIFT_SPRITE_EXPLOSION_SMOKE00 + frame, (DriftRGBA8){0xC0, 0xC0, 0xC0, 0xE0}, transform));
-			DRIFT_ARRAY_PUSH(draw->fg_sprites, DriftSpriteMake(DRIFT_SPRITE_EXPLOSION_FLAME00 + frame, (DriftRGBA8){0xC0, 0xC0, 0xC0, 0x00}, transform));
+		
+		const DriftBlastInfo* blast = DRIFT_BLASTS + blasts.type[i];
+		uint frame_count = blast->frame_count;
+		if(frame < frame_count){
+			DriftVec2 pos = blasts.position[i], n = blasts.normal[i];
+			float flip = blasts.tick0[i] % 2 == 0 ? 1 : -1;
+			DriftAffine transform = {flip*n.y, flip*-n.x, n.x, n.y, pos.x, pos.y};
+			DRIFT_ARRAY_PUSH(draw->bullet_sprites, ((DriftSprite){
+				.frame = DRIFT_FRAMES[blast->frame0 + frame], .color = blast->sprite_color, .matrix = transform,
+			}));
+			if(blast->frame1){
+				DRIFT_ARRAY_PUSH(draw->bullet_sprites, ((DriftSprite){
+					.frame = DRIFT_FRAMES[blast->frame1 + frame], .color = blast->sprite_color, .matrix = transform,
+				}));
+			}
 			
 			float intensity = fmaxf(0, 1 - frame/8.0f);
-			DriftVec4 color = DriftVec4Mul((DriftVec4){{20.00f, 17.85f, 12.24f, 0.00f}}, intensity*intensity);
-			DRIFT_ARRAY_PUSH(draw->lights, DriftLightMake(DRIFT_SPRITE_LIGHT_RADIAL, color, (DriftAffine){350, 0, 0, 350, pos.x, pos.y}, 8));
+			DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
+				.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = DriftVec4Mul(blast->light_color, intensity*intensity),
+				.matrix = {blast->light_size, 0, 0, blast->light_size, pos.x, pos.y}, .radius = blast->light_radius,
+			}));
 			
 			i++;
 		} else {
@@ -1265,7 +1494,9 @@ void DriftSystemsUpdate(DriftUpdate* update){
 		DriftTableInit(&blasts.t, (DriftTableDesc){
 			.mem = DriftSystemMem, .name = "Blasts",
 			.columns.arr = {
+				DRIFT_DEFINE_COLUMN(blasts.type),
 				DRIFT_DEFINE_COLUMN(blasts.position),
+				DRIFT_DEFINE_COLUMN(blasts.normal),
 				DRIFT_DEFINE_COLUMN(blasts.tick0),
 			},
 		});
@@ -1276,27 +1507,315 @@ void DriftSystemsUpdate(DriftUpdate* update){
 
 #define RUN_FUNC(_func_, _arg_) {TracyCZoneN(ZONE, #_func_, true); _func_(_arg_); TracyCZoneEnd(ZONE);}
 
+void DriftSystemsTickFab(DriftGameContext* ctx, float dt){
+	DriftGameState* state = ctx->state;
+	if(state->fab.item){
+		DriftItemType item = state->fab.item;
+		bool is_research = state->fab.is_research;
+		
+		uint duration = is_research ? DriftItemResearchDuration(item) : DriftItemBuildDuration(item);
+		state->fab.progress = DriftSaturate(state->fab.progress + dt/duration);
+		
+		if(state->fab.progress >= 1){
+			if(is_research){
+				state->scan_progress[DRIFT_ITEMS[item].scan] = 1;
+				DriftHudPushToast(ctx, 0, "Researched: %s", DriftItemName(item));
+			} else {
+				state->inventory.skiff[item] += DRIFT_ITEMS[item].makes ?: 1;
+				DriftHudPushToast(ctx, DriftPlayerItemCount(state, item), "Built: %s", DriftItemName(item));
+			}
+			
+			state->fab.item = DRIFT_ITEM_NONE;
+			state->fab.progress = 0;
+		}
+	}
+}
+
 void DriftSystemsTick(DriftUpdate* update){
 	RUN_FUNC(TickNavs, update);
 	RUN_FUNC(TickPlayer, update);
 	RUN_FUNC(TickDrones, update);
-	RUN_FUNC(TickPower, update);
+	RUN_FUNC(TickFlows, update);
 	RUN_FUNC(TickProjectiles, update);
 	RUN_FUNC(DriftTickItemSpawns, update);
 	RUN_FUNC(DriftTickEnemies, update);
+	
+	DriftSystemsTickFab(update->ctx, update->tick_dt);
 }
 
-void DriftSystemsDraw(DriftDraw* draw){
+static void draw_fg_decal(DriftDraw* draw, DriftVec2 pos, DriftTerrainSampleInfo info, uint rnd){
+	DriftTerrain* terra = draw->state->terra;
+	
+	pos = DriftVec2FMA(pos, info.grad, -info.dist);
+	DriftVec2 g = DriftVec2Mul(info.grad, 0.75f + info.dist*0.5f/16);
+	uint light[] = {
+		DRIFT_SPRITE_LARGE_BUSHY_PLANTS00, DRIFT_SPRITE_LARGE_BUSHY_PLANTS01, DRIFT_SPRITE_LARGE_BUSHY_PLANTS02,
+		DRIFT_SPRITE_LARGE_BUSHY_PLANTS03, DRIFT_SPRITE_LARGE_BUSHY_PLANTS04,
+	};
+	uint radio[] = {
+		DRIFT_SPRITE_MEDIUM_CRYSTALS00, DRIFT_SPRITE_MEDIUM_CRYSTALS01, DRIFT_SPRITE_MEDIUM_CRYSTALS02,
+		DRIFT_SPRITE_MEDIUM_FUNGI00, DRIFT_SPRITE_MEDIUM_FUNGI01, DRIFT_SPRITE_MEDIUM_FUNGI02,
+		DRIFT_SPRITE_MEDIUM_FUNGI03, DRIFT_SPRITE_MEDIUM_FUNGI04, DRIFT_SPRITE_MEDIUM_FUNGI05,
+	};
+	uint cryo[] = {DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS00, DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS01, DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS02};
+	uint dark[] = {
+		DRIFT_SPRITE_LARGE_BURNED_PLANTS00, DRIFT_SPRITE_LARGE_BURNED_PLANTS01, DRIFT_SPRITE_LARGE_BURNED_PLANTS02,
+		DRIFT_SPRITE_LARGE_BURNED_PLANTS03, DRIFT_SPRITE_LARGE_BURNED_PLANTS04
+	};
+	
+	uint* biome_base[] = {light, radio, cryo, dark, light};
+	uint biome_len[] = {sizeof(light)/sizeof(*light), sizeof(radio)/sizeof(*radio), sizeof(cryo)/sizeof(*cryo), 5, 1};
+	
+	uint biome = DriftTerrainSampleBiome(terra, pos).idx;
+	uint frame = biome_base[biome][rnd % biome_len[biome]];
+	DriftSprite sprite = {
+		.matrix = {g.y, -g.x, g.x, g.y, pos.x, pos.y},
+		.frame = DRIFT_FRAMES[frame], .color = DRIFT_RGBA8_WHITE,
+	};
+	
+	if(frame == DRIFT_SPRITE_LARGE_BUSHY_PLANTS02 || frame == DRIFT_SPRITE_LARGE_BUSHY_PLANTS04){
+		DriftLight light = {.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0.01f, 0.18f, 0.22f, 0.00f}}, .matrix = {80, 0, 0, 80, pos.x, pos.y}};
+		DRIFT_ARRAY_PUSH(draw->lights, light);
+	} else if(frame == DRIFT_SPRITE_LARGE_BUSHY_PLANTS03){
+		DriftLight light = {.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0.12f, 0.10f, 0.01f, 0.00f}}, .matrix = {80, 0, 0, 80, pos.x, pos.y}};
+		DRIFT_ARRAY_PUSH(draw->lights, light);
+	} else if(DRIFT_SPRITE_MEDIUM_CRYSTALS00 <= frame && frame <= DRIFT_SPRITE_MEDIUM_CRYSTALS02){
+		sprite.shiny = 150;
+		DriftLight light = {.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0.34f, 0.40f, 0.00f, 0.00f}}, .matrix = {65, 0, 0, 65, pos.x, pos.y}};
+		DRIFT_ARRAY_PUSH(draw->lights, light);
+	} else if(DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS00 <= frame && frame <= DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS02){
+		sprite.shiny = 150;
+		DriftLight light = {.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0.10f, 0.14f, 0.19f, 0.00f}}, .matrix = {50, 0, 0, 50, pos.x, pos.y}};
+		DRIFT_ARRAY_PUSH(draw->lights, light);
+	}
+	
+	DRIFT_ARRAY_PUSH(draw->fg_sprites, sprite);
+}
+
+static void draw_bg_decal(DriftDraw* draw, DriftVec2 pos, float pdist, uint rnd){
+	DriftTerrain* terra = draw->state->terra;
+	
+	static const uint light0[] = {
+		DRIFT_SPRITE_SMALL_MOSS_PATCHES00, DRIFT_SPRITE_SMALL_MOSS_PATCHES01, DRIFT_SPRITE_SMALL_MOSS_PATCHES02, DRIFT_SPRITE_SMALL_MOSS_PATCHES03,
+		DRIFT_SPRITE_SMALL_ROCKS00, DRIFT_SPRITE_SMALL_ROCKS01, DRIFT_SPRITE_SMALL_ROCKS02,
+	};
+	static const uint light1[] = {
+		DRIFT_SPRITE_MEDIUM_MOSS_PATCHES00, DRIFT_SPRITE_MEDIUM_MOSS_PATCHES01, DRIFT_SPRITE_MEDIUM_MOSS_PATCHES02, DRIFT_SPRITE_MEDIUM_MOSS_PATCHES03,
+		DRIFT_SPRITE_MEDIUM_ROCKS00, DRIFT_SPRITE_MEDIUM_ROCKS01,
+	};
+	static const uint light2[] = {DRIFT_SPRITE_LARGE_MOSS_PATCHES00, DRIFT_SPRITE_LARGE_MOSS_PATCHES01, DRIFT_SPRITE_LARGE_ROCKS00, DRIFT_SPRITE_LARGE_ROCKS01};
+	
+	static const uint* light_base[] = {light0, light1, light2};
+	static const uint light_div[] = {7, 6, 4};
+	
+	static const uint radio0[] = {
+		DRIFT_SPRITE_SMALL_CRYSTALS00, DRIFT_SPRITE_SMALL_CRYSTALS01, DRIFT_SPRITE_SMALL_CRYSTALS02,
+	};
+	static const uint radio1[] = {
+		DRIFT_SPRITE_MEDIUM_FUNGI00, DRIFT_SPRITE_MEDIUM_FUNGI01, DRIFT_SPRITE_MEDIUM_FUNGI02,
+		DRIFT_SPRITE_MEDIUM_FUNGI03, DRIFT_SPRITE_MEDIUM_FUNGI04, DRIFT_SPRITE_MEDIUM_FUNGI05,
+	};
+	static const uint radio2[] = {DRIFT_SPRITE_LARGE_FUNGI00, DRIFT_SPRITE_LARGE_FUNGI01, DRIFT_SPRITE_LARGE_SLIME_PATCHES00, DRIFT_SPRITE_LARGE_SLIME_PATCHES01};
+
+	static const uint* radio_base[] = {radio0, radio1, radio2};
+	static const uint radio_div[] = {3, 6, 4};
+	
+	static const uint cryo0[] = {
+		DRIFT_SPRITE_SMALL_ICE_CHUNKS00, DRIFT_SPRITE_SMALL_ICE_CHUNKS01, DRIFT_SPRITE_SMALL_ICE_CHUNKS02,
+		DRIFT_SPRITE_SMALL_ROCKS_CRYO00, DRIFT_SPRITE_SMALL_ROCKS_CRYO01,
+		DRIFT_SPRITE_CRYO_SMALL_ROCK00, DRIFT_SPRITE_CRYO_SMALL_ROCK01, DRIFT_SPRITE_CRYO_SMALL_ROCK02,
+		DRIFT_SPRITE_CRYO_SMALL_ROCK03, DRIFT_SPRITE_CRYO_SMALL_ROCK04, DRIFT_SPRITE_CRYO_SMALL_ROCK05,
+		DRIFT_SPRITE_CRYO_SMALL_ROCK06, DRIFT_SPRITE_CRYO_SMALL_ROCK07, DRIFT_SPRITE_CRYO_SMALL_ROCK08,
+		DRIFT_SPRITE_CRYO_SMALL_ROCK09, DRIFT_SPRITE_CRYO_SMALL_ROCK10, DRIFT_SPRITE_CRYO_SMALL_ROCK11,
+		DRIFT_SPRITE_CRYO_SMALL_ROCK12, DRIFT_SPRITE_CRYO_SMALL_ROCK13, DRIFT_SPRITE_CRYO_SMALL_ROCK14,
+	};
+	static const uint cryo1[] = {DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS00, DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS01, DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS02};
+	static const uint cryo2[] = {
+		DRIFT_SPRITE_LARGE_FOSSILS00, DRIFT_SPRITE_LARGE_FOSSILS01, DRIFT_SPRITE_LARGE_FOSSILS02, DRIFT_SPRITE_LARGE_FOSSILS03,
+	};
+	
+	static const uint* cryo_base[] = {cryo0, cryo1, cryo2};
+	static const uint cryo_div[] = {20, 3, 4};
+	
+	static const uint dark0[] = {DRIFT_SPRITE_SMALL_DARK_ROCKS00, DRIFT_SPRITE_SMALL_DARK_ROCKS01};
+	static const uint dark1[] = {
+		DRIFT_SPRITE_MEDIUM_DARK_ROCKS00, DRIFT_SPRITE_MEDIUM_DARK_ROCKS01,
+		DRIFT_SPRITE_SMALL_BURNED_PLANTS00, DRIFT_SPRITE_SMALL_BURNED_PLANTS01,
+		DRIFT_SPRITE_SMALL_BURNED_PLANTS02, DRIFT_SPRITE_SMALL_BURNED_PLANTS03, DRIFT_SPRITE_SMALL_BURNED_PLANTS04
+	};
+	static const uint* dark_base[] = {dark0, dark1, dark1};
+	static const uint dark_div[] = {2, 7, 7};
+	
+	// static const uint space0[] = {DRIFT_SPRITE_TMP_STAR};
+	// static const uint* space_base[] = {space0, space0, space0};
+	// static const uint space_div[] = {1, 1, 1};
+	
+	static const uint** base[] = {light_base, radio_base, cryo_base, dark_base};
+	static const uint* div[] = {light_div, radio_div, cryo_div, dark_div};
+	
+	uint asset_size = (uint)DriftClamp((pdist - 2)/1.5f, 0, 2.99f);
+	uint biome = DriftTerrainSampleBiome(terra, pos).idx;
+	if(biome < 4){
+		uint frame = base[biome][asset_size][rnd%div[biome][asset_size]];
+		DriftVec2 rot = DriftVec2ForAngle(rnd*(float)(2*M_PI/DRIFT_RAND_MAX));
+		DriftSprite sprite = {
+			.matrix = {rot.x, rot.y, -rot.y, rot.x, pos.x, pos.y}, .z = 255,
+			.frame = DRIFT_FRAMES[frame], .color = DRIFT_RGBA8_WHITE,
+		};
+		DRIFT_ARRAY_PUSH(draw->bg_sprites, sprite);
+	}
+}
+
+static DriftDecalDef DRIFT_DECAL_DEFS_LIGHT[] = {
+	{.label = "large rocks", .layer = 2, .poisson = 4.5f, .terrain = 64.0f, .weight = 300, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_LARGE_ROCKS00, DRIFT_SPRITE_LARGE_ROCKS01,
+		0,
+	}},
+	{.label = "medium rocks", .layer = 1, .poisson = 2.5f, .terrain = 48.0f, .weight = 10, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_MEDIUM_ROCKS00, DRIFT_SPRITE_MEDIUM_ROCKS01,
+		0,
+	}},
+	{.label = "medium moss", .layer = 1, .poisson = 2.5f, .terrain = 48.0f, .weight = 10, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_MEDIUM_MOSS_PATCHES00, DRIFT_SPRITE_MEDIUM_MOSS_PATCHES01,
+		DRIFT_SPRITE_MEDIUM_MOSS_PATCHES02, DRIFT_SPRITE_MEDIUM_MOSS_PATCHES03,
+		0,
+	}},
+	{.label = "small moss", .layer = 0, .poisson = 0.0f, .terrain = 8.0f, .weight = 1, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_SMALL_MOSS_PATCHES00, DRIFT_SPRITE_SMALL_MOSS_PATCHES01,
+		DRIFT_SPRITE_SMALL_MOSS_PATCHES02, DRIFT_SPRITE_SMALL_MOSS_PATCHES03,
+		0,
+	}},
+	{.label = "small rocks", .layer = 0, .poisson = 0.0f, .terrain = 8.0f, .weight = 1, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_SMALL_ROCKS00, DRIFT_SPRITE_SMALL_ROCKS01, DRIFT_SPRITE_SMALL_ROCKS02,
+		0,
+	}},
+	{},
+};
+
+static DriftDecalDef DRIFT_DECAL_DEFS_CRYO[] = {
+	{.label = "nautilus fossils L", .layer = 2, .poisson = 3.5f, .terrain = 64.0f, .weight = 300, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_LARGE_FOSSILS00, DRIFT_SPRITE_LARGE_FOSSILS01,
+		0,
+	}},
+	{.label = "trilobyte fossils L", .layer = 2, .poisson = 3.5f, .terrain = 64.0f, .weight = 300, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_LARGE_FOSSILS02, DRIFT_SPRITE_LARGE_FOSSILS03,
+		0,
+	}},
+	{.label = "medium ice", .layer = 1, .shiny = 96, .poisson = 1.9f, .terrain = 48.0f, .weight = 7, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS00, DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS01, DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS02,
+		0
+	}},
+	{.label = "small ice", .layer = 0, .shiny = 96, .poisson = 0.0f, .terrain = 8.0f, .weight = 2.5, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_SMALL_ICE_CHUNKS00, DRIFT_SPRITE_SMALL_ICE_CHUNKS01, DRIFT_SPRITE_SMALL_ICE_CHUNKS02,
+		0,
+	}},
+	{.label = "cryo rocks", .layer = 0, .poisson = 0.0f, .terrain = 8.0f, .weight = 2, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_SMALL_ROCKS_CRYO00, DRIFT_SPRITE_SMALL_ROCKS_CRYO01,
+		0,
+	}},
+	{.label = "nautilus fossils S", .layer = 0, .poisson = 1.7f, .terrain = 8.0f, .weight = 3, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_CRYO_SMALL_ROCK00, DRIFT_SPRITE_CRYO_SMALL_ROCK01,
+		0,
+	}},
+	{.label = "trilobyte fossils S", .layer = 0, .poisson = 1.7f, .terrain = 8.0f, .weight = 3, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_CRYO_SMALL_ROCK02, DRIFT_SPRITE_CRYO_SMALL_ROCK03,
+		0,
+	}},
+	{.label = "cryo coral", .layer = 1, .poisson = 2.1f, .terrain = 40.0f, .weight = 5, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_CRYO_SMALL_ROCK04, DRIFT_SPRITE_CRYO_SMALL_ROCK06, DRIFT_SPRITE_CRYO_SMALL_ROCK08,
+		DRIFT_SPRITE_CRYO_SMALL_ROCK10, DRIFT_SPRITE_CRYO_SMALL_ROCK12, DRIFT_SPRITE_CRYO_SMALL_ROCK14,
+		0,
+	}},
+	{.label = "cryo rocky coral", .layer = 1, .poisson = 2.1f, .terrain = 40.0f, .weight = 5, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_CRYO_SMALL_ROCK05, DRIFT_SPRITE_CRYO_SMALL_ROCK07, DRIFT_SPRITE_CRYO_SMALL_ROCK09,
+		DRIFT_SPRITE_CRYO_SMALL_ROCK11, DRIFT_SPRITE_CRYO_SMALL_ROCK13,
+		0,
+	}},
+	{},
+};
+
+static DriftDecalDef DRIFT_DECAL_DEFS_RADIO[] = {
+	{.label = "small crystals", .layer = 0, .shiny = 96, .poisson = 1.2f, .terrain = 8.0f, .weight = 3.3f, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_SMALL_CRYSTALS00, DRIFT_SPRITE_SMALL_CRYSTALS01, DRIFT_SPRITE_SMALL_CRYSTALS02,
+		0,
+	}},
+	{.label = "medium fungi", .layer = 1, .poisson = 1.5f, .terrain = 30.0f, .weight = 5, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_MEDIUM_FUNGI00, DRIFT_SPRITE_MEDIUM_FUNGI01, DRIFT_SPRITE_MEDIUM_FUNGI02,
+		0,
+	}},
+	{.label = "medium shrooms", .layer = 1, .poisson = 2.2f, .terrain = 30.0f, .weight = 5, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_MEDIUM_FUNGI03, DRIFT_SPRITE_MEDIUM_FUNGI04, DRIFT_SPRITE_MEDIUM_FUNGI05,
+		0,
+	}},
+	{.label = "large fungi", .layer = 2, .poisson = 4.5f, .terrain = 40.0f, .weight = 30, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_LARGE_FUNGI00,
+		0,
+	}},
+	{.label = "large shrooms", .layer = 2, .poisson = 4.5f, .terrain = 40.0f, .weight = 30, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_LARGE_FUNGI01,
+		0,
+	}},
+	{.label = "large slime", .layer = 2, .poisson = 4.5f, .terrain = 40.0f, .weight = 30, .sprites = (DriftSpriteEnum[]){
+		DRIFT_SPRITE_LARGE_SLIME_PATCHES00, DRIFT_SPRITE_LARGE_SLIME_PATCHES01,
+		0,
+	}},
+	{},
+};
+
+DriftDecalDef* DRIFT_DECAL_DEFS[_DRIFT_BIOME_COUNT] = {
+	[DRIFT_BIOME_LIGHT] = DRIFT_DECAL_DEFS_LIGHT,
+	[DRIFT_BIOME_CRYO] = DRIFT_DECAL_DEFS_CRYO,
+	[DRIFT_BIOME_RADIO] = DRIFT_DECAL_DEFS_RADIO,
+	[DRIFT_BIOME_DARK] = DRIFT_DECAL_DEFS_LIGHT,
+	[DRIFT_BIOME_SPACE] = DRIFT_DECAL_DEFS_LIGHT,
+};
+
+static void draw_bg_decal2(DRIFT_ARRAY(DriftSprite)* layers, DriftVec2 pos, DriftBiomeType biome, float poisson_dist, float terrain_dist, uint irand){
+	const DriftDecalDef* decal_def = NULL;
+	DriftSpriteEnum sprite = 0;
+	
+	const DriftDecalDef* defs = DRIFT_DECAL_DEFS[biome];
+	
+	DriftReservoir rsr = {.rand = (float)irand/(float)DRIFT_RAND_MAX, .sum = 10};
+	for(uint i = 0; defs[i].sprites; i++){
+		const DriftDecalDef* def = defs + i;
+		if(poisson_dist >= def->poisson && terrain_dist >= def->terrain){
+			uint count = 0; while(def->sprites[count]) count++;
+			if(DriftReservoirSample(&rsr, def->weight)){
+				decal_def = def, sprite = def->sprites[irand % count];
+			}
+		}
+	}
+	
+	float dist2 = DriftVec2Distance(pos, (DriftVec2){ 4449.7f, -4214.3f});
+	if(poisson_dist > 1.8f && DriftReservoirSample(&rsr, 30.0f*DriftSmoothstep(1200, 0, dist2))){
+		static const DriftDecalDef hive_decal = {.layer = 2};
+		decal_def = &hive_decal;
+		sprite = DRIFT_SPRITE_HIVE_WART;
+	}
+	
+	if(decal_def){
+		DriftVec2 rot = DriftVec2ForAngle(rsr.rand*(float)(2*M_PI));
+		DRIFT_ARRAY_PUSH(*(layers + decal_def->layer), ((DriftSprite){
+			.matrix = {rot.x, rot.y, -rot.y, rot.x, pos.x, pos.y},
+			.frame = DRIFT_FRAMES[sprite], .color = DRIFT_RGBA8_WHITE,
+			.shiny = decal_def->shiny,
+			// magic numbers from the shader... should document
+			.z = (uint)(255*sqrt(DriftSaturate(terrain_dist/(6*8)))),
+		}));
+	}
+}
+
+static void draw_decals(DriftDraw* draw){
 	typedef struct {
 		u8 fx, fy, fdist, idist;
 	} PlacementNoise;
-	static const PlacementNoise* pixels;
-	static uint rando[64*64];
-	
-	if(pixels == NULL){
-		pixels = DriftAssetLoad(DriftSystemMem, "bin/placement64.bin").ptr;
-		srand(65418);
-		for(uint i = 0; i < 64*64; i++) rando[i] = rand();
+	static const PlacementNoise* placement;
+	static uint rando[256*256];
+	if(placement == NULL){
+		placement = DriftAssetLoad(DriftSystemMem, "bin/placement256.bin").ptr;
+		DriftRandom rand[] = {{65418}};
+		for(uint i = 0; i < 256*256; i++) rando[i] = DriftRand32(rand);
 	}
 	
 	DriftGameState* state = draw->state;
@@ -1307,176 +1826,81 @@ void DriftSystemsDraw(DriftDraw* draw){
 	DriftAffine v_mat = draw->v_matrix;
 	float v_scale = hypotf(v_mat.a, v_mat.b) + hypotf(v_mat.c, v_mat.d);
 	
+	DriftVec2 center = DriftAffineOrigin(vp_inv);
+	
+	DRIFT_ARRAY(DriftSprite) layers[] = {
+		DRIFT_ARRAY_NEW(draw->mem, 256, DriftSprite),
+		DRIFT_ARRAY_NEW(draw->mem, 256, DriftSprite),
+		DRIFT_ARRAY_NEW(draw->mem, 256, DriftSprite),
+	};
+	
 	TracyCZoneN(ZONE_BIOME, "Biome", true);
 	float q = 16;
 	for(int y = (int)floorf(bounds.b/q); y*q < bounds.t; y++){
 		if(draw->ctx->debug.hide_terrain_decals) break;
 		if(v_scale < 1.5f) break;
 		for(int x = (int)floorf(bounds.l/q); x*q < bounds.r; x++){
-			uint i = (x & 63) + (y & 63)*64;
-			float pdist = pixels[i].idist + pixels[i].fdist/255.0f;
-			if(pdist == 0) continue;
+			uint i = (x & 255) + (y & 255)*256;
+			float pdist = placement[i].idist + placement[i].fdist/255.0f;
+			if(pdist <= 0) continue;
 			
-			DriftVec2 pos = DriftVec2FMA((DriftVec2){x*q, y*q}, (DriftVec2){pixels[i].fx, pixels[i].fy}, q/255);
-			// DriftDebugCircle(state, pos, 5, DRIFT_RGBA8_RED);
+			DriftVec2 pos = DriftVec2FMA((DriftVec2){x*q, y*q}, (DriftVec2){placement[i].fx, placement[i].fy}, q/255);
+			// DriftDebugCircle(state, pos, pdist, DRIFT_RGBA8_RED);
 			
 			DriftTerrainSampleInfo info = DriftTerrainSampleFine(state->terra, pos);
-			// if(0 < info.dist && info.dist < 50) DriftDebugCircle(state, pos, info.dist, (DriftRGBA8){64, 0, 0, 64});
+			if(info.dist <= 0) continue;
 			
-			if(info.dist > 0){
-				uint rnd = rando[i];
-				if(info.dist < 16){
-					pos = DriftVec2FMA(pos, info.grad, -info.dist);
-					DriftVec2 g = DriftVec2Mul(info.grad, 0.75f + info.dist*0.5f/16);
-					uint light[] = {
-						DRIFT_SPRITE_LARGE_BUSHY_PLANTS00, DRIFT_SPRITE_LARGE_BUSHY_PLANTS01, DRIFT_SPRITE_LARGE_BUSHY_PLANTS02,
-						DRIFT_SPRITE_LARGE_BUSHY_PLANTS03, DRIFT_SPRITE_LARGE_BUSHY_PLANTS04,
-					};
-					uint radio[] = {
-						DRIFT_SPRITE_MEDIUM_CRYSTALS00, DRIFT_SPRITE_MEDIUM_CRYSTALS01, DRIFT_SPRITE_MEDIUM_CRYSTALS02,
-						DRIFT_SPRITE_MEDIUM_FUNGI00, DRIFT_SPRITE_MEDIUM_FUNGI01, DRIFT_SPRITE_MEDIUM_FUNGI02,
-						DRIFT_SPRITE_MEDIUM_FUNGI03, DRIFT_SPRITE_MEDIUM_FUNGI04, DRIFT_SPRITE_MEDIUM_FUNGI05,
-					};
-					uint cryo[] = {DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS00, DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS01, DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS02};
-					uint dark[] = {
-						DRIFT_SPRITE_LARGE_BURNED_PLANTS00, DRIFT_SPRITE_LARGE_BURNED_PLANTS01, DRIFT_SPRITE_LARGE_BURNED_PLANTS02,
-						DRIFT_SPRITE_LARGE_BURNED_PLANTS03, DRIFT_SPRITE_LARGE_BURNED_PLANTS04
-					};
-					
-					uint* biome_base[] = {light, radio, cryo, dark, light};
-					uint biome_len[] = {sizeof(light)/sizeof(*light), sizeof(radio)/sizeof(*radio), sizeof(cryo)/sizeof(*cryo), 5, 1};
-					
-					uint biome = DriftTerrainSampleBiome(state->terra, pos).idx;
-					uint frame = biome_base[biome][rnd % biome_len[biome]];
-					DriftSprite sprite = {
-						.matrix = {g.y, -g.x, g.x, g.y, pos.x, pos.y},
-						.frame = DRIFT_FRAMES[frame], .color = DRIFT_RGBA8_WHITE,
-					};
-					
-					if(frame == DRIFT_SPRITE_LARGE_BUSHY_PLANTS02 || frame == DRIFT_SPRITE_LARGE_BUSHY_PLANTS04){
-						DriftLight light = {.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0.01f, 0.18f, 0.22f, 0.00f}}, .matrix = {80, 0, 0, 80, pos.x, pos.y}};
-						DRIFT_ARRAY_PUSH(draw->lights, light);
-					} else if(frame == DRIFT_SPRITE_LARGE_BUSHY_PLANTS03){
-						DriftLight light = {.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0.12f, 0.10f, 0.01f, 0.00f}}, .matrix = {80, 0, 0, 80, pos.x, pos.y}};
-						DRIFT_ARRAY_PUSH(draw->lights, light);
-					} else if(DRIFT_SPRITE_MEDIUM_CRYSTALS00 <= frame && frame <= DRIFT_SPRITE_MEDIUM_CRYSTALS02){
-						sprite.shiny = 150;
-						DriftLight light = {.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0.34f, 0.40f, 0.00f, 0.00f}}, .matrix = {45, 0, 0, 45, pos.x, pos.y}};
-						DRIFT_ARRAY_PUSH(draw->lights, light);
-					} else if(DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS00 <= frame && frame <= DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS02){
-						sprite.shiny = 150;
-						DriftLight light = {.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = {{0.10f, 0.14f, 0.19f, 0.00f}}, .matrix = {30, 0, 0, 30, pos.x, pos.y}};
-						DRIFT_ARRAY_PUSH(draw->lights, light);
-					}
-					
-					DRIFT_ARRAY_PUSH(draw->fg_sprites, sprite);
-				} else if(info.dist > 48 && pdist > 2) {
-					static const uint light0[] = {
-						DRIFT_SPRITE_SMALL_MOSS_PATCHES00, DRIFT_SPRITE_SMALL_MOSS_PATCHES01, DRIFT_SPRITE_SMALL_MOSS_PATCHES02, DRIFT_SPRITE_SMALL_MOSS_PATCHES03,
-						DRIFT_SPRITE_SMALL_ROCKS00, DRIFT_SPRITE_SMALL_ROCKS01, DRIFT_SPRITE_SMALL_ROCKS02,
-					};
-					static const uint light1[] = {
-						DRIFT_SPRITE_MEDIUM_MOSS_PATCHES00, DRIFT_SPRITE_MEDIUM_MOSS_PATCHES01, DRIFT_SPRITE_MEDIUM_MOSS_PATCHES02, DRIFT_SPRITE_MEDIUM_MOSS_PATCHES03,
-						DRIFT_SPRITE_MEDIUM_ROCKS00, DRIFT_SPRITE_MEDIUM_ROCKS01,
-					};
-					static const uint light2[] = {DRIFT_SPRITE_LARGE_MOSS_PATCHES00, DRIFT_SPRITE_LARGE_MOSS_PATCHES01, DRIFT_SPRITE_LARGE_ROCKS00, DRIFT_SPRITE_LARGE_ROCKS01};
-					
-					static const uint* light_base[] = {light0, light1, light2};
-					static const uint light_div[] = {7, 6, 4};
-					
-					static const uint radio0[] = {
-						DRIFT_SPRITE_SMALL_CRYSTALS00, DRIFT_SPRITE_SMALL_CRYSTALS01, DRIFT_SPRITE_SMALL_CRYSTALS02,
-					};
-					static const uint radio1[] = {
-						DRIFT_SPRITE_MEDIUM_FUNGI00, DRIFT_SPRITE_MEDIUM_FUNGI01, DRIFT_SPRITE_MEDIUM_FUNGI02,
-						DRIFT_SPRITE_MEDIUM_FUNGI03, DRIFT_SPRITE_MEDIUM_FUNGI04, DRIFT_SPRITE_MEDIUM_FUNGI05,
-					};
-					static const uint radio2[] = {DRIFT_SPRITE_LARGE_FUNGI00, DRIFT_SPRITE_LARGE_FUNGI01, DRIFT_SPRITE_LARGE_SLIME_PATCHES00, DRIFT_SPRITE_LARGE_SLIME_PATCHES01};
-
-					static const uint* radio_base[] = {radio0, radio1, radio2};
-					static const uint radio_div[] = {3, 6, 4};
-					
-					static const uint cryo0[] = {
-						DRIFT_SPRITE_SMALL_ICE_CHUNKS00, DRIFT_SPRITE_SMALL_ICE_CHUNKS01, DRIFT_SPRITE_SMALL_ICE_CHUNKS02,
-						DRIFT_SPRITE_SMALL_ROCKS_CRYO00, DRIFT_SPRITE_SMALL_ROCKS_CRYO01,
-						DRIFT_SPRITE_CRYO_SMALL_ROCK00, DRIFT_SPRITE_CRYO_SMALL_ROCK01, DRIFT_SPRITE_CRYO_SMALL_ROCK02,
-						DRIFT_SPRITE_CRYO_SMALL_ROCK03, DRIFT_SPRITE_CRYO_SMALL_ROCK04, DRIFT_SPRITE_CRYO_SMALL_ROCK05,
-						DRIFT_SPRITE_CRYO_SMALL_ROCK06, DRIFT_SPRITE_CRYO_SMALL_ROCK07, DRIFT_SPRITE_CRYO_SMALL_ROCK08,
-						DRIFT_SPRITE_CRYO_SMALL_ROCK09, DRIFT_SPRITE_CRYO_SMALL_ROCK10, DRIFT_SPRITE_CRYO_SMALL_ROCK11,
-						DRIFT_SPRITE_CRYO_SMALL_ROCK12, DRIFT_SPRITE_CRYO_SMALL_ROCK13, DRIFT_SPRITE_CRYO_SMALL_ROCK14,
-					};
-					static const uint cryo1[] = {DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS00, DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS01, DRIFT_SPRITE_MEDIUM_ICE_CRYSTALS02};
-					static const uint cryo2[] = {
-						DRIFT_SPRITE_LARGE_FOSSILS00, DRIFT_SPRITE_LARGE_FOSSILS01, DRIFT_SPRITE_LARGE_FOSSILS02, DRIFT_SPRITE_LARGE_FOSSILS03,
-					};
-					
-					static const uint* cryo_base[] = {cryo0, cryo1, cryo2};
-					static const uint cryo_div[] = {20, 3, 4};
-					
-					static const uint dark0[] = {DRIFT_SPRITE_SMALL_DARK_ROCKS00, DRIFT_SPRITE_SMALL_DARK_ROCKS01};
-					static const uint dark1[] = {
-						DRIFT_SPRITE_MEDIUM_DARK_ROCKS00, DRIFT_SPRITE_MEDIUM_DARK_ROCKS01,
-						DRIFT_SPRITE_SMALL_BURNED_PLANTS00, DRIFT_SPRITE_SMALL_BURNED_PLANTS01,
-						DRIFT_SPRITE_SMALL_BURNED_PLANTS02, DRIFT_SPRITE_SMALL_BURNED_PLANTS03, DRIFT_SPRITE_SMALL_BURNED_PLANTS04
-					};
-					static const uint* dark_base[] = {dark0, dark1, dark1};
-					static const uint dark_div[] = {2, 7, 7};
-					
-					// static const uint space0[] = {DRIFT_SPRITE_TMP_STAR};
-					// static const uint* space_base[] = {space0, space0, space0};
-					// static const uint space_div[] = {1, 1, 1};
-					
-					static const uint** base[] = {light_base, radio_base, cryo_base, dark_base};
-					static const uint* div[] = {light_div, radio_div, cryo_div, dark_div};
-					
-					uint asset_size = (uint)DriftClamp((pdist - 2)/1.5f, 0, 2.99f);
-					uint biome = DriftTerrainSampleBiome(state->terra, pos).idx;
-					if(biome < 4){
-						uint frame = base[biome][asset_size][rnd%div[biome][asset_size]];
-						DriftVec2 rot = {cosf(rnd*(float)(2*M_PI/RAND_MAX)), sinf(rnd*(float)(2*M_PI/RAND_MAX))};
-						DriftSprite sprite = {
-							.matrix = {rot.x, rot.y, -rot.y, rot.x, pos.x, pos.y}, .z = 255,
-							.frame = DRIFT_FRAMES[frame], .color = DRIFT_RGBA8_WHITE,
-						};
-						DRIFT_ARRAY_PUSH(draw->bg_sprites, sprite);
-					}
-				}
-			}
+			DriftBiomeType biome = DriftTerrainSampleBiome(state->terra, pos).idx;
+			if(info.dist < 16) draw_fg_decal(draw, pos, info, rando[i]);
+			draw_bg_decal2(layers, pos, biome, pdist, info.dist, rando[i]);
 		}
 	}
-	TracyCZoneEnd(ZONE_BIOME);
 	
+	for(uint i = 0; i < 3; i++){
+		size_t length = DriftArrayLength(layers[i]);
+		DriftSprite* ptr = DRIFT_ARRAY_RANGE(draw->bg_sprites, length);
+		memcpy(ptr, layers[i], DriftArraySize(layers[i]));
+		DriftArrayRangeCommit(draw->bg_sprites, ptr + length);
+	}
+	TracyCZoneEnd(ZONE_BIOME);
+}
+
+void DriftSystemsDraw(DriftDraw* draw){
+	draw_decals(draw);
+	
+	DriftGameState* state = draw->state;
 	{ // TODO temp crashed ship
-		DriftAffine m = DriftAffineTRS((DriftVec2)DRIFT_HOME_POSITION, -0.5, DRIFT_VEC2_ONE);
-		DRIFT_ARRAY_PUSH(draw->bg_sprites, ((DriftSprite){
+		DriftVec2 skiff_pos = DRIFT_SKIFF_POSITION;
+		// skiff_pos = INPUT->mouse_pos_world;
+		
+		DriftAffine m = DriftAffineTRS(skiff_pos, -1.9300f, DRIFT_VEC2_ONE);
+		DriftSprite skiff_sprite = {
 			.frame = DRIFT_FRAMES[DRIFT_SPRITE_CRASHED_SHIP], .color = DRIFT_RGBA8_WHITE,
 			.matrix = m, .shiny = 150, .z = 200,
-		}));
+		};
+		DRIFT_ARRAY_PUSH(draw->bg_sprites, skiff_sprite);
+
+		if(state->scan_progress[DRIFT_SCAN_CONSTRUCTION_SKIFF] < 1){
+			DriftRGBA8 flash = DriftHUDIndicator(draw, skiff_pos, (DriftRGBA8){0x00, 0x80, 0x80, 0x80});
+			if(flash.a > 0){
+				skiff_sprite.color = flash;
+				DRIFT_ARRAY_PUSH(draw->flash_sprites, skiff_sprite);
+			}
+		}
 		
 		DRIFT_ARRAY_PUSH(draw->bg_sprites, ((DriftSprite){
 			.frame = DRIFT_FRAMES[DRIFT_SPRITE_LARGE_ROCKS00], .color = DRIFT_RGBA8_WHITE,
-			.matrix = {1, 0, 0, 1, DRIFT_HOME_POSITION.x + 64, DRIFT_HOME_POSITION.y + 16}, .z = 120,
+			.matrix = {1, 0, 0, 1, skiff_pos.x + 64, skiff_pos.y + 16}, .z = 120,
 		}));
 		
 		DRIFT_ARRAY_PUSH(draw->bg_sprites, ((DriftSprite){
 			.frame = DRIFT_FRAMES[DRIFT_SPRITE_LARGE_ROCKS01], .color = DRIFT_RGBA8_WHITE,
-			.matrix = {1, 0, 0, 1, DRIFT_HOME_POSITION.x + 87, DRIFT_HOME_POSITION.y - 19}, .z = 120,
+			.matrix = {1, 0, 0, 1, skiff_pos.x + 87, skiff_pos.y - 19}, .z = 120,
 		}));
 		
 		DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
-			.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = (DriftVec4){{1.77f, 1.71f, 1.47f, 1.81f}},
-			.matrix = DriftAffineMul(m, (DriftAffine){800, 0, 0, 800, 0, 48}), .radius = 8,
-		}));
-		
-		DRIFT_ARRAY_PUSH(draw->bg_sprites, ((DriftSprite){
-			.frame = DRIFT_FRAMES[DRIFT_SPRITE_PRODUCTION_MODULE], .color = DRIFT_RGBA8_WHITE,
-			.matrix = {1, 0, 0, 1, DRIFT_FACTORY_POSITION.x, DRIFT_FACTORY_POSITION.y}, .z = 120,
-		}));
-		
-		uint i = draw->tick/4 % 28;
-		DRIFT_ARRAY_PUSH(draw->bg_sprites, ((DriftSprite){
-			.frame = DRIFT_FRAMES[DRIFT_SPRITE_HIVE00 + i], .color = DRIFT_RGBA8_WHITE,
-			.matrix = {1, 0, 0, 1, DRIFT_FACTORY_POSITION.x - 500, DRIFT_FACTORY_POSITION.y - 400}, .z = 120,
+			.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = (DriftVec4){{1.27f, 1.20f, 0.99f, 0.00f}},
+			.matrix = DriftAffineMul(m, (DriftAffine){800, 0, 0, 800, 0, 50}), .radius = 24,
 		}));
 	}
 	
@@ -1486,7 +1910,7 @@ void DriftSystemsDraw(DriftDraw* draw){
 	RUN_FUNC(DrawDrones, draw);
 	RUN_FUNC(DriftDrawEnemies, draw);
 	RUN_FUNC(DrawPlayer, draw);
-	RUN_FUNC(DrawBlasts, draw);
+	RUN_FUNC(draw_blasts, draw);
 }
 
 void DriftSystemsInit(DriftGameState* state){
@@ -1510,19 +1934,11 @@ void DriftSystemsInit(DriftGameState* state){
 	}, 1024);
 	state->bodies.rotation[0] = (DriftVec2){1, 0};
 	
-	DriftTableInit(&state->rtree.table, (DriftTableDesc){
-		.name = "DriftRTree", .mem = DriftSystemMem,
-		.min_row_capacity = 256,
-		.columns = {
-			DRIFT_DEFINE_COLUMN(state->rtree.n_leaf),
-			DRIFT_DEFINE_COLUMN(state->rtree.n_count),
-			DRIFT_DEFINE_COLUMN(state->rtree.n_bound),
-			DRIFT_DEFINE_COLUMN(state->rtree.n_child),
-			DRIFT_DEFINE_COLUMN(state->rtree.pool_arr),
-		},
-	});
-	state->rtree.root = DriftTablePushRow(&state->rtree.table);
-	state->rtree.n_leaf[state->rtree.root] = true;
+	table_init(state, &state->rtree.t, "#rtree", (DriftColumnSet){
+		DRIFT_DEFINE_COLUMN(state->rtree.node),
+		DRIFT_DEFINE_COLUMN(state->rtree.pool_arr),
+	}, 256);
+	state->rtree.root = DriftTablePushRow(&state->rtree.t);
 
 	component_init(state, &state->players.c, "@Player", (DriftColumnSet){
 		DRIFT_DEFINE_COLUMN(state->players.entity),
@@ -1537,12 +1953,18 @@ void DriftSystemsInit(DriftGameState* state){
 	component_init(state, &state->items.c, "@Items", (DriftColumnSet){
 		DRIFT_DEFINE_COLUMN(state->items.entity),
 		DRIFT_DEFINE_COLUMN(state->items.type),
+		DRIFT_DEFINE_COLUMN(state->items.tile_idx),
 	}, 1024);
 
 	component_init(state, &state->scan.c, "@Scan", (DriftColumnSet){
 		DRIFT_DEFINE_COLUMN(state->scan.entity),
 		DRIFT_DEFINE_COLUMN(state->scan.type),
 	}, 1024);
+
+	component_init(state, &state->scan_ui.c, "@ScanUI", (DriftColumnSet){
+		DRIFT_DEFINE_COLUMN(state->scan_ui.entity),
+		DRIFT_DEFINE_COLUMN(state->scan_ui.type),
+	}, 0);
 
 	component_init(state, &state->power_nodes.c, "@PowerNode", (DriftColumnSet){
 		DRIFT_DEFINE_COLUMN(state->power_nodes.entity),
@@ -1561,12 +1983,12 @@ void DriftSystemsInit(DriftGameState* state){
 	});
 	DRIFT_ARRAY_PUSH(state->tables, &state->power_edges.t);
 	
-	static const char* FLOW_NAMES[] = {"@FlowHome", "@FlowPlayer"};
-	for(uint i = 0; i < DRIFT_FLOW_MAP_COUNT; i++){
+	static const char* FLOW_NAMES[] = {"@FlowPower", "@FlowPlayer", "@FlowWaypoint"};
+	for(uint i = 0; i < _DRIFT_FLOW_MAP_COUNT; i++){
 		component_init(state, &state->flow_maps[i].c, FLOW_NAMES[i], (DriftColumnSet){
 			DRIFT_DEFINE_COLUMN(state->flow_maps[i].entity),
 			DRIFT_DEFINE_COLUMN(state->flow_maps[i].flow),
-			DRIFT_DEFINE_COLUMN(state->flow_maps[i].current),
+			DRIFT_DEFINE_COLUMN(state->flow_maps[i].is_valid),
 		}, 0);
 		state->flow_maps[i].flow[0].dist = INFINITY;
 	}	
@@ -1578,6 +2000,7 @@ void DriftSystemsInit(DriftGameState* state){
 	
 	component_init(state, &state->projectiles.c, "@bullets", (DriftColumnSet){{
 		DRIFT_DEFINE_COLUMN(state->projectiles.entity),
+		DRIFT_DEFINE_COLUMN(state->projectiles.type),
 		DRIFT_DEFINE_COLUMN(state->projectiles.origin),
 		DRIFT_DEFINE_COLUMN(state->projectiles.velocity),
 		DRIFT_DEFINE_COLUMN(state->projectiles.tick0),
@@ -1599,6 +2022,12 @@ void DriftSystemsInit(DriftGameState* state){
 	component_init(state, &state->enemies.c, "@enemies", (DriftColumnSet){{
 		DRIFT_DEFINE_COLUMN(state->enemies.entity),
 		DRIFT_DEFINE_COLUMN(state->enemies.type),
+		DRIFT_DEFINE_COLUMN(state->enemies.tile_idx),
 		DRIFT_DEFINE_COLUMN(state->enemies.aggro_ticks),
 	}}, 0);
+	
+	component_init(state, &state->hives.c, "@hives", (DriftColumnSet){{
+		DRIFT_DEFINE_COLUMN(state->hives.data),
+	}}, 0);
+	state->hives.data[0] = (DriftHiveData){.health = 1000};
 }

@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 typedef struct DriftGameContext DriftGameContext;
 typedef struct DriftUpdate DriftUpdate;
 
@@ -37,6 +47,7 @@ typedef struct {
 	DriftComponent c;
 	DriftEntity* entity;
 	DriftItemType* type;
+	uint* tile_idx;
 } DriftComponentItem;
 
 typedef struct {
@@ -44,6 +55,12 @@ typedef struct {
 	DriftEntity* entity;
 	DriftScanType* type;
 } DriftComponentScan;
+
+typedef struct {
+	DriftComponent c;
+	DriftEntity* entity;
+	DriftScanUIType* type;
+} DriftComponentScanUI;
 
 typedef struct {
 	DriftComponent c;
@@ -67,17 +84,17 @@ typedef struct {
 
 typedef struct {
 	DriftEntity next;
-	uint mark;
+	uint stamp;
 	float dist;
 } DriftFlowNode;
 
 typedef struct {
-	DriftVec2 target_pos;
+	uint stamp;
 	
 	DriftComponent c;
 	DriftEntity* entity;
 	DriftFlowNode* flow;
-	bool* current;
+	bool* is_valid;
 } DriftComponentFlowMap;
 
 typedef struct {
@@ -85,9 +102,9 @@ typedef struct {
 	DriftEntity* entity;
 	struct {
 		u8 flow_map;
-		float radius;
 		DriftEntity node;
-		DriftVec2 target_pos;
+		bool is_valid;
+		DriftVec2 target_pos, target_dir;
 	}* data;
 } DriftNavComponent;
 
@@ -96,6 +113,7 @@ typedef struct {
 	DriftEntity* entity;
 	
 	DriftEnemyType* type;
+	uint* tile_idx;
 	u16* aggro_ticks;
 } DriftComponentEnemy;
 
@@ -108,9 +126,17 @@ typedef struct {
 	DriftVec2* forward_bias;
 } DriftComponentBugNav;
 
+typedef enum {
+	DRIFT_PROJECTILE_NONE,
+	DRIFT_PROJECTILE_PLAYER,
+	DRIFT_PROJECTILE_HIVE,
+	_DRIFT_PROJECTILE_COUNT,
+} DriftProjectileType;
+
 typedef struct {
 	DriftComponent c;
 	DriftEntity* entity;
+	DriftProjectileType* type;
 	DriftVec2* origin;
 	DriftVec2* velocity;
 	u32* tick0;
@@ -121,6 +147,7 @@ typedef struct {
 	float value, maximum, timeout;
 	uint damage_tick0;
 	DriftItemType drop;
+	DriftSFX hit_sfx, die_sfx;
 } DriftHealth;
 
 typedef struct {
@@ -131,27 +158,6 @@ typedef struct {
 } DriftComponentHealth;
 
 typedef struct {
-	DriftItemType type;
-	DriftItemType request;
-	uint count;
-} DriftCargoSlot;
-
-typedef struct {
-	float value, target, rate;
-} DriftAnimState;
-
-typedef struct {
-	DriftAnimState hatch_l, hatch_r;
-	DriftAnimState laser, cannons;
-} DriftPlayerAnimState;
-
-typedef struct {
-	DriftAffine arr[4];
-} PlayerCannonTransforms;
-
-PlayerCannonTransforms CalculatePlayerCannonTransforms(float cannon_anim);
-
-typedef struct {
 	float angle[3];
 	DriftVec2 current;
 } DriftArmPose;
@@ -160,14 +166,12 @@ typedef struct DriftPlayerData {
 	DriftVec2 desired_velocity, desired_rotation;
 	float thrusters[5];
 	
-	float temp, energy, energy_cap;
+	float temp, energy;
 	bool is_overheated, is_powered;
-	// TODO should store connected pnode instead of bool
 	u64 power_tick0, shield_tick0;
 	
 	bool headlight;
 	float nacelle_l, nacelle_r;
-	DriftPlayerAnimState anim_state;
 	DriftArmPose arm_l, arm_r;
 	
 	DriftVec2 reticle;
@@ -176,17 +180,22 @@ typedef struct DriftPlayerData {
 	DriftEntity grabbed_entity;
 	DriftItemType grabbed_type;
 	DriftEntity scanned_entity;
+	DriftScanType scanned_type;
 	
 	struct {
 		uint frame;
 		DriftVec2 pos;
 	} last_valid_drop;
 	
-	DriftCargoSlot cargo_slots[DRIFT_PLAYER_CARGO_SLOT_COUNT];
-	DriftToolType tool_idx;
+	DriftToolType tool_idx, tool_select;
+	float tool_anim;
 } DriftPlayerData;
 
-DriftCargoSlot* DriftPlayerGetCargoSlot(DriftPlayerData* player, DriftItemType type);
+typedef enum {
+	DRIFT_DRONE_STATE_TO_POD,
+	DRIFT_DRONE_STATE_TO_SKIFF,
+	_DRIFT_DRONE_STATE_COUNT,
+} DriftDroneState;
 
 typedef struct {
 	DriftComponent c;
@@ -202,9 +211,21 @@ typedef struct {
 	
 	DriftEntity* entity;
 	struct {
-		
+		DriftDroneState state;
+		DriftItemType item;
+		uint count;
 	}* data;
 } DriftComponentDrone;
+
+typedef struct {
+	float health;
+	float pod_progress;
+} DriftHiveData;
+
+typedef struct {
+	DriftComponent c;
+	DriftHiveData* data;
+} DriftComponentHives;
 
 void DriftSystemsInit(DriftGameState* state);
 void DriftSystemsUpdate(DriftUpdate* update);
@@ -231,19 +252,50 @@ typedef struct {
 	bool node_can_connect;
 	bool node_can_reach;
 	bool player_can_connect;
+	uint active_count;
 	uint too_close_count;
 	DRIFT_ARRAY(DriftNearbyNodeInfo) nodes;
 } DriftNearbyNodesInfo;
 
 DriftNearbyNodesInfo DriftSystemPowerNodeNearby(DriftGameState* state, DriftVec2 pos, DriftMem* mem, float beam_radius);
 
-DriftEntity DriftDroneMake(DriftGameState* state, DriftVec2 pos);
+#define DRIFT_PLASMA_N 64
+float* DriftGenPlasma(DriftDraw* draw);
+void DriftDrawPlasma(DriftDraw* draw, DriftVec2 start, DriftVec2 end, float* plasma_wave);
 
-void DriftHealthApplyDamage(DriftUpdate* update, DriftEntity entity, float amount);
+DriftEntity DriftDroneMake(DriftGameState* state, DriftVec2 pos, DriftDroneState drone_state, DriftItemType item, uint count);
+
+bool DriftHealthApplyDamage(DriftUpdate* update, DriftEntity entity, float amount, DriftVec2 pos);
 
 bool DriftCheckSpawn(DriftUpdate* update, DriftVec2 pos, float terrain_dist);
 
-void FireProjectile(DriftUpdate* update, DriftVec2 pos, DriftVec2 vel);
-void MakeBlast(DriftUpdate* update, DriftVec2 position);
+void DriftFireProjectile(DriftUpdate* update, DriftProjectileType type, DriftVec2 pos, DriftVec2 dir);
+
+typedef enum {
+	DRIFT_BLAST_EXPLODE,
+	DRIFT_BLAST_RICOCHET,
+	DRIFT_BLAST_VIOLET_ZAP,
+	_DRIFT_BLAST_COUNT,
+} DriftBlastType;
+
+void DriftMakeBlast(DriftUpdate* update, DriftVec2 position, DriftVec2 normal, DriftBlastType type);
 
 DriftEntity DriftTempPlayerInit(DriftGameState* state, DriftEntity e, DriftVec2 position);
+
+uint DriftPlayerEnergyCap(DriftGameState* state);
+uint DriftPlayerNodeCap(DriftGameState* state);
+uint DriftPlayerCargoCap(DriftGameState* state);
+uint DriftPlayerItemCount(DriftGameState* state, DriftItemType item);
+uint DriftPlayerItemCap(DriftGameState* state, DriftItemType item);
+uint DriftPlayerCalculateCargo(DriftGameState* state);
+
+void DriftSystemsTickFab(DriftGameContext* ctx, float dt);
+
+typedef struct {
+	const char* label;
+	u8 layer, shiny;
+	float poisson, terrain, weight;
+	DriftSpriteEnum* sprites;
+} DriftDecalDef;
+
+extern DriftDecalDef* DRIFT_DECAL_DEFS[_DRIFT_BIOME_COUNT];

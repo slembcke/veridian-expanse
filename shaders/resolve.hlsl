@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include "drift_common.hlsl"
 
 struct VertInput {
@@ -15,8 +25,8 @@ struct FragInput {
 };
 
 cbuffer Locals : DRIFT_UBO1 {
-	float4 _scatter[4];
-	float4 _transmit[4];
+	float4 _scatter[5];
+	float4 _transmit[5];
 	float4 _effect_tint;
 	float _effect_static;
 	float _effect_heat;
@@ -39,8 +49,9 @@ void VShader(in VertInput IN, out FragInput FRAG){
 	uv_biome = uv_biome/(256*32*8) + 0.5; // TODO magic numbers for map size
 	
 	float4 biome = DriftAtlas.Sample(DriftLinear, float3(uv_biome, DRIFT_ATLAS_BIOME));
-	FRAG.scatter = biome[0]*_scatter[0] + biome[1]*_scatter[1] + biome[2]*_scatter[2] + biome[3]*_scatter[3];
-	FRAG.transmit = biome[0]*_transmit[0] + biome[1]*_transmit[1] + biome[2]*_transmit[2] + biome[3]*_transmit[3];
+	float space = 1 - (biome[0] + biome[1] + biome[2] + biome[3]);
+	FRAG.scatter = biome[0]*_scatter[0] + biome[1]*_scatter[1] + biome[2]*_scatter[2] + biome[3]*_scatter[3] + space*_scatter[4];
+	FRAG.transmit = biome[0]*_transmit[0] + biome[1]*_transmit[1] + biome[2]*_transmit[2] + biome[3]*_transmit[3] + space*_transmit[4];
 	
 	FRAG.scatter.rgb = SRGBToLinear(FRAG.scatter.rgb);
 	FRAG.transmit.rgb = SRGBToLinear(FRAG.transmit.rgb);

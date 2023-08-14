@@ -1,13 +1,17 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <stdlib.h>
 #include <string.h>
 
-#include "drift_types.h"
-#include "drift_util.h"
-#include "drift_mem.h"
-#include "drift_table.h"
-#include "drift_map.h"
-#include "drift_entity.h"
-#include "drift_component.h"
+#include "drift_base.h"
 
 DriftComponent* DriftComponentInit(DriftComponent* component, DriftTableDesc desc){
 	*component = (DriftComponent){.gc_cursor = 1};
@@ -44,11 +48,17 @@ void DriftComponentIO(DriftComponent* component, DriftIO* io){
 }
 
 uint DriftComponentAdd(DriftComponent *component, DriftEntity entity){
-	DriftTableEnsureCapacity(&component->table, component->table.row_count + 1);
+	return DriftComponentAdd2(component, entity, true);
+}
+
+uint DriftComponentAdd2(DriftComponent *component, DriftEntity entity, bool unique){
+	uint old_idx = DriftMapFind(&component->map, entity.id);
+	if(old_idx && !unique) return old_idx;
+	DRIFT_ASSERT(old_idx == 0, "e%d already had a %s", entity.id, component->table.desc.name);
 	
 	uint idx = component->count = component->table.row_count++;
-	uint old_idx = DriftMapInsert(&component->map, entity.id, idx);
-	DRIFT_ASSERT(old_idx == 0, "e%d already had a %s", entity.id, component->table.desc.name);
+	DriftTableEnsureCapacity(&component->table, component->table.row_count);
+	DriftMapInsert(&component->map, entity.id, idx);
 	
 	DriftTableClearRow(&component->table, idx);
 	DriftComponentGetEntities(component)[idx] = entity;

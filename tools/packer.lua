@@ -1,4 +1,15 @@
+--[[
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+]]
+
 local run = dbg and dbg.call or function(f) f() end
+if dbg then dbg.auto_where = 3 end
 
 run(function()
 
@@ -32,17 +43,19 @@ for _, filename in ipairs(arg) do
 		
 		local slice = data.meta.slices[1]
 		local pivot = slice.keys[1].pivot
-		
+		local slice_rect = slice.keys[1].bounds
 		local name = slice.name
 		for i, frame in ipairs(data.frames) do
 			local rect = frame.frame
+			rect.x = rect.x + 1 + slice_rect.x
+			rect.y = rect.y + 1 + slice_rect.y
+			rect.w = slice_rect.w
+			rect.h = slice_rect.h
 			if pivot then rect.ax, rect.ay = pivot.x, pivot.y end
 			
 			rect.pack = true
 			rect.name = string.format("%s%02d", name:upper(), i - 1)
 			rect.image_idx = #images
-			
-			
 			table.insert(rects, rect)
 		end
 	end

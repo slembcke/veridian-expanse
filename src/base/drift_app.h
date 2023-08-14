@@ -1,6 +1,15 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #pragma once
 
-#include "tinycthread/tinycthread.h"
 #include "tina/tina_jobs.h"
 
 tina_scheduler* tina_job_get_scheduler(tina_job* job);
@@ -12,29 +21,8 @@ void DriftParallelFor(tina_job* job, tina_job_func func, void* user_data, uint c
 #define DRIFT_APP_DEFAULT_SCREEN_W 1280
 #define DRIFT_APP_DEFAULT_SCREEN_H 720
 
-enum {
-	DRIFT_JOB_QUEUE_WORK,
-	DRIFT_JOB_QUEUE_GFX,
-	DRIFT_JOB_QUEUE_MAIN,
-	_DRIFT_JOB_QUEUE_COUNT,
-};
-
-enum {
-	DRIFT_THREAD_ID_MAIN,
-	DRIFT_THREAD_ID_GFX,
-	DRIFT_THREAD_ID_WORKER0,
-};
-
-uint DriftAppGetThreadID(void);
-
 typedef struct DriftApp DriftApp;
-
-typedef struct {
-	DriftApp* app;
-	uint id, queue;
-	thrd_t thread;
-	const char* name;
-} DriftThread;
+extern DriftApp* APP;
 
 typedef enum {
 	DRIFT_SHELL_START,
@@ -45,13 +33,16 @@ typedef enum {
 	DRIFT_SHELL_TOGGLE_FULLSCREEN,
 } DriftShellEvent;
 
-typedef void* DriftShellFunc(DriftApp* app, DriftShellEvent event, void* ctx);
+typedef void* DriftShellFunc(DriftShellEvent event, void* ctx);
 
 #define DRIFT_APP_MAX_THREADS 16u
 
 #define TMP_PREFS_FILENAME "prefs.bin"
 typedef struct {
-	float master_volume, music_volume;
+	float master_volume, music_volume, effects_volume;
+	float sharpening, lightfield_scale;
+	float mouse_sensitivity, joy_deadzone;
+	bool hires;
 } DriftPreferences;
 
 void DriftPrefsIO(DriftIO* io);
@@ -85,40 +76,37 @@ struct DriftApp {
 	tina_job_func* entry_func;
 	DriftShellFunc* shell_func;
 	DriftShellFunc* shell_restart;
+	bool request_quit;
 	int window_x, window_y, window_w, window_h;
 	float scaling_factor;
 	void* shell_window;
 	void* shell_context;
-	bool fullscreen;
+	bool fullscreen, no_splash;
 	
 	DriftAudioContext* audio;
 	
 	// Jobs.
 	tina_scheduler* scheduler;
-	uint thread_count;
-	DriftThread threads[DRIFT_APP_MAX_THREADS];
 	
 	const DriftGfxDriver* gfx_driver;
 	
 	DriftZoneMemHeap* zone_heap;
 	void* app_context;
+	void* input_context;
 };
 
-void* DriftShellConsole(DriftApp* app, DriftShellEvent event, void* shell_value);
-void* DriftShellSDLGL(DriftApp* app, DriftShellEvent event, void* shell_value);
-void* DriftShellSDLVk(DriftApp* app, DriftShellEvent event, void* shell_value);
+void* DriftShellConsole(DriftShellEvent event, void* shell_value);
+void* DriftShellSDLGL(DriftShellEvent event, void* shell_value);
+void* DriftShellSDLVk(DriftShellEvent event, void* shell_value);
 
 #if DRIFT_MODULES
 void DriftModuleRun(tina_job* job);
-void DriftModuleRequestReload(DriftApp* app, tina_job* job);
+void DriftModuleRequestReload(tina_job* job);
 #endif
 
 int DriftMain(DriftApp* app);
-void DriftAppShowWindow(DriftApp* app);
-DriftGfxRenderer* DriftAppBeginFrame(DriftApp* app, DriftMem* mem);
-void DriftAppPresentFrame(DriftApp* app, DriftGfxRenderer* renderer);
-void DriftAppHaltScheduler(DriftApp* app);
-void DriftAppToggleFullscreen(DriftApp* app);
-
-void DriftAppAssertMainThread(void);
-void DriftAppAssertGfxThread(void);
+void DriftAppShowWindow(void);
+DriftGfxRenderer* DriftAppBeginFrame(DriftMem* mem);
+void DriftAppPresentFrame(DriftGfxRenderer* renderer);
+void DriftAppHaltScheduler(void);
+void DriftAppToggleFullscreen(void);

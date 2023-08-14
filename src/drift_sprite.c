@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include "drift_game.h"
 
 const DriftFrame DRIFT_FRAMES[] = {
@@ -29,7 +39,6 @@ typedef struct {
 
 static const GradientInfo GRADIENT_INFO[] = {
 	{.frame = DRIFT_SPRITE_CRASHED_SHIP, .shape = {32, 32, KernelBlackman}, .detail = {1, 2, KernelBlackman}},
-	{.frame = DRIFT_SPRITE_PRODUCTION_MODULE, .shape = {8, 16, KernelBlackman}, .detail = {3, 4, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_HULL, .shape = {48, 64, KernelBlackman}, .detail = {1, 4, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_STRUT, .shape = {2, 1.2f, KernelBlackman}, .detail = {0.5, 0.0, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_GRABBER_MOUNT, .shape = {2, 1.2f, KernelBlackman}, .detail = {0.5, 0.0, KernelBlackman}},
@@ -37,9 +46,9 @@ static const GradientInfo GRADIENT_INFO[] = {
 	{.frame = DRIFT_SPRITE_GRABARM1, .shape = {2, 1.2f, KernelBlackman}, .detail = {0.5, 0.0, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_GRABARM2, .shape = {2, 1.2f, KernelBlackman}, .detail = {0.5, 0.0, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_GRIPPER, .shape = {2, 1.2f, KernelBlackman}, .detail = {0.5, 0.0, KernelBlackman}},
-	{.frame = DRIFT_SPRITE_NACELLE, .shape = {8, 4, KernelBlackman}, .detail = {0.5, 0.0, KernelBlackman}},
+	{.frame = DRIFT_SPRITE_NACELLE, .shape = {4, 2, KernelBlackman}, .detail = {0.5, 1.0, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_GUN, .shape = {1, 4, KernelBlackman}, .detail = {0.5, 0.0, KernelBlackman}},
-	{.frame = DRIFT_SPRITE_LASER, .shape = {2, 8, KernelBlackman}, .detail = {0.5, 0.0, KernelBlackman}},
+	{.frame = DRIFT_SPRITE_LASER_EXTENSION_PADDED, .shape = {2, 8, KernelBlackman}, .detail = {0.5, 1.0, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_SCANNER, .shape = {10, 4, KernelBlackman}, .detail = {1.5f, 2.0, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_POWER_NODE, .shape = {4, 2, KernelBlackman}, .detail = {1, 1, KernelBlackman}},
 	
@@ -49,20 +58,13 @@ static const GradientInfo GRADIENT_INFO[] = {
 	{.frame = DRIFT_SPRITE_SCRAP         , .shape = {1.5, 2, KernelBlackman}, .detail = {1.5f, 5.0f, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_ADVANCED_SCRAP, .shape = {1.5, 2, KernelBlackman}, .detail = {1.5f, 5.0f, KernelBlackman}},
 
-	{.frame = DRIFT_SPRITE_VIRIDIUM, .shape = {3, 3.2f, KernelBlackman}, .detail = {1.25, 3.2f, KernelBlackman}},
-	{.frame = DRIFT_SPRITE_BORON   , .shape = {3, 3.2f, KernelBlackman}, .detail = {1.25, 3.2f, KernelBlackman}},
-	{.frame = DRIFT_SPRITE_RADONITE, .shape = {3, 3.2f, KernelBlackman}, .detail = {1.25, 3.2f, KernelBlackman}},
-	{.frame = DRIFT_SPRITE_METRIUM , .shape = {3, 3.2f, KernelBlackman}, .detail = {1.25, 3.2f, KernelBlackman}},
-
 	{.frame = DRIFT_SPRITE_LUMIUM   , .shape = {3, 3.2f, KernelBlackman}, .detail = {1.25, 3.2f, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_FLOURON  , .shape = {3, 3.2f, KernelBlackman}, .detail = {1.25, 3.2f, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_FUNGICITE, .shape = {3, 3.2f, KernelBlackman}, .detail = {1.25, 3.2f, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_MORPHITE , .shape = {3, 3.2f, KernelBlackman}, .detail = {1.25, 3.2f, KernelBlackman}},
 
-	{.frame = DRIFT_SPRITE_COPPER  , .shape = {16, 4.00f, KernelBlackman}, .detail = {1.50, 1.5f, KernelBlackman}},
-	{.frame = DRIFT_SPRITE_SILVER  , .shape = {16, 4.00f, KernelBlackman}, .detail = {1.50, 1.5f, KernelBlackman}},
-	{.frame = DRIFT_SPRITE_GOLD    , .shape = {16, 4.00f, KernelBlackman}, .detail = {1.50, 1.5f, KernelBlackman}},
-
+	{.frame = DRIFT_SPRITE_HIVE_POD, .shape = {16, 16, KernelBlackman}, .detail = {1, 4, KernelBlackman}},
+	{.frame = DRIFT_SPRITE_HIVE_WART, .shape = {8, 4, KernelBlackman}, .detail = {1, 2, KernelBlackman}},
 	{-1}, // terminator.
 };
 

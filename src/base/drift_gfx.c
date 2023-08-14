@@ -1,15 +1,18 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <stdio.h>
 #include <string.h>
 
-#include "drift_types.h"
-#include "drift_util.h"
-#include "drift_math.h"
-#include "drift_mem.h"
-#include "drift_table.h"
-#include "drift_map.h"
-#include "drift_gfx.h"
+#include "drift_base.h"
 #include "drift_gfx_internal.h"
-#include "drift_app.h"
 
 #define QOI_IMPLEMENTATION
 #define QOI_MALLOC(mem, size) DriftAlloc(mem, size);
@@ -108,42 +111,33 @@ static void DriftGfxRendererPushCommand(DriftGfxRenderer* renderer, DriftGfxComm
 DriftGfxPipelineBindings* DriftGfxRendererPushBindPipelineCommand(DriftGfxRenderer* renderer, DriftGfxPipeline* pipeline){
 	DRIFT_ASSERT(pipeline, "Pipeline cannot be NULL");
 	
-	DriftGfxPipelineBindings* bindings = DriftAlloc(renderer->mem, sizeof(DriftGfxPipelineBindings));
-	(*bindings) = (DriftGfxPipelineBindings){};
-	
-	DriftGfxCommandPipeline* command = DriftAlloc(renderer->mem, sizeof(*command));
-	(*command) = (DriftGfxCommandPipeline){.base.func = renderer->vtable.bind_pipeline, .pipeline = pipeline, .bindings = bindings};
-	DriftGfxRendererPushCommand(renderer, &command->base);
+	DriftGfxPipelineBindings* bindings = DRIFT_COPY(renderer->mem, ((DriftGfxPipelineBindings){}));
+	DriftGfxRendererPushCommand(renderer, &DRIFT_COPY(renderer->mem, ((DriftGfxCommandPipeline){
+		.base.func = renderer->vtable.bind_pipeline, .pipeline = pipeline, .bindings = bindings
+	}))->base);
 	
 	return bindings;
 }
 
 void DriftGfxRendererPushDrawIndexedCommand(DriftGfxRenderer* renderer, DriftGfxBufferBinding index_binding, u32 index_count, u32 instance_count){
 	DRIFT_ASSERT(index_binding.offset <= DRIFT_GFX_INDEX_BUFFER_SIZE, "Invalid index array pointer.");
-	
-	DriftGfxCommandDraw* command = DriftAlloc(renderer->mem, sizeof(*command));
-	(*command) = (DriftGfxCommandDraw){
+	DriftGfxRendererPushCommand(renderer, &DRIFT_COPY(renderer->mem, ((DriftGfxCommandDraw){
 		.base.func = renderer->vtable.draw_indexed,
 		.index_binding = index_binding, .index_count = index_count, .instance_count = instance_count,
-	};
-	
-	DriftGfxRendererPushCommand(renderer, &command->base);
+	}))->base);
 }
 
 void DriftGfxRendererPushBindTargetCommand(DriftGfxRenderer* renderer, 	DriftGfxRenderTarget* rt, DriftVec4 clear_color){
-	DriftGfxCommandTarget* command = DriftAlloc(renderer->mem, sizeof(*command));
-	(*command) = (DriftGfxCommandTarget){
+	DriftGfxRendererPushCommand(renderer, &DRIFT_COPY(renderer->mem, ((DriftGfxCommandTarget){
 		.base.func = renderer->vtable.bind_target,
 		.rt = rt, .clear_color = clear_color,
-	};
-	
-	DriftGfxRendererPushCommand(renderer, &command->base);
+	}))->base);
 }
 
 void DriftGfxRendererPushScissorCommand(DriftGfxRenderer* renderer, DriftAABB2 bounds){
-	DriftGfxCommandScissor* command = DriftAlloc(renderer->mem, sizeof(*command));
-	(*command) = (DriftGfxCommandScissor){.base.func = renderer->vtable.set_scissor, .bounds = bounds};
-	DriftGfxRendererPushCommand(renderer, &command->base);
+	DriftGfxRendererPushCommand(renderer, &DRIFT_COPY(renderer->mem, ((DriftGfxCommandScissor){
+		.base.func = renderer->vtable.set_scissor, .bounds = bounds
+	}))->base);
 }
 
 void DriftRendererExecuteCommands(DriftGfxRenderer* renderer){

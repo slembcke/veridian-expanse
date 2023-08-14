@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #define DRIFT_ATTR0 [[vk::location(0)]]
 #define DRIFT_ATTR1 [[vk::location(1)]]
 #define DRIFT_ATTR2 [[vk::location(2)]]
@@ -21,7 +31,7 @@ cbuffer DriftGlobals : register(b0) {
 	float2 DRIFT_RAW_EXTENTS;
 	float2 DRIFT_VIRTUAL_EXTENTS;
 	float2 DRIFT_INTERNAL_EXTENTS;
-	float DRIFT_ATLAS_SIZE;
+	float DRIFT_ATLAS_SIZE, DRIFT_SHARPENING, DRIFT_GRADMUL;
 	float DRIFT_ATLAS_BIOME, DRIFT_ATLAS_VISIBILITY;
 };
 
@@ -93,7 +103,7 @@ void DriftSpriteVShader(in DriftSpriteVertInput IN, out DriftSpriteFragInput FRA
 	FRAG.uv = float3(lerp(IN.frame_bounds.xy, IN.frame_bounds.zw + 1, IN.uv)/DRIFT_ATLAS_SIZE, IN.frame_props.z);
 	FRAG.uv_bounds = IN.frame_bounds/DRIFT_ATLAS_SIZE;
 	FRAG.color = IN.color;
-	float2x2 scale = mul(float2x2(DRIFT_MATRIX_V), float2x2(transform));
+	float2x2 scale = DRIFT_GRADMUL*mul(float2x2(DRIFT_MATRIX_V), float2x2(transform));
 	FRAG.uv_scale_shiny.xy = DRIFT_ATLAS_SIZE*float2(length(scale[0]), length(scale[1]));
 	FRAG.uv_scale_shiny.z = IN.sprite_props.y/255.0;
 }

@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <stdio.h>
 #include <string.h>
 
@@ -11,18 +21,10 @@
 #endif
 
 #include <SDL.h>
-#include "tina/tina_jobs.h"
 #include "tracy/TracyC.h"
 
-#include "drift_types.h"
-#include "drift_math.h"
-#include "drift_util.h"
-#include "drift_mem.h"
-#include "drift_table.h"
-#include "drift_map.h"
-#include "drift_gfx.h"
+#include "drift_base.h"
 #include "drift_gfx_internal.h"
-#include "drift_app.h"
 
 typedef struct {
 	DriftGfxTexture base;
@@ -574,8 +576,7 @@ static void DriftGLCommandDrawIndexed(const DriftGfxRenderer* renderer, const Dr
 }
 
 static DriftGLRenderer* DriftGLRendererNew(void){
-	DriftGLRenderer* renderer = DriftAlloc(DriftSystemMem, sizeof(DriftGLRenderer));
-	(*renderer) = (DriftGLRenderer){};
+	DriftGLRenderer* renderer = DRIFT_COPY(DriftSystemMem, ((DriftGLRenderer){}));
 	DriftGfxRendererInit(&renderer->base, (DriftGfxVTable){
 		.bind_target = DriftGLCommandBindTarget,
 		.set_scissor = DriftGLCommandSetScissor,
@@ -608,11 +609,8 @@ static void DriftGLShaderFree(const DriftGfxDriver* driver, void* obj){
 }
 
 static DriftGfxShader* DriftGLShaderNew(const DriftGfxDriver* driver, const char* shader_name, const DriftGfxShaderDesc* desc, const DriftData vsource, const DriftData fsource){
-	DriftSDLGLContext* ctx = driver->ctx;
-	DriftGLShader* shader = DriftAlloc(DriftSystemMem, sizeof(*shader));
-	DriftMapInsert(&ctx->destructors, (uintptr_t)shader, (uintptr_t)DriftGLShaderFree);
+	DriftGLShader* shader = DRIFT_COPY(DriftSystemMem, ((DriftGLShader){.base.desc = desc, .base.name = shader_name}));
 	
-	(*shader) = (DriftGLShader){.base.desc = desc, .base.name = shader_name};
 	for(uint i = 0; i < DRIFT_GFX_TEXTURE_BINDING_COUNT; i++){
 		shader->combined_mapping[i].texture = -1;
 		shader->combined_mapping[i].sampler = -1;
@@ -708,6 +706,8 @@ static DriftGfxShader* DriftGLShaderNew(const DriftGfxDriver* driver, const char
 		_glUseProgram(0);
 		DRIFTGL_ASSERT_ERRORS();
 		
+		DriftSDLGLContext* ctx = driver->ctx;
+		DriftMapInsert(&ctx->destructors, (uintptr_t)shader, (uintptr_t)DriftGLShaderFree);
 		return &shader->base;
 	} else {
 		DRIFT_ABORT("SHADER FAIL");
@@ -757,20 +757,18 @@ static void DriftGLSamplerFree(const DriftGfxDriver* driver, void* obj){
 }
 
 static DriftGfxSampler* DriftGLSamplerNew(const DriftGfxDriver* driver, DriftGfxSamplerOptions options){
-	DriftAppAssertGfxThread();
-	
-	DriftSDLGLContext* ctx = driver->ctx;
-	DriftGLSampler *sampler = DriftAlloc(DriftSystemMem, sizeof(*sampler));
-	DriftMapInsert(&ctx->destructors, (uintptr_t)sampler, (uintptr_t)DriftGLSamplerFree);
-	
-	_glGenSamplers(1, &sampler->id);
-	_glSamplerParameteri(sampler->id, GL_TEXTURE_WRAP_S, TextureAddressMode[options.address_x]);
-	_glSamplerParameteri(sampler->id, GL_TEXTURE_WRAP_T, TextureAddressMode[options.address_y]);
-	_glSamplerParameteri(sampler->id, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-	_glSamplerParameteri(sampler->id, GL_TEXTURE_MIN_FILTER, TextureFilters[options.min_filter][options.mip_filter]);
-	_glSamplerParameteri(sampler->id, GL_TEXTURE_MAG_FILTER, TextureFilters[options.mag_filter][DRIFT_GFX_MIP_FILTER_NONE]);
+	DriftAssertGfxThread();
+	GLuint id = 0; _glGenSamplers(1, &id);
+	_glSamplerParameteri(id, GL_TEXTURE_WRAP_S, TextureAddressMode[options.address_x]);
+	_glSamplerParameteri(id, GL_TEXTURE_WRAP_T, TextureAddressMode[options.address_y]);
+	_glSamplerParameteri(id, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+	_glSamplerParameteri(id, GL_TEXTURE_MIN_FILTER, TextureFilters[options.min_filter][options.mip_filter]);
+	_glSamplerParameteri(id, GL_TEXTURE_MAG_FILTER, TextureFilters[options.mag_filter][DRIFT_GFX_MIP_FILTER_NONE]);
 	DRIFTGL_ASSERT_ERRORS();
 	
+	DriftSDLGLContext* ctx = driver->ctx;
+	DriftGLSampler *sampler = DRIFT_COPY(DriftSystemMem, ((DriftGLSampler){.id = id}));
+	DriftMapInsert(&ctx->destructors, (uintptr_t)sampler, (uintptr_t)DriftGLSamplerFree);
 	return &sampler->base;
 }
 
@@ -781,23 +779,15 @@ static void DriftGLTextureFree(const DriftGfxDriver* driver, void* obj){
 }
 
 static DriftGfxTexture* DriftGLTextureNew(const DriftGfxDriver* driver, uint width, uint height, DriftGfxTextureOptions options){
-	DriftAppAssertGfxThread();
-	
-	DriftSDLGLContext* ctx = driver->ctx;
-	DriftGLTexture* texture = DriftAlloc(DriftSystemMem, sizeof(*texture));
-	DriftMapInsert(&ctx->destructors, (uintptr_t)texture, (uintptr_t)DriftGLTextureFree);
-	
-	texture->base.options = options;
-	texture->base.width = width;
-	texture->base.height = height;
-	_glGenTextures(1, &texture->id);
+	DriftAssertGfxThread();
+	GLuint id = 0; _glGenTextures(1, &id);
 	
 	GLenum target = TextureTarget[options.type];
 	GLenum internalFormat = TextureInternalFormat[options.format];
 	GLenum format = TextureFormat[options.format];
 	GLenum type = TextureType[options.format];
 
-	_glBindTexture(target, texture->id);
+	_glBindTexture(target, id);
 	switch(options.type){
 		case DRIFT_GFX_TEXTURE_2D: {
 			_glTexImage2D(target, 0, internalFormat, (GLint)width, (GLint)height, 0, format, type, NULL);
@@ -819,12 +809,16 @@ static DriftGfxTexture* DriftGLTextureNew(const DriftGfxDriver* driver, uint wid
 	_glBindTexture(target, 0);
 	DRIFTGL_ASSERT_ERRORS();
 	
+	DriftSDLGLContext* ctx = driver->ctx;
+	DriftGLTexture* texture = DRIFT_COPY(DriftSystemMem, ((DriftGLTexture){
+		.base = {.options = options, .width = width, .height = height}, .id = id,
+	}));
+	DriftMapInsert(&ctx->destructors, (uintptr_t)texture, (uintptr_t)DriftGLTextureFree);
 	return &texture->base;
 }
 
 static void DriftGLLoadTextureLayer(const DriftGfxDriver* driver, DriftGfxTexture* texture, uint layer, const void* pixels){
-	DriftAppAssertGfxThread();
-	
+	DriftAssertGfxThread();
 	DriftGLTexture* _texture = (DriftGLTexture*)texture;
 	GLenum target = TextureTarget[texture->options.type];
 	GLenum format = TextureFormat[texture->options.format];
@@ -851,18 +845,17 @@ static void DriftGLRenderTargetFree(const DriftGfxDriver* driver, void* obj){
 }
 
 static DriftGfxRenderTarget* DriftGLRenderTargetNew(const DriftGfxDriver* driver, DriftGfxRenderTargetOptions options){
-	DriftAppAssertGfxThread();
+	DriftAssertGfxThread();
+	GLuint id = 0; _glGenFramebuffers(1, &id);
+	_glBindFramebuffer(GL_FRAMEBUFFER, id);
 	
 	DriftSDLGLContext* ctx = driver->ctx;
-	DriftGLRenderTarget* rt = DriftAlloc(DriftSystemMem, sizeof(*rt));
-	DriftMapInsert(&ctx->destructors, (uintptr_t)rt, (uintptr_t)DriftGLRenderTargetFree);
-	
-	_glGenFramebuffers(1, &rt->id);
-	_glBindFramebuffer(GL_FRAMEBUFFER, rt->id);
+	DriftGLRenderTarget* rt = DRIFT_COPY(DriftSystemMem, ((DriftGLRenderTarget){
+		.base = {.load = options.load, .store = options.store}, .id = id,
+	}));
 	
 	GLsizei buffer_count = 0;
 	GLenum buffers[DRIFT_GFX_RENDER_TARGET_COUNT];
-	
 	for(int i = 0; i < DRIFT_GFX_RENDER_TARGET_COUNT; i++){
 		DriftGLTexture* texture = (DriftGLTexture*)options.bindings[i].texture;
 		if(texture){
@@ -888,18 +881,17 @@ static DriftGfxRenderTarget* DriftGLRenderTargetNew(const DriftGfxDriver* driver
 	_glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	DRIFTGL_ASSERT_ERRORS();
 	
-	rt->base.load = options.load;
-	rt->base.store = options.store;
+	DriftMapInsert(&ctx->destructors, (uintptr_t)rt, (uintptr_t)DriftGLRenderTargetFree);
 	return &rt->base;
 }
 
 static DriftGfxShader* DriftGLShaderLoad(const DriftGfxDriver* driver, const char* name, const DriftGfxShaderDesc* desc){
-	DriftAppAssertGfxThread();
+	DriftAssertGfxThread();
 	
 	u8 buffer[64*1024];
 	DriftMem* mem = DriftLinearMemInit(buffer, sizeof(buffer), "Shader Mem");
-	DriftData vshader = DriftAssetLoad(mem, "shaders/%s%s", name, ".vert");
-	DriftData fshader = DriftAssetLoad(mem, "shaders/%s%s", name, ".frag");
+	DriftData vshader = DriftAssetLoadf(mem, "shaders/%s%s", name, ".vert");
+	DriftData fshader = DriftAssetLoadf(mem, "shaders/%s%s", name, ".frag");
 	return DriftGLShaderNew(driver, name, desc, vshader, fshader);
 }
 
@@ -907,32 +899,29 @@ static void DriftGLPipelineFree(const DriftGfxDriver* driver, void* obj){}
 
 static DriftGfxPipeline* DriftGLPipelineNew(const DriftGfxDriver* driver, DriftGfxPipelineOptions options){
 	DriftSDLGLContext* ctx = driver->ctx;
-	DriftGfxPipeline* pipeline = DriftAlloc(DriftSystemMem, sizeof(DriftGfxPipeline));
+	DriftGfxPipeline* pipeline = DRIFT_COPY(DriftSystemMem, ((DriftGfxPipeline){.options = options}));
 	DriftMapInsert(&ctx->destructors, (uintptr_t)pipeline, (uintptr_t)DriftGLPipelineFree);
-	
-	(*pipeline) = (DriftGfxPipeline){.options = options};
 	return pipeline;
 }
 
 static void DriftGLFreeObjects(const DriftGfxDriver* driver, void* obj[], uint count){
-	DriftAppAssertGfxThread();
+	DriftAssertGfxThread();
 	
 	DriftSDLGLContext* ctx = driver->ctx;
 	DriftGfxFreeObjects(driver, &ctx->destructors, obj, count);
 }
 
 static void DriftGLFreeAll(const DriftGfxDriver* driver){
-	DriftAppAssertGfxThread();
+	DriftAssertGfxThread();
 	
 	DriftSDLGLContext* ctx = driver->ctx;
 	DriftGfxFreeAll(driver, &ctx->destructors);
 }
 
 static void DriftSDLGLInitContext(tina_job* job){
-	DriftApp* app = tina_job_get_description(job)->user_data;
-	DriftSDLGLContext* ctx = app->shell_context;
+	DriftSDLGLContext* ctx = tina_job_get_description(job)->user_data;
 	
-	DRIFT_ASSERT_HARD(SDL_GL_MakeCurrent(app->shell_window, ctx->gl_context) == 0, "Failed to bind OpenGL context: %s", SDL_GetError());
+	DRIFT_ASSERT_HARD(SDL_GL_MakeCurrent(APP->shell_window, ctx->gl_context) == 0, "Failed to bind OpenGL context: %s", SDL_GetError());
 	SDL_GL_SetSwapInterval(1);
 	DriftLoadGL();
 	
@@ -953,7 +942,7 @@ static void DriftSDLGLInitContext(tina_job* job){
 	for(uint i = 0; i < DRIFT_GL_RENDERER_COUNT; i++) ctx->renderers[i] = DriftGLRendererNew();
 }
 
-void* DriftShellSDLGL(DriftApp* app, DriftShellEvent event, void* shell_value){
+void* DriftShellSDLGL(DriftShellEvent event, void* shell_value){
 	switch(event){
 		case DRIFT_SHELL_START:{
 			SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
@@ -974,22 +963,22 @@ void* DriftShellSDLGL(DriftApp* app, DriftShellEvent event, void* shell_value){
 			SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
 			SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
 			
-			if(app->window_w == 0){
-				app->window_x = SDL_WINDOWPOS_CENTERED;
-				app->window_y = SDL_WINDOWPOS_CENTERED;
-				app->window_w = DRIFT_APP_DEFAULT_SCREEN_W;
-				app->window_h = DRIFT_APP_DEFAULT_SCREEN_H;
+			if(APP->window_w == 0){
+				APP->window_x = SDL_WINDOWPOS_CENTERED;
+				APP->window_y = SDL_WINDOWPOS_CENTERED;
+				APP->window_w = DRIFT_APP_DEFAULT_SCREEN_W;
+				APP->window_h = DRIFT_APP_DEFAULT_SCREEN_H;
 			}
 			
 			u32 window_flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN;
-			if(app->fullscreen) window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+			if(APP->fullscreen) window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 			
-			app->shell_window = SDL_CreateWindow("Veridian Expanse", app->window_x, app->window_y, app->window_w, app->window_h, window_flags);
-			DRIFT_ASSERT_HARD(app->shell_window, "Failed to create SDL window.");
-			SDL_SetWindowMinimumSize(app->shell_window, 640, 360);
+			APP->shell_window = SDL_CreateWindow("Veridian Expanse", APP->window_x, APP->window_y, APP->window_w, APP->window_h, window_flags);
+			DRIFT_ASSERT_HARD(APP->shell_window, "Failed to create SDL window.");
+			SDL_SetWindowMinimumSize(APP->shell_window, 640, 360);
 			
 			SDL_PumpEvents();
-			SDL_SetWindowPosition(app->shell_window, app->window_x, app->window_y);
+			SDL_SetWindowPosition(APP->shell_window, APP->window_x, APP->window_y);
 			
 			{
 				u8 mem_buf[64*1024];
@@ -999,19 +988,20 @@ void* DriftShellSDLGL(DriftApp* app, DriftShellEvent event, void* shell_value){
 				SDL_Surface* cursor_surface = SDL_CreateRGBSurfaceWithFormatFrom(img.pixels, img.w, img.h, 32, img.w*4, SDL_PIXELFORMAT_RGBA32);
 				DRIFT_ASSERT(cursor_surface, "Failed to create surface for cursor: %s", SDL_GetError());
 				SDL_Cursor* cursor = SDL_CreateColorCursor(cursor_surface, 1, 1);
+				SDL_FreeSurface(cursor_surface);
+				
 				DRIFT_ASSERT(cursor, "Failed to create cursor: %s", SDL_GetError());
 				SDL_SetCursor(cursor);
 			}
 			
 			DriftSDLGLContext* ctx = DriftAlloc(DriftSystemMem, sizeof(*ctx));
-			DRIFT_ASSERT_HARD(ctx->gl_context = SDL_GL_CreateContext(app->shell_window), "Failed to create OpenGL context: %s", SDL_GetError());
-			DRIFT_ASSERT_HARD(ctx->sync_context = SDL_GL_CreateContext(app->shell_window), "Failed to create OpenGL sync context: %s", SDL_GetError());
+			DRIFT_ASSERT_HARD(ctx->gl_context = SDL_GL_CreateContext(APP->shell_window), "Failed to create OpenGL context: %s", SDL_GetError());
+			DRIFT_ASSERT_HARD(ctx->sync_context = SDL_GL_CreateContext(APP->shell_window), "Failed to create OpenGL sync context: %s", SDL_GetError());
 			// Leave sync context bound on main thread.
-			app->shell_context = ctx;
+			APP->shell_context = ctx;
 			
-			DriftGfxDriver* driver = DriftAlloc(DriftSystemMem, sizeof(*driver));
-			(*driver) = (DriftGfxDriver){
-				.ctx = app->shell_context,
+			APP->gfx_driver = DRIFT_COPY(DriftSystemMem, ((DriftGfxDriver){
+				.ctx = APP->shell_context,
 				.load_shader = DriftGLShaderLoad,
 				.new_pipeline = DriftGLPipelineNew,
 				.new_sampler = DriftGLSamplerNew,
@@ -1020,32 +1010,31 @@ void* DriftShellSDLGL(DriftApp* app, DriftShellEvent event, void* shell_value){
 				.load_texture_layer = DriftGLLoadTextureLayer,
 				.free_objects = DriftGLFreeObjects,
 				.free_all = DriftGLFreeAll,
-			};
-			app->gfx_driver = driver;
-			tina_scheduler_enqueue(app->scheduler, DriftSDLGLInitContext, app, 0, DRIFT_JOB_QUEUE_GFX, NULL);
+			}));
+			tina_scheduler_enqueue(APP->scheduler, DriftSDLGLInitContext, APP->shell_context, 0, DRIFT_JOB_QUEUE_GFX, NULL);
 		} break;
 		
-		case DRIFT_SHELL_SHOW_WINDOW: SDL_ShowWindow(app->shell_window); break;
+		case DRIFT_SHELL_SHOW_WINDOW: SDL_ShowWindow(APP->shell_window); break;
 		
 		case DRIFT_SHELL_STOP:{
 			DRIFT_LOG("SDL Shutdown.");
-			DriftSDLGLContext* ctx = app->shell_context;
+			DriftSDLGLContext* ctx = APP->shell_context;
 			SDL_GL_DeleteContext(ctx->gl_context);
 			SDL_Quit();
 		} break;
 		
 		case DRIFT_SHELL_BEGIN_FRAME:{
-			DriftSDLGLContext* ctx = app->shell_context;
+			DriftSDLGLContext* ctx = APP->shell_context;
 			DriftGLRenderer* renderer = ctx->renderers[ctx->renderer_index++ & (DRIFT_GL_RENDERER_COUNT - 1)];
 			TracyCZoneN(ZONE_WAIT, "Wait", true);
 			DriftGLRendererWait(renderer);
 			TracyCZoneEnd(ZONE_WAIT);
 
-			SDL_GetWindowPosition(app->shell_window, &app->window_x, &app->window_y);
-			SDL_GetWindowSize(app->shell_window, &app->window_w, &app->window_h);
+			SDL_GetWindowPosition(APP->shell_window, &APP->window_x, &APP->window_y);
+			SDL_GetWindowSize(APP->shell_window, &APP->window_w, &APP->window_h);
 			
 			int w, h;
-			SDL_GL_GetDrawableSize(app->shell_window, &w, &h);
+			SDL_GL_GetDrawableSize(APP->shell_window, &w, &h);
 			DriftGfxRendererPrepare((DriftGfxRenderer*)renderer, (DriftVec2){w, h}, shell_value);
 			
 			return renderer;
@@ -1059,12 +1048,12 @@ void* DriftShellSDLGL(DriftApp* app, DriftShellEvent event, void* shell_value){
 			TracyCZoneEnd(ZONE_EXECUTE);
 			
 			TracyCZoneN(ZONE_SWAP, "Swap", true);
-			SDL_GL_SwapWindow(app->shell_window);
+			SDL_GL_SwapWindow(APP->shell_window);
 			TracyCZoneEnd(ZONE_SWAP);
 		} break;
 		
 		case DRIFT_SHELL_TOGGLE_FULLSCREEN:{
-			SDL_SetWindowFullscreen(app->shell_window, app->fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+			SDL_SetWindowFullscreen(APP->shell_window, APP->fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
 		} break;
 	}
 	

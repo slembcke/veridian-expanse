@@ -1,11 +1,17 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <stdlib.h>
 #include <string.h>
 
-#include "drift_types.h"
-#include "drift_util.h"
-#include "drift_mem.h"
-#include "drift_table.h"
-#include "drift_map.h"
+#include "drift_base.h"
 
 // https://martin.ankerl.com/2016/09/21/very-fast-hashmap-in-c-part-2/
 #define DRIFT_INDEXMAP_NOT_FOUND (~0u)

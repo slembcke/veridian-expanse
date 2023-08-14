@@ -1,24 +1,31 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
 
-#include "tina/tina.h"
+#include <SDL.h>
 #include "miniz/miniz.h"
 #include "qoi/qoi.h"
 
-#include "drift_types.h"
-#include "drift_math.h"
-#include "drift_util.h"
-#include "drift_mem.h"
-#include "drift_app.h"
+#include "drift_base.h"
 
-static mtx_t log_mtx;
+static SDL_mutex* log_mtx;
 static FILE* log_out;
 static FILE* log_err;
 
 #if __WIN64__
+#include <windows.h>
 static LARGE_INTEGER queryPerfFreq;
 #endif
 
@@ -26,7 +33,7 @@ uint DRIFT_SRC_PREFIX_LENGTH = 0;
 void DriftUtilInit(void){
 	DRIFT_SRC_PREFIX_LENGTH = strlen(__FILE__) - strlen("src/base/drift_util.c");
 	
-	mtx_init(&log_mtx, mtx_plain);
+	log_mtx = SDL_CreateMutex();
 	log_out = stdout;
 	log_err = stderr;
 	
@@ -112,7 +119,7 @@ static bool format_vec2(format_cursor* curs, va_list* args){
 	const char* opts = format_match(curs, "v2:");
 	if(opts){
 		DriftVec2 v = va_arg(*args, DriftVec2);
-		format_sprintf(curs, opts, "(%@f, %@f)", v.x, v.y);
+		format_sprintf(curs, opts, "{%@ff, %@ff}", v.x, v.y);
 	}
 	
 	return opts != NULL;
@@ -122,7 +129,7 @@ static bool format_vec3(format_cursor* curs, va_list* args){
 	const char* opts = format_match(curs, "v3:");
 	if(opts){
 		DriftVec3 v = va_arg(*args, DriftVec3);
-		format_sprintf(curs, opts, "(%@f, %@f, %@f)", v.x, v.y, v.z);
+		format_sprintf(curs, opts, "{%@ff, %@ff, %@ff}", v.x, v.y, v.z);
 	}
 	
 	return opts != NULL;
@@ -132,7 +139,7 @@ static bool format_vec4(format_cursor* curs, va_list* args){
 	const char* opts = format_match(curs, "v4:");
 	if(opts){
 		DriftVec4 v = va_arg(*args, DriftVec4);
-		format_sprintf(curs, opts, "(%@f, %@f, %@f, %@f)", v.x, v.y, v.z, v.w);
+		format_sprintf(curs, opts, "{%@ff, %@ff, %@ff, %@ff}", v.x, v.y, v.z, v.w);
 	}
 	
 	return opts != NULL;
@@ -140,8 +147,7 @@ static bool format_vec4(format_cursor* curs, va_list* args){
 
 typedef bool format_func(format_cursor* curs, va_list* args);
 static format_func* FORMAT_FUNCS[] = {
-	format_int,
-	format_float,
+	format_int, format_float,
 	format_vec2, format_vec3, format_vec4,
 	NULL,
 };
@@ -184,20 +190,20 @@ size_t DriftSNFormat(char* buffer, size_t size, const char* format, ...){
 	return used;
 }
 
-void DriftLogf(const char *format, const char *file, unsigned line, const char *message, ...){
+void _DriftLogf(const char *format, const char *file, unsigned line, const char *message, ...){
 	char message_buffer[4096];
 	
 	va_list args; va_start(args, message);
 	size_t used = DriftVSNFormat(message_buffer, sizeof(message_buffer), message, &args);
 	va_end(args);
 	
-	mtx_lock(&log_mtx);
+	SDL_LockMutex(log_mtx);
 	fprintf(log_out, format, file + DRIFT_SRC_PREFIX_LENGTH, line, message_buffer);
 	fflush(log_out);
-	mtx_unlock(&log_mtx);
+	SDL_UnlockMutex(log_mtx);
 }
 
-void DriftLog(const char *format, const char *file, unsigned line, const char *message, ...){
+void _DriftLog(const char *format, const char *file, unsigned line, const char *message, ...){
 	char message_buffer[4096];
 	
 	va_list vargs;
@@ -205,44 +211,20 @@ void DriftLog(const char *format, const char *file, unsigned line, const char *m
 		vsnprintf(message_buffer, sizeof(message_buffer), message, vargs);
 	} va_end(vargs);
 	
-	mtx_lock(&log_mtx);
+	SDL_LockMutex(log_mtx);
 	fprintf(log_out, format, file + DRIFT_SRC_PREFIX_LENGTH, line, message_buffer);
 	fflush(log_out);
-	mtx_unlock(&log_mtx);
+	SDL_UnlockMutex(log_mtx);
 }
 
 void DriftNameCopy(DriftName* dst, const char* src){
 	if(dst->str != src) strncpy(dst->str, src, DRIFT_NAME_SIZE - 1);
 }
 
-DriftStopwatch _DriftStopwatchStart(const char* label){
-	DriftStopwatch sw = {};
-	_DriftStopwatchMark(&sw, label);
-	return sw;
-}
-
-void _DriftStopwatchMark(DriftStopwatch* sw, const char* label){
-	sw->events[sw->count++] = (DriftStopwatchEvent){.label = label, .time = DriftTimeNanos()};
-}
-
-void _DriftStopwatchStop(DriftStopwatch* sw, const char* label, const char* file, uint line){
-	_DriftStopwatchMark(sw, label);
-	
-	char buffer[1024];
-	char* cursor = buffer;
-	
-	DriftStopwatchEvent* events = sw->events;
-	for(uint i = 1; i < sw->count; i++){
-		cursor += sprintf(cursor, "%s: %5.1f, ", events[i].label, (events[i].time - events[i - 1].time)/1e3);
-	}
-	
-	DriftLog("[PROFILE] %s:%d: %s\n", file, line, "%s: %6.1f us, {%s}", events[0].label, (events[sw->count - 1].time - events[0].time)/1e3, buffer);
-}
-
 void DriftBreakpoint(){}
 void DriftAbort(){abort();}
 
-void DriftAssertHelper(const char *condition, const char *file, unsigned line, DriftAssertType type, const char *message_fmt, ...){
+void _DriftAssertHelper(const char *condition, const char *file, unsigned line, DriftAssertType type, const char *message_fmt, ...){
 	char message[1024];
 
 	va_list vargs;
@@ -252,7 +234,7 @@ void DriftAssertHelper(const char *condition, const char *file, unsigned line, D
 	
 	const char *message_type = (type != DRIFT_ASSERT_WARN ? "Aborting due to error" : "Warning");
 	
-	mtx_lock(&log_mtx);
+	SDL_LockMutex(log_mtx);
 	char log_buffer[2048];
 	snprintf(log_buffer, sizeof(log_buffer),
 		"%s: %s\n"
@@ -263,12 +245,11 @@ void DriftAssertHelper(const char *condition, const char *file, unsigned line, D
 	
 	fputs(log_buffer, log_err);
 	if(!DRIFT_DEBUG){
-		int SDL_ShowSimpleMessageBox(u32 flags, const char *title, const char *message, void* window);
 		SDL_ShowSimpleMessageBox(0x10, "Veridian Expanse (build "DRIFT_GIT_SHORT_SHA")", message, NULL);
 	}
 	
 	fflush(log_err);
-	mtx_unlock(&log_mtx);
+	SDL_UnlockMutex(log_mtx);
 	
 	// Put breakpoints here:
 	switch(type){
@@ -333,19 +314,11 @@ void DriftIOFileWrite(const char* filename, DriftIOFunc* io_func, void* user_ptr
 
 static mz_zip_archive ZipHandles[DRIFT_APP_MAX_THREADS];
 static const char* ResourcesZipName = "resources.zip";
-// static mtx_t DriftAssetMutex;
-// static DriftMem* DriftAssetMem;
-// static char ASSET_BUFFER[256*1024*1024];
 
 static const char* zip_error(mz_zip_archive* zip){return mz_zip_get_error_string(mz_zip_get_last_error(zip));}
 
-static DriftData load_asset(DriftMem* mem, const char* format, va_list args){
-	char filename[256];
-	// va_list args; va_start(args, format);
-	vsnprintf(filename, sizeof(filename), format, args);
-	// va_end(args);
-	
-	mz_zip_archive* zip = ZipHandles + DriftAppGetThreadID();
+DriftData DriftAssetLoad(DriftMem* mem, const char* filename){
+	mz_zip_archive* zip = ZipHandles + DriftGetThreadID();
 	
 	int idx = mz_zip_reader_locate_file(zip, filename, NULL, 0);
 	DRIFT_ASSERT_WARN(idx >= 0, "Asset '%s/%s' not found.", ResourcesZipName, filename);
@@ -364,23 +337,24 @@ static DriftData load_asset(DriftMem* mem, const char* format, va_list args){
 	return (DriftData){.ptr = buffer, .size = size};
 }
 
-DriftData DriftAssetLoad(DriftMem* mem, const char* format, ...){
+DriftData DriftAssetLoadf(DriftMem* mem, const char* format, ...){
+	char filename[256];
 	va_list args; va_start(args, format);
-	DriftData data = load_asset(mem, format, args);
+	vsnprintf(filename, sizeof(filename), format, args);
 	va_end(args);
-	return data;
+	
+	return DriftAssetLoad(mem, filename);
 }
 
-DriftImage DriftAssetLoadImage(DriftMem* mem, const char* format, ...){
-	va_list args; va_start(args, format);
-	DriftData data = load_asset(mem, format, args);
-	va_end(args);
+DriftImage DriftAssetLoadImage(DriftMem* mem, const char* filename){
+	DriftData data = DriftAssetLoad(mem, filename);
 	
-	int w = 0, h = 0;
-	void* pixels = qoi_decode(mem, data.ptr, data.size, &w, &h, 4);
+	qoi_desc desc = {};
+	void* pixels = qoi_decode(mem, data.ptr, data.size, &desc, 4);
+	DRIFT_ASSERT_HARD(pixels, "Failed to decode '%s'", filename);
+	
 	DriftDealloc(mem, data.ptr, data.size);
-	
-	return (DriftImage){.w = w, .h = h, .pixels = pixels};
+	return (DriftImage){.w = desc.width, .h = desc.height, .pixels = pixels};
 }
 
 void DriftImageFree(DriftMem* mem, DriftImage img){
@@ -424,23 +398,6 @@ u64 DriftNextPOT(u64 n){
 	return n + 1;
 }
 
-// uint DriftFindFirstBit(u64 bits){
-// 	uint idx = 0, shift = 32;
-// 	u64 mask = 0xFFFFFFFF;
-
-// 	while((bits & 1) == 0){
-// 		if((bits & mask) == 0){
-// 			bits >>= shift;
-// 			idx += shift;
-// 		}
-		
-// 		shift >>= 1;
-// 		mask >>= shift;
-// 	}
-
-// 	return idx;
-// }
-
 uint DriftLog2Ceil(u64 n){
 	n -= 1;
 	if(n == 0) return 64;
@@ -470,18 +427,6 @@ u64 DriftTimeNanos(void){
 	#error Unhandled platform
 	return 0;
 #endif
-}
-
-bool DriftSelectWeight(DriftSelectionContext* ctx, u64 weight){
-	ctx->sum += weight;
-	ctx->rand *= ctx->sum;
-	if(ctx->rand <= weight*RAND_MAX){
-		ctx->rand /= weight;
-		return true;
-	} else {
-		ctx->rand = (ctx->rand - weight*RAND_MAX)/(ctx->sum - weight);
-		return false;
-	}
 }
 
 #if DRIFT_DEBUG

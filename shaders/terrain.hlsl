@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #include "drift_common.hlsl"
 
 struct VertInput {
@@ -37,7 +47,7 @@ void VShader(in VertInput IN, out FragInput FRAG){
 	FRAG.uv_biome = float3(map_pos/DRIFT_ATLAS_SIZE, DRIFT_ATLAS_BIOME);
 	
 	float2x2 scale = DRIFT_MATRIX_V;
-	FRAG.uv_scale = DRIFT_ATLAS_SIZE*float2(length(scale[0]), length(scale[1]));
+	FRAG.uv_scale = DRIFT_GRADMUL*DRIFT_ATLAS_SIZE*float2(length(scale[0]), length(scale[1]));
 }
 
 SamplerState _repeat : DRIFT_SAMP2;
@@ -54,10 +64,10 @@ float4 FShader(in FragInput FRAG) : SV_TARGET0{
 	float sdf = lerp(gather2.y, gather2.x, sdf_blend.y);
 	float sdf_mask = step(0, sdf);
 	
-	float height = saturate(1 - sdf/5);
+	float height = saturate(1 - sdf/6);
+	float2 dheight = (2*height)*sdf_deriv;
 	height *= height;
 	// return float4(height.rrr, 1);
-	float2 dheight = (2*height)*sdf_deriv;
 	// return float4(dheight, 0, 1);
 	
 	float2 foo = sin(4000*FRAG.uv_biome);
@@ -73,6 +83,7 @@ float4 FShader(in FragInput FRAG) : SV_TARGET0{
 	
 	FRAG.uv_biome.xy += (pcoef/256)*FRAG.parallax;
 	float4 biome = DriftAtlas.Sample(DriftLinear, FRAG.uv_biome);
+	float space = biome[0] + biome[1] + biome[2] + biome[3];
 	float terrain_mask = biome.r + biome.g + biome.b + biome.a;
 	biome += 0.2*(blue_noise - 0.5);
 	float4 biome_rb_ga = lerp(float4(0, 4, biome.rb), float4(2, 6, biome.ga), step(biome.rb, biome.ga).xyxy);
@@ -83,6 +94,7 @@ float4 FShader(in FragInput FRAG) : SV_TARGET0{
 	albedo.rgb = SRGBToLinear(albedo.rgb);
 	albedo.rgb *= lerp(0.20, 1.0, sdf_mask);
 	albedo.rgb *= smoothstep(-1, 0, sdf); // Temporary
+	albedo.rgb *= step(0.5, space);
 	
 	// Normals
 	float2 deriv = dheight + 8*dmod + 2*(2*DriftAtlas.Sample(_repeat, float3(uv2, layer + 1)) - 1);

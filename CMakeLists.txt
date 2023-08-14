@@ -36,8 +36,8 @@ endif()
 
 if(${CMAKE_SYSTEM_NAME} STREQUAL Linux OR ${CMAKE_SYSTEM_NAME} STREQUAL OpenBSD)
 	find_package(SDL2 REQUIRED)
+	
 	set(RESOURCE_MK_COMMANDS
-		-j8
 		ASEPRITE=aseprite
 		GLSLANG=glslangValidator
 		SPIRV_OPT=spirv-opt
@@ -57,8 +57,10 @@ elseif(${CMAKE_SYSTEM_NAME} STREQUAL Darwin)
 		NULL=/dev/null
 	)
 elseif(${CMAKE_SYSTEM_NAME} STREQUAL Windows)
-	set(SDL2_INCLUDE_DIRS ${CMAKE_BINARY_DIR}/SDL2-2.0.20/include)
-	set(SDL2_LIBRARIES ${CMAKE_BINARY_DIR}/SDL2-2.0.20/lib/x64/SDL2.dll)
+	if(NOT DEFINED SDL2_INCLUDE_DIRS)
+		set(SDL2_INCLUDE_DIRS ${CMAKE_BINARY_DIR}/SDL2-2.0.20/include)
+		set(SDL2_LIBRARIES ${CMAKE_BINARY_DIR}/SDL2-2.0.20/lib/x64/SDL2.dll)
+	endif()
 	
 	if(NOT DEFINED RESOURCE_MK_COMMANDS)
 		set(Vulkan_SDK C:/VulkanSDK/1.2.182.0)
@@ -88,13 +90,12 @@ set(DRIFT_INCLUDES
 	${SDL2_INCLUDE_DIRS} ${Vulkan_INCLUDE_DIRS}
 )
 
-# execute_process(
-# 	COMMAND git rev-parse -q HEAD
-# 	WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-# 	OUTPUT_VARIABLE DRIFT_GIT_SHA
-# 	OUTPUT_STRIP_TRAILING_WHITESPACE
-# )
-set(DRIFT_GIT_SHA "0123456789ABCDEF")
+execute_process(
+	COMMAND git rev-parse -q HEAD
+	WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+	OUTPUT_VARIABLE DRIFT_GIT_SHA
+	OUTPUT_STRIP_TRAILING_WHITESPACE
+)
 
 string(TOUPPER ${DRIFT_GIT_SHA} DRIFT_GIT_SHA)
 string(SUBSTRING ${DRIFT_GIT_SHA} 0 8 DRIFT_GIT_SHORT_SHA)
@@ -108,13 +109,12 @@ add_compile_definitions(
 message("git SHA: ${DRIFT_GIT_SHORT_SHA}")
 # configure_file(drift_config.h.in src/drift_config.h)
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+if(NOT DEFINED ZIP_FLAGS)
 	set(ZIP_FLAGS \"-1 --filesync\")
-else()
-	set(ZIP_FLAGS -9)
 endif()
 
 add_library(drift-game
+	ext/microui/microui.c
 	src/drift_input.c
 	src/drift_terrain.c
 	src/drift_draw.c
@@ -126,24 +126,32 @@ add_library(drift-game
 	src/drift_systems.c
 	src/drift_physics.c
 	src/drift_sprite.c
-	src/drift_terrain_gen.c
 	src/drift_sdf.c
 	src/drift_debug.c
 	src/drift_script.c
 	src/drift_ui.c
-	ext/microui/microui.c
+	src/drift_hud.c
+	src/drift_strings_en.c
 )
 
 target_compile_options(drift-game PRIVATE ${DRIFT_COMPILE_OPTIONS})
 target_include_directories(drift-game PUBLIC ${DRIFT_INCLUDES})
 target_link_libraries(drift-game drift-core)
 
-# For fast terrain loading during debug.
-set_source_files_properties(src/drift_terrain.c PROPERTIES COMPILE_FLAGS -O3)
+# For fast FFT.
+set_source_files_properties(
+	src/base/drift_math.c
+	# src/drift_terrain.c
+	PROPERTIES COMPILE_FLAGS "-O3 -fno-sanitize=all"
+)
 
 # Workaround to ignore a warning in the Nuklear demo code.
 add_library(drift-nuklear OBJECT src/base/drift_nuklear.c)
 target_include_directories(drift-nuklear PUBLIC ${DRIFT_INCLUDES})
+
+if(NOT DEFINED MAKE_COMMAND)
+	set(MAKE_COMMAND make -j8 -s)
+endif()
 
 if(DRIFT_RESOURCES)
 	add_custom_target(resources
@@ -151,7 +159,16 @@ if(DRIFT_RESOURCES)
 			${CMAKE_BINARY_DIR}/resources.zip
 			${CMAKE_BINARY_DIR}/sprite_enums.inc
 			${CMAKE_BINARY_DIR}/sprite_defs.inc
-		COMMAND make -s -f ${CMAKE_SOURCE_DIR}/resources.mk drift-game-assets
+			${CMAKE_BINARY_DIR}/atlas_enums.inc
+			${CMAKE_BINARY_DIR}/atlas_defs.inc
+			${CMAKE_BINARY_DIR}/sound_enums.inc
+			${CMAKE_BINARY_DIR}/sound_defs.inc
+			${CMAKE_BINARY_DIR}/sound_inc
+			${CMAKE_BINARY_DIR}/onelua.o
+			${CMAKE_BINARY_DIR}/lua
+			${CMAKE_BINARY_DIR}/qoiconv
+			${CMAKE_BINARY_DIR}/packer
+		COMMAND ${MAKE_COMMAND} -f ${CMAKE_SOURCE_DIR}/resources.mk drift-game-assets
 			CMAKE_COMMAND="${CMAKE_COMMAND}"
 			${RESOURCE_MK_COMMANDS}
 			VPATH=${CMAKE_SOURCE_DIR}
@@ -166,7 +183,6 @@ add_library(drift-core
 	src/base/drift_app.c
 	src/base/drift_util.c
 	src/base/drift_math.c
-	src/base/drift_rand.c
 	src/base/drift_mem.c
 	src/base/drift_table.c
 	src/base/drift_map.c
@@ -176,7 +192,6 @@ add_library(drift-core
 	src/base/drift_gfx.c
 	src/base/drift_audio.c
 	src/base/drift_app_sdl_gl.c
-	ext/tinycthread/tinycthread.c
 	ext/miniz/miniz.c
 )
 target_compile_definitions(drift-core PUBLIC MINIZ_NO_STDIO=0)

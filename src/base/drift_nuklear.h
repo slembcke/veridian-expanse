@@ -1,3 +1,13 @@
+/*
+This file is part of Veridian Expanse.
+
+Veridian Expanse is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Veridian Expanse is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with Veridian Expanse. If not, see <https://www.gnu.org/licenses/>.
+*/
+
 #pragma once
 
 #define NK_INCLUDE_STANDARD_BOOL
@@ -16,7 +26,7 @@ typedef struct DriftNuklear {
 	struct nk_convert_config convert_config;
 	DriftGfxPipeline* pipeline;
 	
-	bool show_info;
+	bool show_inspector;
 	bool show_examples;
 } DriftNuklear;
 
