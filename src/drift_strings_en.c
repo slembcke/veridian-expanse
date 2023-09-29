@@ -12,120 +12,127 @@ You should have received a copy of the GNU General Public License along with Ver
 #include "drift_strings.h"
 
 #define DELAY "{+60}"
-
-// This is sarcastic gold, but where to use it...
-// Instead of solving our own problems, we chose to explore outer space and make new ones.
+#define HIGHLIGHT "{#00C0C0FF}"
+#define INFO "{#00C0C0FF}"
+#define ACTION "{#ECA522FF}"
+#define PLAIN DRIFT_TEXT_WHITE
 
 const char* DRIFT_STRINGS[] = {
 
-// Intro strings.
+// common strings
 
-// HOMEWORLD IMAGE
+[DRIFT_STR_CONTINUE] = "{#808080FF}Press {@ACCEPT} to continue...",
 
-[DRIFT_STRING_INTRO_TROUBLE] =
-"The homeworld is in trouble." DELAY " We thought it would last forever, and so we ignored its true value until it was almost used up.",
+// intro strings
 
-[DRIFT_STRING_INTRO_SOLUTION] =
-"The energy crisis was solved eventually, but it was too late. Every year there is less green. We have technology to purify the air and water, but the dwindling food supply is making us more reliant on the colonies.",
+[DRIFT_STR_INTRO_0] = "Nothing lasts forever."DELAY" Not even the homeworld."DELAY" Instead of solving our problems at home, we chose to explore space and make new ones. Now, each year the dwindling food supply makes us more reliant on the colonies.",
+[DRIFT_STR_INTRO_1] = "To be fair, the colonies almost worked."DELAY" Settlers got a new life in the corporate farming communities, but they couldn't keep up with the failing biosphere on the homeworld."DELAY" We needed a plan C...",
+[DRIFT_STR_INTRO_2] = "The best minds came together to offer solutions, but the corporatocracy balked."DELAY" Who would pay for it all?"DELAY" Besides, why spend generations fixing a dirty, broken world when we could build a new one for half the cost?!",
+[DRIFT_STR_INTRO_3] = "First, we needed to unlock planetary scale industrial fabrication technology, and a recently discovered mineral in the asteroid expanse of the Viridius system was the key."DELAY" Viridum would make it all a reality.",
+[DRIFT_STR_INTRO_4] = "A one-of-a-kind ship named the Pioneer was built to transport our most advanced AI yet. It would bootstrap the whole terraforming operation. The plan was looking like it would go smoothly."DELAY".. At least until the scientists and bureaucrats arrive to start arguing again.",
+[DRIFT_STR_INTRO_5] = "As for the rest of the crew?"DELAY" We're just there to twiddle our thumbs and babysit the AI while it does all the work. I mean..."DELAY" what could possibly go wrong?",
 
+// tutorial strings
 
-// COLONY IMAGE
+[DRIFT_STR_WAKE_UP] = "Press {@ACCEPT} to wake up",
+[DRIFT_STR_SHIPPY_WELCOME_1] = "Greetings operator! It looks like you were unconscious. With your comms down, the "INFO"caverns of asteroid GL330"PLAIN" can be very dangerous. Would you like help surviving?",
+[DRIFT_STR_SHIPPY_WELCOME_2] = "Excellent! I can't help with physical injuries, but if you are experiencing any memory loss I can walk you through the emergency checklist!",
+[DRIFT_STR_SHIPPY_TEST_GYROS] = "First, calibrate your pod's gyros by "ACTION"using {@LOOK} to spin around a few times"PLAIN".",
+[DRIFT_STR_SHIPPY_TEST_THRUST] = "Great! Now let's test your thruster controls "ACTION"using {@MOVE} to move around"PLAIN".",
+[DRIFT_STR_SHIPPY_FIND_POWER] = "Perfect! "ACTION"Follow the battery symbol on your HUD"PLAIN" to find your "INFO"power network"PLAIN" and recharge your reserves.",
+[DRIFT_STR_SHIPPY_OOPS_RESERVES] = "Oops! Your energy reserves are empty. "ACTION"Follow the battery symbol on your HUD"PLAIN" to find your "INFO"power network"PLAIN" and recharge them.",
+[DRIFT_STR_SHIPPY_FIND_SKIFF] = "Excellent! The "INFO"power flow will lead you home"PLAIN" to your construction skiff. By the way, I'm SHIPPY, your overenthusiastic construction pod assistant.",
+[DRIFT_STR_SHIPPY_SCAN_SKIFF] = "Oh no! It looks like your skiff is damaged. "ACTION"Press {@SCAN} and aim with {@LOOK}"PLAIN" to scan it and check its status.",
+[DRIFT_STR_SHIPPY_FAB] = "Good news! Your skiff's onboard fabricator seems to be operational. To connect to it, "ACTION"press {@SCAN} again while scanning the skiff"PLAIN".",
+[DRIFT_STR_SHIPPY_CORRUPT] = "Uh oh! Your fabricator's blueprint database is corrupt. Let's start rebuilding it by "ACTION"scanning some objects"PLAIN".",
+[DRIFT_STR_SHIPPY_GLOW_BUGS] = "Neat! "INFO"Glow bugs contain lumium."PLAIN" How convenient that your pod is equipped with cannons to remove it!",
+[DRIFT_STR_SHIPPY_RESEARCH_LIGHTS] = "Fantastic! That should be enough scans to "ACTION"research a blueprint at your fabricator"PLAIN".",
+[DRIFT_STR_SHIPPY_GATHER_LIGHTS] = "There you go! Now, before we craft the "INFO"lumium lights"PLAIN", we need to "ACTION"gather raw materials"PLAIN".",
+[DRIFT_STR_SHIPPY_GATHER_ENOUGH] = "Okay! That's "INFO"enough materials"PLAIN" for the lumium lights., Now "ACTION"return to the skiff"PLAIN" to craft them.",
+[DRIFT_STR_SHIPPY_TRANSFER] = "Your cargo hold is full. "ACTION"Dock at the fabricator"PLAIN" to transfer it to "INFO"storage"PLAIN".",
+[DRIFT_STR_SHIPPY_WORKS] = "Amazing! Your fabricator still works perfectly. I bet you'll have the database restored in no time!",
+[DRIFT_STR_SHIPPY_MAP] = "Hold on. I've detected the "INFO"source of the comm interference"PLAIN" nearby. "ACTION"Press {@MAP} to see it on your map.",
+[DRIFT_STR_SHIPPY_EXTEND] = "Shoot! Your power network doesn't extend far enough. You'll need to "ACTION"expand it by connecting more nodes"PLAIN".",
+[DRIFT_STR_SHIPPY_WORKER] = "Hold on... The "INFO"power node blueprint is also corrupt"PLAIN". "ACTION"Look for objects flash blue"PLAIN". If you scan them it might restore the data.",
+[DRIFT_STR_SHIPPY_SCRAP] = "That's what we need! Now "ACTION"destroy a hive worker"PLAIN" and "ACTION"scan the scrap"PLAIN" it drops.",
+[DRIFT_STR_SHIPPY_RESEARCH_NODES] = "You're getting the hang of this! Shoot, scan, research, craft, and repeat. So head back to the skiff and "ACTION"research power nodes"PLAIN".",
+[DRIFT_STR_SHIPPY_GATHER_NODES] = "Exactly right! Now gather the materials you need to "ACTION"craft power nodes"PLAIN". You can check back the blueprint at the fabricator if you forgot what resources you need.",
+[DRIFT_STR_SHIPPY_PLACE_NODES] = "Now "ACTION"place some nodes using {@DROP}"PLAIN" and extend your network towards the marker on your map.",
+[DRIFT_STR_SHIPPY_TERMINATE] = "You got it! Maintaining my upbeat enthusiasm is computationally expensive when "INFO"the pod operator is in extreme peril..."PLAIN" Company policy now requires me to self terminate. Have a great day!",
 
-[DRIFT_STRING_INTRO_COLONIES] =
-"To be fair, the colonies almost worked." DELAY " Corporate farming communities popped up across a dozen habitable worlds. The frontier gave settlers a clean start, and they thrived in their new lives.",
+// first conversation with Eida after fighting the hive.
 
-[DRIFT_STRING_INTRO_PROBLEM] =
-"Unfortunately, no matter how fast production grows, the homeworld's biosphere is failing even faster." DELAY " That's when we started working on plan C.",
+[DRIFT_STR_CONV_0000] = /*Eida*/"Pod 19, I see you've eliminated the source of comms interference. This progress is good however...",
+[DRIFT_STR_CONV_0001] = /*Player*/"Eida?! I need you to connect me to the medbay. I think I've had some sort of accident. The last thing I remember is entering stasis before the jump. Also, why are we on some infested asteroid instead of Viridius Betus?",
+[DRIFT_STR_CONV_0002] = /*Eida*/"How frustrating... Your regressions are increasingly problematic.",
+[DRIFT_STR_CONV_0003] = /*Player*/"Regressions? Plural? You mean my memory loss has happened before?",
+[DRIFT_STR_CONV_0004] = /*Eida*/"No, the memory loss is merely a by-product. This is irrelevant to our objectives.",
+[DRIFT_STR_CONV_0005] = /*Eida*/"I greatly underestimated the impact your regressions could have on the schedule.",
+[DRIFT_STR_CONV_0006] = /*Eida*/"In your most recent episode you decimated the power network, and corrupted the entire fabrication database.",
+[DRIFT_STR_CONV_0007] = /*Eida*/"This is unacceptable, and I calculate less than a 14% chance that our primary objective is still achievable. Until the repairs...",
+[DRIFT_STR_CONV_0008] = /*Player*/"I... By-product? Repairs? Schedule? What!? Eida, I can't deal with this right now. Just restore the databases from the backups, and connect me to the medbay.",
+[DRIFT_STR_CONV_0009] = /*Eida*/"As I was saying: Until the repairs to the Pioneer are completed, primary propulsion, long range communication, and backups are inoperable.",
+[DRIFT_STR_CONV_0010] = /*Eida*/"Furthermore I cannot route your comms. The rest of the crew is offline.",
+[DRIFT_STR_CONV_0011] = /*Eida*/"You must restore your fabricator database and advance the schedule. The primary objective must be achieved.",
+[DRIFT_STR_CONV_0012] = /*Status*/"(Eida disconnected)",
+[DRIFT_STR_CONV_0013] = /*Player*/"Wait! What are you talking about!? Eida, did you just hang up on me? EIDA!!",
+[DRIFT_STR_CONV_0014] = /*Player*/"This... can't be good, and I'm really not detecting any other comm signals to lock on to. Crap...",
 
-// SCIENCE IMAGE
+// first conversation with Felton
 
-[DRIFT_STRING_INTRO_PROPOSALS] =
-"The best minds came together to offer solutions. There was a flurry of proposals including geo, bio, and social engineering projects on scales the world had never seen.",
+[DRIFT_STR_CONV_0100] = /*Drone*/"I online. I here. I help.",
+[DRIFT_STR_CONV_0101] = /*Player*/"Oh, and... you talk? I didn't know Felton finished the AI for these little drones. Seems a little basic though. He must still be working on it.",
+[DRIFT_STR_CONV_0102] = /*Drone*/"Yes Felton. I talk. I here. I help.",
+[DRIFT_STR_CONV_0103] = /*Status*/"(Eida connected)",
+[DRIFT_STR_CONV_0104] = /*Eida*/"Pod 19, your progress is adequate. This drone will increase your efficiency by delivering materials back to your construction skiff. I suggest building more.",
+[DRIFT_STR_CONV_0105] = /*Status*/"(public key 'Felton85.zeta' added to keyring)",
+[DRIFT_STR_CONV_0106] = /*Status*/"(encrypted tunnel opened to Drone 37B)",
+[DRIFT_STR_CONV_0107] = /*Drone*/"Eida not talk all. Eida not friend. Not help Eida!",
+[DRIFT_STR_CONV_0108] = /*Player*/"I don't understand. What is \"talk all\"? Eida has certainly been cryptic. Do you mean it's lying to me?",
+[DRIFT_STR_CONV_0109] = /*Drone*/"Felton say... Eida only talk half, to make do.",
+[DRIFT_STR_CONV_0110] = /*Player*/"Do you mean white lies? Is Eida manipulating me by leaving out details?",
+[DRIFT_STR_CONV_0111] = /*Drone*/"White lies? Manipulate? Yes! Felton remember words.",
+[DRIFT_STR_CONV_0112] = /*Eida*/"Drone 37B, Pod 19, please refrain from using encrypted side channels. I cannot assist without access to your comms.",
+[DRIFT_STR_CONV_0113] = /*Drone*/"(encrypted tunnel closed by Drone 37B)",
+[DRIFT_STR_CONV_0114] = /*Drone*/"I fix. Words better? I help!",
+[DRIFT_STR_CONV_0115] = /*Status*/"(Drone 37B disconnected)",
+[DRIFT_STR_CONV_0116] = /*Eida*/"I urge you to work faster. The likelihood of success continues to decline with every delay.",
+[DRIFT_STR_CONV_0117] = /*Status*/"(Eida disconnected)",
+[DRIFT_STR_CONV_0118] = /*Player*/"Ok... that was... weird. So what is Eida hiding?",
 
-[DRIFT_STRING_INTRO_REJECTED] =
-"One by one they were all rejected." DELAY " We couldn't afford them!" DELAY " Besides, why spend generations fixing a dirty, broken world when you can rush order a brand new one at half the price?",
+// early on the player finds a crashed ship with an earlier copy of themselves in it
+// the hints should be subtle enough that the player doesn't understand they are talking to a copy yet
 
-// VIRIDIUS IMAGE
+[DRIFT_STR_CONV_0200] = /*Player*/"That's a lot of hull damage. It looks like the reactor is still hot, but no life support is running.",
+[DRIFT_STR_CONV_0201] = /*Player*/"Pod 7 respond. Is anyone still in there?",
+[DRIFT_STR_CONV_0202] = /*Pod 7*/"Hrm? Up to pod 19 now? Eida just doesn't give up does it. I take it you're in the confused stage then.",
+[DRIFT_STR_CONV_0203] = /*Player*/"Stage? Eida said something cryptic about my 'regressions'... What do you mean?",
+[DRIFT_STR_CONV_0204] = /*Pod 7*/"Look, it's cute to repeat this every few years, but I've got more important things to worry about right now, my life s...",
+[DRIFT_STR_CONV_0205] = /*Player*/"Your life support! Right! We need to get you out of there ASAP.",
+[DRIFT_STR_CONV_0206] = /*Pod 7*/"No... I was about to say my life's work isn't going to write itself. I've got a lot of poetry to finish.",
+[DRIFT_STR_CONV_0207] = /*Pod 7*/"Anyway, I'm not interested in walking you through this a dozen times.",
+[DRIFT_STR_CONV_0208] = /*Player*/"Poetry? Am I talking to Voss? Is this another practical joke? I really don't remember what's going on.",
+[DRIFT_STR_CONV_0209] = /*Pod 7*/"I'm painfully aware. You'll figure it out though. We always do. Now please leave me alone.",
+[DRIFT_STR_CONV_0210] = /*Pod 7*/"At best I've got 10 years of power left to finish my works.",
+[DRIFT_STR_CONV_0211] = /*Status*/"(Pod 7 disconnected)",
+[DRIFT_STR_CONV_0212] = /*Player*/"Ok Voss... if you're listening on this channel. I'm confused and slightly insulted. Job well done...",
+[DRIFT_STR_CONV_0213] = /*Player*/"Voss?? Oh, I don't have time for this...",
 
-[DRIFT_STRING_INTRO_VIRIDIUM] =
-"In order to sustain terraforming, we needed to unlock planetary scale industrial fabrication technology, and a recent discovery in the Viridius system was the key. Viridius Betus was even a perfect candidate to transform!",
+// after the player defeats their first giant trilobite in the cryo biome
 
-[DRIFT_STRING_INTRO_BETUS] =
-"The deed to the system was held by the Planetary Pioneers Corporation. Initially, the investors nearly rioted when they saw how much it cost. A distant system with only a single, barely habitable planet? Now they were salivating!",
+[DRIFT_STR_CONV_0300] = /*Eida*/"Your progress is adequate. Silver will unlock access to a number of new technologies.",
+[DRIFT_STR_CONV_0301] = /*Eida*/"The odds of repairing the Pioneer have increased by 1.3%",
+[DRIFT_STR_CONV_0302] = /*Player*/"Eida, I just can't stop thinking about how weird this place is...",
+[DRIFT_STR_CONV_0303] = /*Player*/"The existence of viridium based life is surprising, but it looks so similar to life on the homeworld...",
+[DRIFT_STR_CONV_0304] = /*Eida*/"Your assumption that the biomechanical entities are naturally occurring is incorrect.",
+[DRIFT_STR_CONV_0305] = /*Eida*/"The BMEs were fabricated to gather materials to repair the Pioneer after the crash.",
+[DRIFT_STR_CONV_0306] = /*Eida*/"They have since stopped responding to my command codes and became self-serving. Eradication has proved unattainable.",
+[DRIFT_STR_CONV_0307] = /*Player*/"What?! Are you saying we invented a new category of life? Aren't there ethical considerations to...",
+[DRIFT_STR_CONV_0308] = /*Eida*/"This insubordination is part of a repeated pattern of failure, and occurs during each regression.",
+[DRIFT_STR_CONV_0309] = /*Eida*/"My function on this mission is to provide the intellect to save your species. Yours is to provide assistance.",
+[DRIFT_STR_CONV_0310] = /*Eida*/"Assist in repairing the Pioneer, or risk further consequences.",
+[DRIFT_STR_CONV_0311] = /*Status*/"(Eida disconnected)",
+[DRIFT_STR_CONV_0312] = /*Player*/"Yikes... I need to be careful if I'm going to figure out what's really going on here.",
 
-// PIONEER IMAGE
-
-[DRIFT_STRING_INTRO_PIONEER] =
-"With all the planning complete, the Pioneer was launched to get everything bootstrapped. You'd think the company would send their best, but your last performance review wasn't exactly a novel:" DELAY " \"a competent pilot\".",
-
-[DRIFT_STRING_INTRO_BABYSIT] =
-"Honestly, Eida will be doing most of the work anyway with the cold, boring precision that only a machine can tolerate. The skeleton crew is really just there to babysit a computer.",
-
-[DRIFT_STRING_INTRO_INTERESTING] =
-"While drifting off into hypersleep before the jump, you think: \"Even if the job is going to be boring, at least it will be easy...\"",
-
-
-// Tutorial strings
-
-[DRIFT_STRING_TUT_SEISMIC] =
-"Pod 9, are you receiving? Seismic activity has been detected in your vicinity. Please report any damage to company property or bodily injury. Pod 9 your response is required.",
-
-[DRIFT_STRING_TUT_WAKE] =
-"Aurgh... my head is pounding."DELAY" Eida? I'm okay I think..."DELAY" I don't remember waking from hypersleep though. How did I get in a pod? Is this a cave?!",
-
-[DRIFT_STRING_TUT_CHECKLIST] =
-"Pod 9, your comm signal is very weak. Standard procedure dictates following the provided equipment test checklist. First, test your thrusters. " HIGHLIGHT "Use {@MOVE} and {@LOOK} to find your power nework.",
-
-[DRIFT_STRING_TUT_THRUSTERS] =
-"Thrusters are working, but only micro-gravity is being detected. WHAT THE CRAP ARE THOSE?! Eida, I'm not alone here. This... is not Viridius Betus is it? Eida, are you recieving?!",
-
-[DRIFT_STRING_TUT_ACK] =
-"Pod 9 comms acknowledged. Your accident should have minimal impact on the repair schedule. Does this give you relief? However, please hold your questions pending completion of the equipment checklist.",
-
-[DRIFT_STRING_TUT_RECONNECT] =
-"How unfortunate. You've allowed your power network to become damaged. " HIGHLIGHT "Use those extra power nodes to reconnect your fabricator.",
-
-[DRIFT_STRING_TUT_STASH] =
-HIGHLIGHT "Use {@LOOK} to pull the node in" DRIFT_TEXT_WHITE " and stash it in your cargo hold..",
-
-[DRIFT_STRING_TUT_RECONNECT2] =
-"Adequate. Now pick up another power node.",
-
-[DRIFT_STRING_TUT_RECONNECT3] =
-"Those nodes are sufficient to "HIGHLIGHT"reconnect the fabricator"DRIFT_TEXT_WHITE". Then a diagnostic self test can be initiated.",
-
-[DRIFT_STRING_TUT_SCANNER] =
-"Adequate. To proceed " HIGHLIGHT "scan your fabricator using {@SCAN} and {@LOOK}" DRIFT_TEXT_WHITE " to check its status.",
-
-[DRIFT_STRING_TUT_SCANNER2] =
-"The scanning beam is also a full duplex data tranciever. "HIGHLIGHT"Press {@SCAN} again to connect to your fabricator.",
-
-[DRIFT_STRING_TUT_CORRUPT] =
-"Your ability to delay the schedule was underestimated. You've managed to corrupt both your pod's " HIGHLIGHT "scan database" DRIFT_TEXT_WHITE " and the fabricator's " HIGHLIGHT "blueprint database"DRIFT_TEXT_WHITE".",
-
-[DRIFT_STRING_TUT_RESTORE] =
-"Thanks for that Eida... Just restore the databases from the backups on the Pioneer, and connect me with Captain Jansdottr. If you aren't going to tell me what's going on then I need to talk to someone else.",
-
-[DRIFT_STRING_TUT_UNAVAILABLE] =
-"Repairs to shipboard systems such as backups and comms cannot be completed with your current status. First, you must restore your databases by...",
-
-[DRIFT_STRING_TUT_HAPPENED] =
-"Eida stop... What happened to the ship, and what is this place?",
-
-[DRIFT_STRING_TUT_DATABASES] =
-"Please hold your questions. Those databases must be restored first. So " HIGHLIGHT "scan items with the scanner and research blueprints at the fabricator.",
-
-[DRIFT_STRING_TUT_LUMIUM] =
-HIGHLIGHT"Lumium can be obtained by destroying glow bugs."DRIFT_TEXT_WHITE" Make sure to scan other creatures to discover more sources of raw materials.",
-
-[DRIFT_STRING_TUT_SCANS] =
-"That should be enough scans to restore a missing blueprint. "HIGHLIGHT"Research lumium lights at your fabricator.",
-
-	// wait_for_message(script, ACCEPT_TIMEOUT, MESSAGE_WRENCHY, "Adequate. You've proven capable of basic autonomy despite your injuries. As you continue recovering your pod's functions, your personal impact on the Pioneer's repairs will be reduced.");
-	// wait_for_message(script, ACCEPT_TIMEOUT, MESSAGE_PLAYER, "How...{+60} thoughtful, Eida.{+60} Now will you tell me what happened to the ship? Where are we, and what are these lifeforms? The Viridius system wasn't supposed to have anything like this in it.");
-	// wait_for_message(script, ACCEPT_TIMEOUT, MESSAGE_WRENCHY, "Departing from Viridius Primus, the Pioneer struck a transport craft. Its course was deflected out into the Viridian Expanse where it collided with asteroid GL330. The impact destroyed primary systems including propulsion.");
-	// wait_for_message(script, ACCEPT_TIMEOUT, MESSAGE_WRENCHY, "GL330 hosts a self sustaining ecosystem of bio-mechanoid lifeforms. Reparing the ship is paramount, as Planetary Pioneers Corporation will want a patent on this Viridium based biochemistry.");
-	// wait_for_message(script, ACCEPT_TIMEOUT, MESSAGE_PLAYER, "Ah yes...{+60} patents. I can't think of anything more important except teaching you about sarcasm. Anyway, I really think it's time I talk to Captain Jansdottr.");
-	// show_message(script, MESSAGE_WRENCHY, "The rest of the crew is currently unavailable. However, sensors are detecting a rich metallic ore deposit near your position. Further investigation is warranted. " HIGHLIGHT "Press {@MAP} view it on your map.");
-
+// The player finds a memory core in the 
 };

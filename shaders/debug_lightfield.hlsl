@@ -31,14 +31,14 @@ void VShader(in VertInput IN, out FragInput FRAG){
 
 float4 Spheres(float2 uv, float2 ssuv){
 	float3 n = float3(uv, 1 - dot(uv, uv));
-	float l = length(uv)/0.8;
+	float l = length(uv)/0.9;
 	float mask = 1 - smoothstep(1 - fwidth(l), 1, l);
 	return mask*float4(n, 1);
 }
 
 float4 FShader(in FragInput FRAG) : SV_TARGET0 {
 	// float2 uv1 = FRAG.position.xy/4/UV_COEF;
-	float2 uv1 = FRAG.world_pos.xy/8/UV_COEF;
+	float2 uv1 = FRAG.world_pos.xy/6/UV_COEF;
 	
 	// Odd and even rows.
 	float4 n1 = Spheres(frac(uv1 + 0.0)*UV_COEF - (0.5*UV_COEF), FRAG.uv);
@@ -46,6 +46,16 @@ float4 FShader(in FragInput FRAG) : SV_TARGET0 {
 	float4 n = n1 + n2;
 	n.z += 1 - n.w;
 	// n.xyz = float3(0, 0, 1);
+	
+	// float3 lum = {0.3, 0.6, 0.1};
+	// float3 l0 = DriftLightfield.Sample(DriftLinear, float3(FRAG.uv, 0));
+	// float3 l1 = DriftLightfield.Sample(DriftLinear, float3(FRAG.uv, 1));
+	// float3 l2 = DriftLightfield.Sample(DriftLinear, float3(FRAG.uv, 2));
+	// float3 l3 = DriftLightfield.Sample(DriftLinear, float3(FRAG.uv, 3));
+	// float3 l4 = DriftLightfield.Sample(DriftLinear, float3(FRAG.uv, 4));
+	// return float4(l0, 1);
+	// return float4(0.5 + 2*dot(lum, l1), 0.5 + 2*dot(lum, l2), 0, 1);
+	// return float4(0.5 + 2*dot(lum, l3), 0.5 + 2*dot(lum, l4), 0, 1);
 	
 	float3 color = SampleLightField(normalize(n.xyz), FRAG.uv, 1);
 	return float4(color.rgb, 1)*n.w;

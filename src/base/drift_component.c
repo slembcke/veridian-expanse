@@ -21,8 +21,6 @@ DriftComponent* DriftComponentInit(DriftComponent* component, DriftTableDesc des
 	
 	DriftTableInit(&component->table, desc);
 	DriftName name = component->table._names[0];
-	DRIFT_ASSERT_WARN(name.str[0] == '@', "Component '%s' should start with a '@'", name.str);
-	name.str[0] = '#';
 	DriftMapInit(&component->map, component->table.desc.mem, name.str, desc.min_row_capacity);
 	
 	// Reserve 0 index;

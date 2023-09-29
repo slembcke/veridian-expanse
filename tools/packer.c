@@ -235,7 +235,9 @@ static int gen_atlases(lua_State *lua){
 int main(int argc, const char* argv[]){
 	lua_State *lua = luaL_newstate();
 	luaL_openlibs(lua);
-	// dbg_setup(lua, "debugger", "dbg", NULL, NULL);
+	if(strcmp(getenv("DBG_LUA") ?: "", "1") == 0){
+		dbg_setup(lua, "debugger", "dbg", NULL, NULL);
+	}
 
 	lua_createtable(lua, argc, 0);
 	for(int i = 1; i < argc; i++){
@@ -247,8 +249,7 @@ int main(int argc, const char* argv[]){
 	lua_pushcfunction(lua, gen_atlases);
   lua_setglobal(lua, "gen_atlases");
 	
-	char* write_png = getenv("WRITE_PNG");
-	WRITE_PNG = strcmp(write_png ?: "", "1") == 0;
+	WRITE_PNG = strcmp(getenv("WRITE_PNG") ?: "", "1") == 0;
 	
 	// char filename[1024];
 	// snprintf(filename, sizeof(filename), "%s/tools/packer.lua", getenv("VPATH"));

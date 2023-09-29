@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<title>Veridian Expanse README</title>
+		<!-- <link href="style.css" rel="stylesheet" /> -->
+	</head>
+	
+	<body>
+		<h1>Veridian Expanse</h1>
+
+		<em>Explore the depths as you drill, craft, and fight to escape from a mysterious asteroid deep in the Veridian Expanse!</em>
+
+		<p>As expected, something has gone terribly wrong... The homeworld contracted your company for its first terraforming project, but instead you find yourself stranded on an asteroid, aided only by a pithy computer. Everything out here is supposed to be lifeless, so imagine your surprise to find it infested with biomechanical entities. Hungry ones!</p>
+
+		<p>Drill, craft, and blast your way through winding caverns. Upgrade your utility pod with auto-cannons, laser drills, and scanners. Build an army of tireless drones. After all, you'll need every advantage to venture deep into the asteroid's secrets if you want to repair your ship and escape. Discover its genesis, or become lunch.</p>
+
+		<p>Terraforming may be the homeworld's final salvation. Sending their best was the obvious choice, if it wasn't so expensive anyway. Instead, they stranded you in... the Veridian Expanse.</p>
+
+		<h2>Alpha Version Notes:</h2>
+
+		<p>Though the game is not yet complete, if you like what you see you can wishlist it on <a href="https://store.steampowered.com/app/2137670/Veridian_Expanse/">Steam</a> and <a href="https://howlingmoonsoftware.itch.io/veridian-expanse">itch.io</a>. Since I'm developing this game part time, mostly by myself, any help spreading the word is very very appreciated. :)</p>
+
+		<h2>System Requirements:</h2>
+
+		<list>
+		<li>Windows: Windows 7 or later - <em>(64 bit Intel)</em></li>
+		<li>Linux: Ubuntu 14 or later - <em>(64 bit Intel or ARM)</em></li>
+		<li>Mac: 10.14 or later - <em>(64 Intel or ARM)</em></li>
+		<li>Graphics: OpenGL 3.3, Vulkan 1.0, or later</li>
+		</list>
+
+		<p>Veridian Expanse should run on most hardware that can access the modern web to download it. If you are reading this, it will probably run!</p>
+
+		<p><strong>Note:</strong> <em>I haven't figured out a way to automate Mac builds yet, so I haven't been publishing them very often during development.</em> :-\</p>
+
+		<h2>Join the Discussion:</h2>
+
+		<p>Feedback and bug reports are very welcome. I haven't started building up a community yet, but you can be the first maybe? ;) I have a <a href="https://discord.gg/NC46evnE">Discord chat</a> set up, you can post on the <a href="https://howlingmoonsoftware.itch.io/veridian-expanse/community">itch.io forum</a>, or submit issues on the <a href="https://github.com/slembcke/veridian-expanse/issues">GitHub issues page</a>
+
+		<h2>Raspberry Pi 4</h2>
+
+		<p>Veridian Expanse runs on the Raspberry Pi 4! Being written in C + Vulkan makes it pretty efficient, and it runs well using the V3DV driver in newer versions of Mesa. At the moment I only have a 64 bit build automated, but I'll add a 32 bit version later probably.</p>
+		
+		<p><strong>Note:</strong> <em>The current version of Raspberry Pi OS is based on Debian 11 "Bullseye", and includes a relatively old version of Mesa. Though Veridian Expanse will run, it won't run smoothly as it missing a lot of optimizations to the Vulkan driver. There are a bunch of ways to update Mesa if you are adventurous, but the new OS version based on Debian 12 "Bookworm" is imminent. Maybe best to just wait. ;)</em></p>
+
+		<h2>Open Source</h2>
+
+		<p>The source code for Veridian Expanse is available under the GPLv3. In addition to the Raspberry Pi, I hope to make Veridian Expanse available on a bunch of interesting platforms like Flathub, the BSDs, and Haiku. :)</p>
+
+		<a href="https://github.com/slembcke/veridian-expanse">Veridian Exanse on GitHub</a>
+
+		<p>Why open source a game that I plan to sell? First of all, any game on Steam will be available on pirate sites within hours of publishing. Pirates are only interested in the binary anway, why would they even care about the source? On the other hand, if you want to get a game you bought running on something interesting like a cheap Linux handheld or something, you <em>do</em> need the source for that. Also, I've already shared the code with people when they had questions about how I implemented certain things anyway.</p>
+	</body>
+</html>

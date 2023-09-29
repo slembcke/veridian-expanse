@@ -889,7 +889,7 @@ static DriftGfxShader* DriftGLShaderLoad(const DriftGfxDriver* driver, const cha
 	DriftAssertGfxThread();
 	
 	u8 buffer[64*1024];
-	DriftMem* mem = DriftLinearMemInit(buffer, sizeof(buffer), "Shader Mem");
+	DriftMem* mem = DriftLinearMemMake(buffer, sizeof(buffer), "Shader Mem");
 	DriftData vshader = DriftAssetLoadf(mem, "shaders/%s%s", name, ".vert");
 	DriftData fshader = DriftAssetLoadf(mem, "shaders/%s%s", name, ".frag");
 	return DriftGLShaderNew(driver, name, desc, vshader, fshader);
@@ -982,7 +982,7 @@ void* DriftShellSDLGL(DriftShellEvent event, void* shell_value){
 			
 			{
 				u8 mem_buf[64*1024];
-				DriftMem* mem = DriftLinearMemInit(mem_buf, sizeof(mem_buf), "cursor memory");
+				DriftMem* mem = DriftLinearMemMake(mem_buf, sizeof(mem_buf), "cursor memory");
 				DriftImage img = DriftAssetLoadImage(mem, "gfx/cursor.qoi");
 				
 				SDL_Surface* cursor_surface = SDL_CreateRGBSurfaceWithFormatFrom(img.pixels, img.w, img.h, 32, img.w*4, SDL_PIXELFORMAT_RGBA32);

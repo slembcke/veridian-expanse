@@ -12,7 +12,9 @@ docker run --rm -v $PWD:/drift:z drift-build-cross bash /drift/scripts/build-cro
 docker build -t drift-build-linux -f scripts/linux.dockerfile scripts
 docker run --rm -v $PWD:/drift:z drift-build-linux bash /drift/scripts/build-linux.sh $DIRNAME
 
-cd $DIRNAME && zip -r9 ../$DIRNAME.zip . -x "*.inc"
+rm $DIRNAME/*.inc
+cp README.html $DIRNAME
+cd $DIRNAME && zip -r9 ../$DIRNAME.zip .
 
 # To run them by hand for debugging ex:
 # docker run -it -v $PWD:/drift drift-build-cross bash

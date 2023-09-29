@@ -16,7 +16,7 @@ You should have received a copy of the GNU General Public License along with Ver
 
 static void* script_context(tina* coro, void* value){
 	DriftScript* script = coro->user_data;
-	DriftGameState* state = script->update->state;
+	DriftGameState* state = script->state;
 	
 	state->status.save_lock++;
 	script->body(script);
@@ -28,12 +28,12 @@ static void* script_context(tina* coro, void* value){
 
 static bool check_default(DriftScript* script){return !script->_coro->completed;}
 
-DriftScript* DriftScriptNew(DriftScriptFunc script_func, void* ctx){
+DriftScript* DriftScriptNew(DriftScriptInitFunc init_func, void* script_data, DriftGameContext* game_ctx){
 	DriftScript* script = DriftAlloc(DriftSystemMem, DRIFT_SCRIPT_BUFFER_SIZE);
-	*script = (DriftScript){.body = script_func, .ctx = ctx, .run = true};
+	*script = (DriftScript){.user_data = script_data, .game_ctx = game_ctx, .state = game_ctx->state, .run = true, .check = check_default};
 	script->_coro = tina_init(script->_stack_buffer, DRIFT_SCRIPT_BUFFER_SIZE - sizeof(*script), script_context, script);
-	script->check = check_default;
 	
+	init_func(script);
 	return script;
 }
 
@@ -66,7 +66,7 @@ void DriftScriptFree(DriftScript* script){
 static void DriftScriptWaitSeconds(DriftScript* script, double timeout){
 	while(!script->debug_skip && timeout > 0){
 		DriftScriptYield(script);
-		timeout -= script->update->dt;
+		timeout -= script->update->tick_dt;
 	}
 }
 
@@ -81,7 +81,7 @@ static void DriftScriptWaitAccept(DriftScript* script, float timeout){
 	while(!script->debug_skip && timeout > 0){
 		if(DriftInputButtonState(DRIFT_INPUT_ACCEPT)) break;
 		DriftScriptYield(script);
-		timeout -= script->update->dt;
+		timeout -= script->update->tick_dt;
 	}
 	
 	// Wait until it's released;
@@ -126,22 +126,26 @@ typedef struct {
 	bool has_moved, has_looked;
 } TutorialContext;
 
-static DriftGameContext* get_ctx(DriftScript* script){return script->update->ctx;}
-static DriftGameState* get_state(DriftScript* script){return script->update->state;}
-
-static DriftPlayerData* get_player(DriftScript* script){
-	DriftGameState* state = get_state(script);
-	uint idx = DriftComponentFind(&get_state(script)->players.c, get_state(script)->player);
-	DRIFT_ASSERT_WARN(idx, "No player?");
-	return get_state(script)->players.data + idx;
+static uint get_player_idx(DriftScript* script){
+	DriftGameState* state = script->state;
+	return DriftComponentFind(&state->players.c, state->player);
 }
 
 static uint get_player_body_idx(DriftScript* script){
-	return DriftComponentFind(&get_state(script)->bodies.c, get_state(script)->player);
+	DriftGameState* state = script->state;
+	return DriftComponentFind(&state->bodies.c, state->player);
+}
+
+static DriftPlayerData* get_player(DriftScript* script){
+	DriftGameState* state = script->state;
+	uint idx = get_player_idx(script);
+	DRIFT_ASSERT_WARN(idx, "No player?");
+	return state->players.data + idx;
 }
 
 static DriftVec2 get_player_pos(DriftScript* script){
-	return get_state(script)->bodies.position[get_player_body_idx(script)];
+	DriftGameState* state = script->state;
+	return state->bodies.position[get_player_body_idx(script)];
 }
 
 static struct {
@@ -153,8 +157,9 @@ static struct {
 	[MESSAGE_PLAYER] = {.frame = DRIFT_SPRITE_PLAYER_PORTRAIT, .name = "Pod 9"},
 };
 
-static void show_message(DriftScript* script, MessageSender sender, const char* message){
-	TutorialContext* tut = script->ctx;
+static void show_message(DriftScript* script, MessageSender sender, DriftStringID strid){
+	TutorialContext* tut = script->user_data;
+	const char* message = DRIFT_STRINGS[strid];
 	if(tut->message == message) return;
 	
 	tut->text_timer = 0;
@@ -167,7 +172,7 @@ static void show_message(DriftScript* script, MessageSender sender, const char* 
 static void wait_for_accept(DriftScript* script, float timeout){
 	if(script->debug_skip) return;
 	
-	TutorialContext* tut = script->ctx;
+	TutorialContext* tut = script->user_data;
 	DRIFT_SCRIPT_WHILE_YIELD(script, tut->text_active);
 	tut->show_accept = true;
 	
@@ -176,19 +181,23 @@ static void wait_for_accept(DriftScript* script, float timeout){
 		if(script->debug_skip) break;
 		if(timeout < 0) break;
 		DriftScriptYield(script);
-		timeout -= script->update->dt;
+		timeout -= script->update->tick_dt;
 	}
 	DRIFT_SCRIPT_WHILE_YIELD(script, DriftInputButtonState(DRIFT_INPUT_ACCEPT));
 	tut->show_accept = false;
 }
 
-static void wait_for_message(DriftScript* script, float timeout, MessageSender sender, const char* message){
-	show_message(script, sender, message);
+static void wait_for_message(DriftScript* script, float timeout, MessageSender sender, DriftStringID strid){
+	show_message(script, sender, strid);
 	wait_for_accept(script, timeout);
 }
 
+static void draw_black(DriftDraw* draw, DriftScript* script){
+	draw->screen_tint = DRIFT_VEC4_BLACK;
+}
+
 static void draw_shared(DriftDraw* draw, DriftScript* script){
-	TutorialContext* tut = script->ctx;
+	TutorialContext* tut = script->user_data;
 	draw->screen_tint = DriftVec4Mul(DRIFT_VEC4_WHITE, tut->fade_in);
 	
 	if(tut->message != tut->_last_message){
@@ -229,14 +238,18 @@ static void draw_shared(DriftDraw* draw, DriftScript* script){
 		});
 		
 		if(tut->text_active && !tut->text_pause){
-			static DriftAudioSampler text_sampler;
+			static DriftAudioSampler text_sampler; // TODO static global
 			DriftImAudioSet(DRIFT_BUS_HUD, DRIFT_SFX_TEXT, &text_sampler, (DriftAudioParams){.gain = 0.25f, .loop = true});
 		}
 		
 		if(tut->show_accept){
-			const char* accept_message = "{#808080FF}Press {@ACCEPT} to continue...";
+			const char* accept_message = DRIFT_STRINGS[DRIFT_STR_CONTINUE];
 			DriftVec2 accept_pos = {panel_origin.x + panel_size.x - DriftDrawTextSize(accept_message, 0).x - 4, panel_origin.y + 4};
-			DriftDrawText(draw, &draw->hud_sprites, accept_pos, accept_message);
+			DriftDrawTextFull(draw, &draw->hud_sprites, accept_message, (DriftTextOptions){
+				.matrix = {1, 0, 0, 1, panel_origin.x + panel_size.x - DriftDrawTextSize(accept_message, 0).x - 4, panel_origin.y + 4},
+				.tint = DriftVec4Mul(DRIFT_VEC4_WHITE, DriftSaturate(1 + DriftWaveComplex(draw->clock_nanos, 1.0f).x)),
+				
+			});
 		}
 	}
 	
@@ -244,7 +257,7 @@ static void draw_shared(DriftDraw* draw, DriftScript* script){
 		const float scale = 1;
 		
 		DriftVec2 pos = tut->indicator_location;
-		float r = 10 + 10*fabsf(DriftWaveComplex(draw->nanos, 0.5f).x);
+		float r = 10 + 10*fabsf(DriftWaveComplex(draw->update_nanos, 0.5f).x);
 		DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = pos, .p1 = pos, .radii = {r, r - scale}, .color = DRIFT_RGBA8_GREEN}));
 		
 		DriftVec2 screen_pos = DriftAffineOrigin(draw->vp_inverse);
@@ -279,16 +292,16 @@ static void draw_shared(DriftDraw* draw, DriftScript* script){
 }
 
 static void draw_press_to_begin(DriftDraw* draw, DriftScript* script){
-	TutorialContext* tut = script->ctx;
+	TutorialContext* tut = script->user_data;
 	draw_shared(draw, script);
 	
-	const char* text = "Press {@ACCEPT} to wake up";
+	const char* text = DRIFT_STRINGS[DRIFT_STR_WAKE_UP];
 	DriftVec2 p = {draw->internal_extent.x/2 - DriftDrawTextSize(text, 0).x/2, draw->internal_extent.y/2 - 32};
 	DriftDrawText(draw, &draw->hud_sprites, p, text);
 }
 
 static void draw_checklist(DriftDraw* draw, DriftScript* script){
-	TutorialContext* tut = script->ctx;
+	TutorialContext* tut = script->user_data;
 	draw_shared(draw, script);
 	
 	DriftVec2 extents = draw->internal_extent;
@@ -308,16 +321,17 @@ static void draw_checklist(DriftDraw* draw, DriftScript* script){
 		.tint = DRIFT_VEC4_WHITE, .spacing_adjust = 2, .max_width = 120,
 		.matrix = {1, 0, 0, 1, panel_origin.x + 5, panel_origin.y - 11},
 	};
-	opts.matrix = DriftDrawTextFull(draw, &draw->hud_sprites, DRIFT_TEXT_ORANGE"Emergency Checklist:\n", opts);
+	const char* message = DriftSMPrintf(draw->mem, DRIFT_TEXT_ORANGE"%s:\n", "Emergency Checklist");
+	opts.matrix = DriftDrawTextFull(draw, &draw->hud_sprites, message, opts);
 	
 	// Draw completed lists in green.
 	for(uint i = 0; i < tut->list_idx; i++){
-		const char* message = DriftSMPrintf(draw->mem, "{#00800080}- %s\n", tut->list_header[i]);
+		message = DriftSMPrintf(draw->mem, "{#00800080}- %s\n", tut->list_header[i]);
 		opts.matrix = DriftDrawTextFull(draw, &draw->hud_sprites, message, opts);
 	}
 	
 	{ // Draw current list.
-		const char* message = DriftSMPrintf(draw->mem, "- %s\n", tut->list_header[tut->list_idx]);
+		message = DriftSMPrintf(draw->mem, "- %s\n", tut->list_header[tut->list_idx]);
 		opts.matrix = DriftDrawTextFull(draw, &draw->hud_sprites, message, opts);
 	}
 	
@@ -330,7 +344,7 @@ static void draw_checklist(DriftDraw* draw, DriftScript* script){
 		const char* text = tut->task_text[i];
 		if(!text) break;
 		
-		u8 pulse = (u8)(128 + 63*DriftWaveComplex(draw->nanos, 1).x);
+		u8 pulse = (u8)(128 + 63*DriftWaveComplex(draw->update_nanos, 1).x);
 		DriftAffine icon_matrix = DriftAffineMul(task_opts.matrix, (DriftAffine){1, 0, 0, 1, -12, 0});
 		if(tut->task[i]){
 			DRIFT_ARRAY_PUSH(draw->hud_sprites, ((DriftSprite){
@@ -342,14 +356,14 @@ static void draw_checklist(DriftDraw* draw, DriftScript* script){
 			}));
 		}
 		
-		const char* message = DriftSMPrintf(draw->mem, DRIFT_TEXT_WHITE"%s\n", tut->task_text[i]);
+		message = DriftSMPrintf(draw->mem, DRIFT_TEXT_WHITE"%s\n", tut->task_text[i]);
 		task_opts.matrix = DriftDrawTextFull(draw, &draw->hud_sprites, message, task_opts);
 	}
 	opts.matrix = DriftAffineMul(task_opts.matrix, (DriftAffine){1, 0, 0, 1, -offset, 0});
 	
 	// Draw remaining lists in gray.
 	for(uint i = tut->list_idx + 1; tut->list_header[i]; i++){
-		const char* message = DriftSMPrintf(draw->mem, "{#60606080}- %s\n", tut->list_header[i]);
+		message = DriftSMPrintf(draw->mem, "{#60606080}- %s\n", tut->list_header[i]);
 		opts.matrix = DriftDrawTextFull(draw, &draw->hud_sprites, message, opts);
 	}
 	
@@ -359,7 +373,7 @@ static void draw_checklist(DriftDraw* draw, DriftScript* script){
 static bool checklist_wait(DriftScript* script, uint list_idx, ...){
 	script->draw = draw_checklist;
 	
-	TutorialContext* tut = script->ctx;
+	TutorialContext* tut = script->user_data;
 	if(tut->list_idx != list_idx){
 		tut->list_idx = list_idx;
 		memset(tut->task, 0, sizeof(tut->task));
@@ -389,14 +403,14 @@ static bool checklist_wait(DriftScript* script, uint list_idx, ...){
 }
 
 static DriftVec2 reticle_pos(DriftScript* script){
-	DriftGameState* state = get_state(script);
-	uint transform_idx = DriftComponentFind(&state->transforms.c, get_state(script)->player);
+	DriftGameState* state = script->state;
+	uint transform_idx = DriftComponentFind(&state->transforms.c, state->player);
 	DriftVec2 player_pos = DriftAffineOrigin(state->transforms.matrix[transform_idx]);
 	return DriftVec2Add(player_pos, get_player(script)->reticle);
 }
 
 static DriftVec2 highlight_nearest_pnode(DriftScript* script){
-	DriftGameState* state = get_state(script);
+	DriftGameState* state = script->state;
 	DriftVec2 target_pos = reticle_pos(script);
 	
 	float nearest_dist = INFINITY;
@@ -439,7 +453,7 @@ static DriftVec2 nearest_power(DriftGameState* state, DriftVec2 search_pos){
 }
 
 static DriftVec2 nearest_thing(DriftScript* script, DriftComponent* component, uint* type_arr, uint type){
-	DriftGameState* state = get_state(script);
+	DriftGameState* state = script->state;
 	float nearest_dist = INFINITY;
 	DriftVec2 target_pos = reticle_pos(script);
 	DriftVec2 nearest_pos = DRIFT_VEC2_ZERO;
@@ -466,14 +480,40 @@ static DriftVec2 nearest_thing(DriftScript* script, DriftComponent* component, u
 }
 
 static void show_energy_message(DriftScript* script){
-	show_message(script, MESSAGE_SHIPPY, "Oops! Your energy reserves are empty. " HIGHLIGHT "Follow the battery symbol on your HUD" DRIFT_TEXT_WHITE " to find your power network and recharge them.");
+	show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_OOPS_RESERVES);
 	
-	TutorialContext* tut = script->ctx;
+	TutorialContext* tut = script->user_data;
 	tut->indicator_label = NULL;
 }
 
+static void DriftTutorialBody(DriftScript* script);
 void DriftTutorialScript(DriftScript* script){
+	DriftGameState* state = script->state;
+	
+	// Reset status values
+	state->status.disable_look = true;
+	state->status.disable_move = true;
+	state->status.disable_hud = true;
+	state->status.disable_scan = true;
+	state->status.disable_nodes = true;
+	state->status.tool_restrict = DRIFT_TOOL_GUN;
+	state->status.scan_restrict = DRIFT_SCAN_CONSTRUCTION_SKIFF;
+	state->status.spawn_phase = DRIFT_TUTORIAL_SPAWN_LIMIT;
+	get_player(script)->energy = 0;
+	
+	for(uint i = 0; i < _DRIFT_SCAN_COUNT; i++) state->scan_progress[i] = 0;
+	state->status.factory.needs_reboot = true;
+	state->status.factory.needs_scroll = true;
+	
+	script->body = DriftTutorialBody;
+	script->draw = draw_black;
+}
+
+static void DriftTutorialBody(DriftScript* script){
 	char buffer[1024];
+	
+	DriftGameContext* ctx = script->game_ctx;
+	DriftGameState* state = script->state;
 	
 	TutorialContext tut = {
 		.list_header = (const char*[]){
@@ -482,30 +522,20 @@ void DriftTutorialScript(DriftScript* script){
 			"Recover Data",
 			"Craft Headlights",
 			"Expand Network",
+			"Escape!",
 			NULL,
 		},
 		.list_idx = -1,
 	};
-	script->ctx = &tut;
-	
-	// Reset status values
-	get_state(script)->status.disable_look = true;
-	get_state(script)->status.disable_move = true;
-	get_state(script)->status.disable_hud = true;
-	get_state(script)->status.disable_scan = true;
-	get_state(script)->status.tool_restrict = DRIFT_TOOL_GUN;
-	get_state(script)->status.scan_restrict = DRIFT_SCAN_CONSTRUCTION_SKIFF;
-	get_player(script)->energy = 0;
-	
-	for(uint i = 0; i < _DRIFT_SCAN_COUNT; i++) get_state(script)->scan_progress[i] = 0;
-	get_state(script)->status.factory_needs_reboot = true;
+	script->user_data = &tut;
 	script->draw = draw_shared;
+	
 	if(DRIFT_DEBUG) goto debug_start;
 	
 	// Tutorial starts here
 	tut.fade_in = 0;
 	while(tut.fade_in < 0.3f){
-		tut.fade_in = DriftLerpConst(tut.fade_in, 0.3f, script->update->dt/5);
+		tut.fade_in = DriftLerpConst(tut.fade_in, 0.3f, script->update->tick_dt/5);
 		DriftScriptYield(script);
 	}
 	
@@ -518,7 +548,7 @@ void DriftTutorialScript(DriftScript* script){
 	float explosion_timeout = 1;
 	DriftRandom explode_rand = {};
 	while(!script->debug_skip && !DriftInputButtonState(DRIFT_INPUT_ACCEPT)){
-		explosion_timeout -= script->update->dt;
+		explosion_timeout -= script->update->tick_dt;
 		if(explosion_timeout < 0){
 			DriftVec2 pos = DriftVec2FMA((DriftVec2){1571.6f, -2516.6f}, DriftRandomInUnitCircle(&explode_rand), 100);
 			float pan = DriftClamp(DriftAffinePoint(script->update->prev_vp_matrix, pos).x, -1, 1);
@@ -533,18 +563,14 @@ void DriftTutorialScript(DriftScript* script){
 	script->draw = draw_shared;
 	
 	while(tut.fade_in < 1 && !script->debug_skip){
-		tut.fade_in = DriftLerpConst(tut.fade_in, 1, script->update->dt/2);
+		tut.fade_in = DriftLerpConst(tut.fade_in, 1, script->update->tick_dt/2);
 		DriftScriptYield(script);
 	}
 	
 	debug_start:
 	tut.fade_in = 1;
-	wait_for_message(script, INFINITY, MESSAGE_SHIPPY,
-		"Welcome back! It looks like you were unconscious. Would you like help?"
-	);
-	wait_for_message(script, INFINITY, MESSAGE_SHIPPY,
-		"I can't help with your injuries, but if your accident has caused any memory loss I can walk you through the emergency checklist!"
-	);
+	wait_for_message(script, INFINITY, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_WELCOME_1);
+	wait_for_message(script, INFINITY, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_WELCOME_2);
 	
 	float spin = 0, move_dist = 0;
 	while(checklist_wait(script, 0,
@@ -553,10 +579,10 @@ void DriftTutorialScript(DriftScript* script){
 		"Find power",
 		NULL
 	)){
-		float dt = script->update->dt;
+		float dt = script->update->tick_dt;
 		uint body_idx = get_player_body_idx(script);
-		spin += dt*fabsf(get_state(script)->bodies.angular_velocity[body_idx]);
-		move_dist += dt*DriftVec2Length(get_state(script)->bodies.velocity[body_idx]);
+		spin += dt*fabsf(state->bodies.angular_velocity[body_idx]);
+		move_dist += dt*DriftVec2Length(state->bodies.velocity[body_idx]);
 		
 		tut.task[0] |= spin > 6;
 		tut.task[1] |= move_dist > 200;
@@ -564,20 +590,20 @@ void DriftTutorialScript(DriftScript* script){
 		
 		// Wait for the player to move.
 		if(!tut.task[0]){
-			get_state(script)->status.disable_look = false;
-			show_message(script, MESSAGE_SHIPPY, "First, calibrate your pod's gyros by " HIGHLIGHT "using {@LOOK} to spin around a few times" DRIFT_TEXT_WHITE ".");
+			state->status.disable_look = false;
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_TEST_GYROS);
 		} else if(!tut.task[1]){
-			get_state(script)->status.disable_move = false;
-			show_message(script, MESSAGE_SHIPPY, "Great! Now test out your thruster controls " HIGHLIGHT "using {@MOVE} to move around" DRIFT_TEXT_WHITE ".");
+			state->status.disable_move = false;
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_TEST_THRUST);
 		} else if(!tut.task[2]){
-			get_state(script)->status.disable_hud = false;
-			show_message(script, MESSAGE_SHIPPY, "Perfect! " HIGHLIGHT "Follow the battery symbol on your HUD" DRIFT_TEXT_WHITE " to find your power network and recharge your reserves.");
+			state->status.disable_hud = false;
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_FIND_POWER);
 		}
 	}
 	
-	get_state(script)->status.disable_look = false;
-	get_state(script)->status.disable_move = false;
-	get_state(script)->status.disable_hud = false;
+	state->status.disable_look = false;
+	state->status.disable_move = false;
+	state->status.disable_hud = false;
 	
 	while(checklist_wait(script, 1,
 		"Locate Base",
@@ -585,26 +611,25 @@ void DriftTutorialScript(DriftScript* script){
 		"Activate Fab",
 		NULL
 	)){
-		DriftGameState* state = get_state(script);
 		tut.task[0] |= DriftVec2Near(get_player_pos(script), (DriftVec2){3201.2f, -2752.4f}, 340);
 		tut.task[1] |= state->scan_progress[DRIFT_SCAN_CONSTRUCTION_SKIFF] >= 1;
-		tut.task[2] |= !state->status.factory_needs_reboot;
+		tut.task[2] |= !state->status.factory.needs_reboot;
 		
 		DriftPlayerData* player = get_player(script);
 		bool is_scanning = player->tool_idx == DRIFT_TOOL_SCAN;
-		if(player->energy == 0){
+		if(get_player_idx(script) && player->energy == 0){
 			show_energy_message(script);
 		} else if(!tut.task[0]){
-			show_message(script, MESSAGE_SHIPPY, "Excellent! " HIGHLIGHT "The power flow will lead you home" DRIFT_TEXT_WHITE " to your construction skiff.");
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_FIND_SKIFF);
 		} else if(!tut.task[1]){
 			state->status.tool_restrict = DRIFT_TOOL_SCAN;
 			state->status.disable_scan = false;
-			show_message(script, MESSAGE_SHIPPY, "Oh no! It looks like your skiff is damaged. " HIGHLIGHT "Use {@SCAN} and {@LOOK} to scan it " DRIFT_TEXT_WHITE "and check its status.");
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_SCAN_SKIFF);
 			tut.indicator_location = DRIFT_SKIFF_POSITION;
 			tut.indicator_label = (player->scanned_type == DRIFT_SCAN_CONSTRUCTION_SKIFF ? NULL : (is_scanning ? DRIFT_TEXT_GREEN"SCAN" : DRIFT_TEXT_GREEN"SCAN {@SCAN}"));
-		} else if(!tut.task[2] && get_ctx(script)->ui_state == DRIFT_UI_STATE_NONE){
+		} else if(!tut.task[2] && ctx->ui_state == DRIFT_UI_STATE_NONE){
 			state->status.tool_restrict = DRIFT_TOOL_SCAN;
-			show_message(script, MESSAGE_SHIPPY, "Good news! Your skiff's onboard fabricator seems to be operational. To connect to the interface, " HIGHLIGHT "press {@SCAN} a second time while targeting the skiff" DRIFT_TEXT_WHITE ".");
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_FAB);
 			tut.indicator_location = DRIFT_SKIFF_POSITION;
 			tut.indicator_label = (player->scanned_type == DRIFT_SCAN_CONSTRUCTION_SKIFF ? NULL : (is_scanning ? DRIFT_TEXT_GREEN"USE" : DRIFT_TEXT_GREEN"USE {@SCAN}"));
 		} else {
@@ -613,23 +638,23 @@ void DriftTutorialScript(DriftScript* script){
 		}
 	}
 	
-	get_state(script)->status.tool_restrict = DRIFT_TOOL_SCAN;
-	get_state(script)->status.disable_scan = false;
-	get_state(script)->status.spawn_at_start = false;
+	state->status.tool_restrict = DRIFT_TOOL_SCAN;
+	state->status.disable_scan = false;
+	state->status.spawn_at_start = false;
 	
 	if(script->debug_skip){
-		DriftGameState* state = get_state(script);
-		state->bodies.position[DriftComponentFind(&state->bodies.c, get_state(script)->player)] = (DriftVec2){3159.9f, -2772.8f};
+		state->bodies.position[DriftComponentFind(&state->bodies.c, state->player)] = (DriftVec2){3159.9f, -2772.8f};
 		state->scan_progress[DRIFT_SCAN_CONSTRUCTION_SKIFF] = 1;
-		state->status.factory_needs_reboot = false;
+		// state->status.factory_needs_reboot = false;
 	}
-	
 	
 	tut.indicator_label = NULL;
 	// Wait until they close the UI.
-	while(get_ctx(script)->ui_state != DRIFT_UI_STATE_NONE) DriftScriptYield(script);
-	wait_for_message(script, INFINITY, MESSAGE_SHIPPY, "Uh oh! Your fabricator's blueprint database is corrupt. Let's start rebuilding it by scanning some objects.");
-	tut.message = NULL;
+	while(ctx->ui_state != DRIFT_UI_STATE_NONE) DriftScriptYield(script);
+	
+	state->status.tool_restrict = DRIFT_TOOL_SCAN;
+	state->status.scan_restrict = DRIFT_SCAN_VIRIDIUM;
+	show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_CORRUPT);
 	
 	while(checklist_wait(script, 2,
 		"Scan Viridium",
@@ -637,7 +662,6 @@ void DriftTutorialScript(DriftScript* script){
 		"Scan Lumium",
 		"Research Lumium Lights"
 	)){
-		DriftGameState* state = get_state(script);
 		DriftPlayerData* player = get_player(script);
 		bool is_scanning = player->tool_idx == DRIFT_TOOL_SCAN;
 			
@@ -648,35 +672,31 @@ void DriftTutorialScript(DriftScript* script){
 		
 		// if(is_scanning) tut.message = NULL;
 		DriftVec2 player_pos = get_player_pos(script);
-		if(player->energy == 0){
+		if(get_player_idx(script) && player->energy == 0){
 			show_energy_message(script);
-		} else if(get_ctx(script)->ui_state != DRIFT_UI_STATE_NONE){
+		} else if(ctx->ui_state != DRIFT_UI_STATE_NONE){
 			tut.indicator_label = NULL;
-			tut.message = NULL;
 		} else if(!tut.task[0]){
-			state->status.tool_restrict = DRIFT_TOOL_SCAN;
-			state->status.scan_restrict = DRIFT_SCAN_VIRIDIUM;
 			tut.indicator_location = nearest_thing(script, &state->items.c, state->items.type, DRIFT_ITEM_VIRIDIUM);
 			tut.indicator_label = (player->scanned_type == DRIFT_SCAN_VIRIDIUM ? NULL : (is_scanning ? DRIFT_TEXT_GREEN"SCAN" : DRIFT_TEXT_GREEN"SCAN {@SCAN}"));
 		} else if(!tut.task[1]){
-			state->status.tool_restrict = DRIFT_TOOL_SCAN;
-			state->status.scan_restrict = DRIFT_SCAN_GLOW_BUG;
 			tut.indicator_location = nearest_thing(script, &state->enemies.c, state->enemies.type, DRIFT_ENEMY_GLOW_BUG);
 			tut.indicator_label = (player->scanned_type == DRIFT_SCAN_GLOW_BUG ? NULL : (is_scanning ? DRIFT_TEXT_GREEN"SCAN" : DRIFT_TEXT_GREEN"SCAN {@SCAN}"));
+			state->status.scan_restrict = DRIFT_SCAN_GLOW_BUG;
 		} else if(!tut.task[2]){
-			show_message(script, MESSAGE_SHIPPY, "Neat! " HIGHLIGHT "Glow bugs contain lumium."DRIFT_TEXT_WHITE" How convenient that your pod is equipped with cannons to remove it!");
-			
-			state->status.tool_restrict = DRIFT_TOOL_NONE;
-			state->status.scan_restrict = DRIFT_SCAN_NONE;
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_GLOW_BUGS);
 			tut.indicator_location = nearest_thing(script, &state->items.c, state->items.type, DRIFT_ITEM_LUMIUM);
 			tut.indicator_label = (player->scanned_type == DRIFT_SCAN_LUMIUM ? NULL : (is_scanning ? DRIFT_TEXT_GREEN"SCAN" : DRIFT_TEXT_GREEN"SCAN {@SCAN}"));
+			state->status.tool_restrict = DRIFT_TOOL_NONE;
+			state->status.scan_restrict = DRIFT_SCAN_LUMIUM;
 			
 			if(DriftVec2Distance(player_pos, tut.indicator_location) > 500){
 				tut.indicator_location = nearest_thing(script, &state->enemies.c, state->enemies.type, DRIFT_ENEMY_GLOW_BUG);
 				tut.indicator_label = DRIFT_TEXT_GREEN"SHOOT {@FIRE}";
 			}
 		} else {
-			show_message(script, MESSAGE_SHIPPY, "Fantastic! That should be enough scans to " HIGHLIGHT "research a blueprint at your fabricator" DRIFT_TEXT_WHITE ".");
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_RESEARCH_LIGHTS);
+			state->status.scan_restrict = DRIFT_SCAN_CONSTRUCTION_SKIFF;
 			if(player->scanned_type != DRIFT_SCAN_CONSTRUCTION_SKIFF){
 				tut.indicator_location = DRIFT_SKIFF_POSITION;
 				tut.indicator_label = (is_scanning ? DRIFT_TEXT_GREEN"USE" : DRIFT_TEXT_GREEN"USE {@SCAN}");
@@ -687,18 +707,15 @@ void DriftTutorialScript(DriftScript* script){
 	}
 	tut.indicator_label = NULL;
 	
-	get_state(script)->status.tool_restrict = DRIFT_TOOL_NONE;
-	get_state(script)->status.scan_restrict = DRIFT_SCAN_NONE;
+	state->status.tool_restrict = DRIFT_TOOL_NONE;
 	
-	if(script->debug_skip) get_state(script)->scan_progress[DRIFT_SCAN_VIRIDIUM] = 1;
-	if(script->debug_skip) get_state(script)->scan_progress[DRIFT_SCAN_GLOW_BUG] = 1;
-	if(script->debug_skip) get_state(script)->scan_progress[DRIFT_SCAN_LUMIUM] = 1;
-	if(script->debug_skip) get_state(script)->scan_progress[DRIFT_SCAN_HEADLIGHT] = 1;
+	if(script->debug_skip) state->scan_progress[DRIFT_SCAN_VIRIDIUM] = 1;
+	if(script->debug_skip) state->scan_progress[DRIFT_SCAN_GLOW_BUG] = 1;
+	if(script->debug_skip) state->scan_progress[DRIFT_SCAN_LUMIUM] = 1;
+	if(script->debug_skip) state->scan_progress[DRIFT_SCAN_HEADLIGHT] = 1;
 	
 	// Wait for the player to close the fabricator.
-	while(get_ctx(script)->ui_state != DRIFT_UI_STATE_NONE) DriftScriptYield(script);
-	
-	wait_for_message(script, INFINITY, MESSAGE_SHIPPY, "Before we build the Lumium Lights, we need to " HIGHLIGHT "collect raw materials" DRIFT_TEXT_WHITE ".");
+	while(ctx->ui_state != DRIFT_UI_STATE_NONE) DriftScriptYield(script);
 	
 	while(checklist_wait(script, 3,
 		"Viridium 0/5",
@@ -706,8 +723,7 @@ void DriftTutorialScript(DriftScript* script){
 		"Craft Lumium Lights",
 		NULL
 	)){
-		DriftMem* mem = DriftLinearMemInit(buffer, sizeof(buffer), "tutorial mem");
-		DriftGameState* state = get_state(script);
+		DriftMem* mem = DriftLinearMemMake(buffer, sizeof(buffer), "tutorial mem");
 		DriftPlayerData* player = get_player(script);
 		
 		tut.task[2] = DriftPlayerItemCount(state, DRIFT_ITEM_HEADLIGHT) > 0;
@@ -722,24 +738,28 @@ void DriftTutorialScript(DriftScript* script){
 		}
 		
 		bool is_scanning = player->tool_idx == DRIFT_TOOL_SCAN;
-		if(player->energy == 0){
+		if(get_player_idx(script) && player->energy == 0){
 			show_energy_message(script);
 		} else if(DriftPlayerCalculateCargo(state) >= DriftPlayerCargoCap(state)){
-			show_message(script, MESSAGE_SHIPPY, "Your cargo hold is full. "HIGHLIGHT"Dock at the fabricator"DRIFT_TEXT_WHITE" to transfer it to storage.");
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_TRANSFER);
 			tut.indicator_location = DRIFT_SKIFF_POSITION;
 			tut.indicator_label = (is_scanning ? DRIFT_TEXT_GREEN"USE" : DRIFT_TEXT_GREEN"USE {@SCAN}");
 		} else {
 			DriftVec2 player_pos = get_player_pos(script);
 			
-			tut.message = NULL;
-			if(!tut.task[0]){
-				tut.indicator_label = DRIFT_TEXT_GREEN"PICK UP {@GRAB}";
+			if(player->grabbed_type){
+				show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_GATHER_LIGHTS);
+				tut.indicator_label = NULL;
+			} else if(!tut.task[0]){
+				show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_GATHER_LIGHTS);
+				tut.indicator_label = DRIFT_TEXT_GREEN"GRAB {@GRAB}";
 				tut.indicator_location = nearest_thing(script, &state->items.c, state->items.type, DRIFT_ITEM_VIRIDIUM);
 			} else if(!tut.task[1]){
+				show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_GATHER_LIGHTS);
 				DriftVec2 nearest_item = nearest_thing(script, &state->items.c, state->items.type, DRIFT_ITEM_LUMIUM);
 				
 				if(DriftVec2Distance(player_pos, nearest_item) < 500){
-					tut.indicator_label = DRIFT_TEXT_GREEN"PICK UP {@GRAB}";
+					tut.indicator_label = DRIFT_TEXT_GREEN"GRAB {@GRAB}";
 					tut.indicator_location = nearest_item;
 				} else if(player->grabbed_type != DRIFT_ITEM_LUMIUM){
 					tut.indicator_label = DRIFT_TEXT_GREEN"SHOOT {@FIRE}";
@@ -748,6 +768,7 @@ void DriftTutorialScript(DriftScript* script){
 					tut.indicator_label = NULL;
 				}
 			} else if(!tut.task[2]){
+				show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_GATHER_ENOUGH);
 				if(player->scanned_type != DRIFT_SCAN_CONSTRUCTION_SKIFF){
 					tut.indicator_location = DRIFT_SKIFF_POSITION;
 					tut.indicator_label = (is_scanning ? DRIFT_TEXT_GREEN"USE" : DRIFT_TEXT_GREEN"USE {@SCAN}");
@@ -758,49 +779,76 @@ void DriftTutorialScript(DriftScript* script){
 		}
 	}
 	
-	DRIFT_SCRIPT_WHILE_YIELD(script, get_ctx(script)->ui_state != DRIFT_UI_STATE_NONE);
-	wait_for_message(script, INFINITY, MESSAGE_SHIPPY, "Amazing! Your fabricator still works perfectly. I bet you'll have the database restored in no time!");
-	show_message(script, MESSAGE_SHIPPY, "Hold on. I'm detecting a large metalic ore deposit southeast of you. " HIGHLIGHT "Press {@MAP} to see it on your map.");
+	DRIFT_SCRIPT_WHILE_YIELD(script, ctx->ui_state != DRIFT_UI_STATE_NONE);
+	wait_for_message(script, 20, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_WORKS);
+	show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_MAP);
 	
-	get_state(script)->status.never_seen_map = true;
-	DRIFT_SCRIPT_WHILE_YIELD(script, get_state(script)->status.never_seen_map);
+	state->status.never_seen_map = true;
+	DRIFT_SCRIPT_WHILE_YIELD(script, state->status.never_seen_map);
 	
-	wait_for_message(script, INFINITY, MESSAGE_SHIPPY, "Shoot! Your power network doesn't extend far enough. You'll need to expand it by connecting more nodes.");
-
+	wait_for_message(script, 20, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_EXTEND);
+	state->status.spawn_phase = DRIFT_TUTORIAL_SPAWN_DRONES;
+	state->status.tool_restrict = DRIFT_TOOL_SCAN;
+	get_player(script)->tool_select = DRIFT_TOOL_NONE;
+	
+	uint prev_node_count = 0, placed_node_count = 0;
 	while(checklist_wait(script, 4,
 		"Missing Material",
-		"Build 10 Power Nodes",
+		"Research Power Nodes",
+		"Craft Power Nodes",
 		"Place Nodes",
 		NULL
 	)){
-		DriftGameState* state = get_state(script);
 		DriftPlayerData* player = get_player(script);
 		u16* inv = state->inventory.skiff;
 		
 		uint node_count = state->inventory.cargo[DRIFT_ITEM_POWER_NODE];
-		tut.task[0] |= state->scan_progress[DRIFT_SCAN_SCRAP] >= 1;
-		tut.task[1] |= node_count >= 10;
-		tut.task[2] = tut.task[1] && node_count <= 5;
+		if(node_count < prev_node_count) placed_node_count += prev_node_count - node_count;
+		prev_node_count = node_count;
 		
-		if(player->energy == 0){
+		tut.task[0] |= state->scan_progress[DRIFT_SCAN_SCRAP] >= 1;
+		tut.task[1] = state->scan_progress[DRIFT_SCAN_POWER_NODE] >= 1;
+		tut.task[2] |= node_count >= 10;
+		tut.task[3] = tut.task[2] && placed_node_count >= 4;
+		
+		if(get_player_idx(script) && player->energy == 0){
 			show_energy_message(script);
-		} else if(get_ctx(script)->ui_state != DRIFT_UI_STATE_NONE){
+		} else if(ctx->ui_state != DRIFT_UI_STATE_NONE){
 			tut.indicator_label = NULL;
 			tut.message = NULL;
 		} else if(!tut.task[0]){
-			show_message(script, MESSAGE_SHIPPY, "The power node blueprint is still missing. " HIGHLIGHT "Scan objects that flash blue" DRIFT_TEXT_WHITE ", and see if you can find the missing materials.");
+			if(state->scan_progress[DRIFT_SCAN_HIVE_WORKER] < 1){
+				show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_WORKER);
+				tut.indicator_location = nearest_thing(script, &state->enemies.c, state->enemies.type, DRIFT_ENEMY_WORKER_BUG);
+				tut.indicator_label = (player->scanned_type == DRIFT_SCAN_HIVE_WORKER ? NULL : DRIFT_TEXT_GREEN"SCAN");
+				state->status.tool_restrict = DRIFT_TOOL_SCAN;
+				state->status.scan_restrict = DRIFT_SCAN_HIVE_WORKER;
+			} else {
+				show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_SCRAP);
+				state->status.tool_restrict = DRIFT_TOOL_NONE;
+				state->status.scan_restrict = DRIFT_SCAN_NONE;
+				tut.indicator_label = NULL;
+			}
 		} else if(!tut.task[1]){
-			show_message(script, MESSAGE_SHIPPY, "That's it! Using scrap, you'll be able to " HIGHLIGHT "build power nodes" DRIFT_TEXT_WHITE ".");
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_RESEARCH_NODES);
+			tut.indicator_label = NULL;
+			state->status.spawn_phase = DRIFT_TUTORIAL_SPAWN_NORMAL;
 		} else if(!tut.task[2]){
-			show_message(script, MESSAGE_SHIPPY, "Now " HIGHLIGHT "place some nodes using {@DROP}" DRIFT_TEXT_WHITE " and extend your network to reach somewhere you couldn't reach before!");
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_GATHER_NODES);
+			tut.indicator_label = NULL;
+		} else if(!tut.task[3]){
+			show_message(script, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_PLACE_NODES);
+			tut.indicator_label = NULL;
+			state->status.disable_nodes = false;
 		}
 	}
 	
-	while(get_ctx(script)->ui_state != DRIFT_UI_STATE_NONE) DriftScriptYield(script);
-	wait_for_message(script, INFINITY, MESSAGE_SHIPPY, "You're getting the hang of this! Company policy requires me to self terminate now as maintaining this level of upbeat enthusiasm is computationally expensive. Especially when " HIGHLIGHT "the pod operator is in extreme peril..." DRIFT_TEXT_WHITE " Good luck!");
+	state->status.disable_nodes = false;
+	state->status.spawn_phase = DRIFT_TUTORIAL_SPAWN_NORMAL;
+	while(ctx->ui_state != DRIFT_UI_STATE_NONE) DriftScriptYield(script);
+	wait_for_message(script, INFINITY, MESSAGE_SHIPPY, DRIFT_STR_SHIPPY_TERMINATE);
 	
 	if(script->debug_skip){
-		DriftGameState* state = get_state(script);
 		state->inventory.skiff[DRIFT_ITEM_HEADLIGHT] = 1;
 		state->inventory.skiff[DRIFT_ITEM_AUTOCANNON] = 1;
 		state->inventory.skiff[DRIFT_ITEM_MINING_LASER] = 1;
@@ -813,10 +861,12 @@ void DriftTutorialScript(DriftScript* script){
 		
 		for(uint i = 0; i < _DRIFT_SCAN_COUNT; i++) state->scan_progress[i] = 1;
 		
-		get_state(script)->inventory.cargo[DRIFT_ITEM_POWER_NODE] = 100;
+		state->inventory.cargo[DRIFT_ITEM_POWER_NODE] = 100;
 	}
 	
-	get_state(script)->status.needs_tutorial = false;
+	state->status.needs_tutorial = false;
+	state->status.tool_restrict = DRIFT_TOOL_NONE;
+	state->status.scan_restrict = DRIFT_SCAN_NONE;
 	script->debug_skip = false;
 	script->draw = NULL;
 }

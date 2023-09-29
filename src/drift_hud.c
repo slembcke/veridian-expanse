@@ -27,7 +27,7 @@ static void draw_indicator(DriftDraw* draw, DriftVec2 pos, DriftVec2 rot, float 
 }
 
 DriftRGBA8 DriftHUDIndicator(DriftDraw* draw, DriftVec2 pos, DriftRGBA8 color){
-	DriftVec2 rot = DriftWaveComplex(draw->nanos - (uint64_t)(1.5e6*DriftVec2Length(pos)), 1);
+	DriftVec2 rot = DriftWaveComplex(draw->update_nanos - (uint64_t)(1.5e6*DriftVec2Length(pos)), 1);
 	draw_indicator(draw, pos, rot, 8, color);
 	return DriftRGBA8Fade(color, DriftSaturate(4*rot.x - 3));
 }
@@ -152,8 +152,9 @@ void DriftDrawHud(DriftDraw* draw){
 	DriftGameState* state = draw->state;
 	if(state->status.disable_hud) return;
 	
-	DriftPlayerData* player = state->players.data + DriftComponentFind(&state->players.c, state->player);
 	DriftVec2 screen_size = {roundf(draw->virtual_extent.x), roundf(draw->virtual_extent.y)};
+	DriftPlayerData* player = state->players.data + DriftComponentFind(&state->players.c, state->player);
+	DriftVec2 player_pos = DriftAffineOrigin(state->transforms.matrix[DriftComponentFind(&state->transforms.c, state->player)]);
 	
 	static const char BAR[] = "###############---------------";
 	
@@ -177,17 +178,23 @@ void DriftDrawHud(DriftDraw* draw){
 	const char* temp_bar = BAR + 15 -  (uint)(15*player->temp);
 	status_cursor = DriftDrawTextF(draw, &draw->hud_sprites, status_cursor, "{#DA4C4CFF}Temp   |%.15s|\n", temp_bar);
 	
+	uint cargo_mass = DriftPlayerCalculateCargo(state), cargo_max = DriftPlayerCargoCap(state);
 	if(!state->status.disable_scan){
 		inv_cursor = DriftDrawTextF(draw, &draw->hud_sprites, inv_cursor, DRIFT_TEXT_GRAY"Power Nodes:"DRIFT_TEXT_WHITE" %2d\n", state->inventory.cargo[DRIFT_ITEM_POWER_NODE]);
 		
 		update_swoops(draw);
 		draw_swoops(draw, inv_cursor);
 		
-		uint cargo_mass = DriftPlayerCalculateCargo(state), cargo_max = DriftPlayerCargoCap(state);
 		inv_cursor = DriftDrawTextF(draw, &draw->hud_sprites, inv_cursor, DRIFT_TEXT_GRAY"Cargo:"DRIFT_TEXT_WHITE" %3d/%3d kg\n", cargo_mass, cargo_max);
 		
 		const char* bar = BAR + (cargo_mass > cargo_max ? 0 : 15 -  15*cargo_mass/cargo_max);
 		inv_cursor = DriftDrawTextF(draw, &draw->hud_sprites, inv_cursor, DRIFT_TEXT_GRAY"|%.15s|\n", bar);
+	}
+	
+	// Temporary prompt for unfinished areas
+	DriftBiomeType biome = DriftTerrainSampleBiome(state->terra, player_pos).idx;
+	if(biome != DRIFT_BIOME_LIGHT){
+		DriftDrawText(draw, &draw->hud_sprites, (DriftVec2){roundf(draw->virtual_extent.x/2 - 100), roundf(draw->virtual_extent.y*0.65f)}, "{#FF0000FF}NOTE: This area of the game is\nunfinished and may be unplayable.");
 	}
 	
 	// Draw prompts near player
@@ -195,17 +202,26 @@ void DriftDrawHud(DriftDraw* draw){
 	// Save the current to insert the panel under the text.
 	uint panel_idx = DriftArrayLength(draw->hud_sprites);
 	const float info_advance = 12;
-	float info_flash = (DriftWaveSaw(draw->nanos, 1) < 0.9f ? 1 : 0.25);
+	float info_flash = (DriftWaveSaw(draw->update_nanos, 1) < 0.9f ? 1 : 0.25);
 	DriftVec2 info_cursor = {screen_size.x/2, screen_size.y/3}, info_origin = info_cursor;
 	float info_width = 0;
 	
-	if(player->grabbed_type && !DriftInputButtonState(DRIFT_INPUT_QUICK_GRAB)){
-		DriftScanType scan_type = DRIFT_ITEMS[player->grabbed_type].scan;
-		bool is_scanned = state->scan_progress[scan_type] >= 1;
-		
-		const char* text = is_scanned ? DRIFT_TEXT_GRAY"STASH WITH {@LOOK} or {@STASH}" : DRIFT_TEXT_GRAY"SCAN WITH {@SCAN}";
-		float width = DriftDrawTextSize(text, 0).x;
-		DriftDrawTextFull(draw, &draw->hud_sprites, text, (DriftTextOptions){
+	const char* prompt_text = NULL;
+	if(player->tool_idx == DRIFT_TOOL_DIG) prompt_text = "{@LASER} TO DIG";
+	if(player->grabbed_type && !DriftInputButtonState(DRIFT_INPUT_STASH)){
+		const DriftItem* grabbed_item = DRIFT_ITEMS + player->grabbed_type;
+		DriftScanType scan_type = grabbed_item->scan;
+		if(state->scan_progress[scan_type] >= 1){
+			bool has_space = cargo_mass + grabbed_item->mass <= cargo_max;
+			prompt_text = has_space ? DRIFT_TEXT_GRAY"STASH WITH {@LOOK} or {@STASH}" : DRIFT_TEXT_RED"CARGO FULL";
+		} else {
+			prompt_text = DRIFT_TEXT_GRAY"SCAN WITH {@SCAN}";
+		}
+	}
+	
+	if(prompt_text){
+		float width = DriftDrawTextSize(prompt_text, 0).x;
+		DriftDrawTextFull(draw, &draw->hud_sprites, prompt_text, (DriftTextOptions){
 			.tint = DriftVec4Mul(DRIFT_VEC4_WHITE, info_flash),
 			.matrix = {1, 0, 0, 1, info_cursor.x - width/2, info_cursor.y},
 		});
@@ -303,7 +319,7 @@ void DriftDrawHud(DriftDraw* draw){
 	DriftVec2 messages_size = {.y = 16};
 	for(uint i = 0; i < DRIFT_MAX_TOASTS; i++){
 		DriftToast* toast = ctx->toasts + i;
-		if(toast_alpha(draw->nanos, toast) > 0){
+		if(toast_alpha(draw->update_nanos, toast) > 0){
 			if(toast->num > 0){
 				messages[i] = DriftSMPrintf(draw->mem, "%s "DRIFT_TEXT_GRAY"(%d)", toast->message, toast->num);
 			} else if(toast->count > 1){
@@ -318,7 +334,7 @@ void DriftDrawHud(DriftDraw* draw){
 	}
 	messages_size.x = fmaxf(120, messages_size.x + 10);
 	
-	float alpha = toast_alpha(draw->nanos, ctx->toasts + 0);
+	float alpha = toast_alpha(draw->update_nanos, ctx->toasts + 0);
 	DriftVec2 toast_cursor = {8, roundf(draw->virtual_extent.y/2)};
 	toast_cursor = DriftHUDDrawPanel(draw, toast_cursor, messages_size, alpha);
 	DriftDrawTextFull(draw, &draw->hud_sprites, DRIFT_TEXT_GRAY"Messages:", (DriftTextOptions){
@@ -330,14 +346,12 @@ void DriftDrawHud(DriftDraw* draw){
 	for(uint i = 0; i < DRIFT_MAX_TOASTS; i++){
 		if(messages[i]){
 			DriftDrawTextFull(draw, &draw->hud_sprites, messages[i], (DriftTextOptions){
-				.tint = DriftVec4Mul(DRIFT_VEC4_WHITE, toast_alpha(draw->nanos, ctx->toasts + i)),
+				.tint = DriftVec4Mul(DRIFT_VEC4_WHITE, toast_alpha(draw->update_nanos, ctx->toasts + i)),
 				.matrix = {1, 0, 0, 1, toast_cursor.x, toast_cursor.y},
 			});
 			toast_cursor.y -= 10;
 		}
 	}
-	
-	DriftVec2 player_pos = DriftAffineOrigin(state->transforms.matrix[DriftComponentFind(&state->transforms.c, state->player)]);
 	
 	if(!player->is_powered){
 		float nearest_dist = INFINITY;
@@ -357,7 +371,7 @@ void DriftDrawHud(DriftDraw* draw){
 		float anim = DriftSaturate((draw->tick - player->power_tick0)/8.0f);
 		DriftVec4 color = {{0, anim, anim, anim}};
 		DriftRGBA8 color8 = DriftRGBA8FromColor(color);
-		float wobble = 4*fabsf(DriftWaveComplex(draw->nanos, 1).x), r = 8 + wobble;
+		float wobble = 4*fabsf(DriftWaveComplex(draw->update_nanos, 1).x), r = 8 + wobble;
 		DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = nearest_pos, .p1 = nearest_pos, .radii = {r, r - 1}, .color = color8}));
 		
 		DriftVec2 dir = DriftVec2Normalize(DriftVec2Sub(nearest_pos, player_pos));
@@ -393,7 +407,7 @@ void DriftDrawHud(DriftDraw* draw){
 }
 
 void DriftDrawControls(DriftDraw* draw){
-	DriftVec2 panel_size = {120, 148};
+	DriftVec2 panel_size = {120, 158};
 	DriftVec2 p = {roundf((draw->virtual_extent.x/2 - panel_size.y)/2), roundf((draw->virtual_extent.y + panel_size.y)/2)};
 	p = DriftHUDDrawPanel(draw, p, panel_size, 1);
 	float adv = -3;
@@ -403,6 +417,7 @@ void DriftDrawControls(DriftDraw* draw){
 	p = DriftDrawText(draw, &draw->hud_sprites, p, "{@LOOK} Aim\n"); p.y += adv;
 	p = DriftDrawText(draw, &draw->hud_sprites, p, "{@FIRE} Shoot\n"); p.y += adv;
 	p = DriftDrawText(draw, &draw->hud_sprites, p, "{@GRAB} Grab Object\n"); p.y += adv;
+	p = DriftDrawText(draw, &draw->hud_sprites, p, "{@STASH} Quick Stash\n"); p.y += adv;
 	p = DriftDrawText(draw, &draw->hud_sprites, p, "{@DROP} Place Node\n"); p.y += adv;
 	p = DriftDrawText(draw, &draw->hud_sprites, p, "{@SCAN} Scan Object\n"); p.y += adv;
 	p = DriftDrawText(draw, &draw->hud_sprites, p, "{@LASER} Laser\n"); p.y += adv;

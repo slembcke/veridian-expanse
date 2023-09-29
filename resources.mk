@@ -1,8 +1,5 @@
 .SECONDEXPANSION:
 
-wildcard_strip = $(patsubst $(1)/%,%,$(wildcard $(1)/$(2)))
-RESOURCES = $(VPATH)/resources
-
 ATLAS = \
 	resources/gfx/ATLAS_INPUT.ase \
 	resources/gfx/ATLAS_LIGHTS.ase \
@@ -66,7 +63,7 @@ FILES = \
 	$(SHADERS:%.hlsl=%.vert) $(SHADERS:%.hlsl=%.frag) \
 	resources/gfx/cursor.qoi \
 
-drift-game-assets: resources.zip sound_inc
+drift-game-assets: resources.zip sound_inc strings_enums.inc
 .PHONY: drift-game-assets
 
 clean:
@@ -118,6 +115,10 @@ packer: tools/packer.c onelua.o
 atlas: packer packer.lua json.lua $(ATLAS:.ase=.json) $(ART_ASE:.ase=.json) $(ART_ASE:.ase=_n.png)
 	./packer $(ATLAS) $(ART_ASE)
 	"$(CMAKE_COMMAND)" -E touch $@
+	"$(CMAKE_COMMAND)" -E copy_if_different _sprite_enums.inc sprite_enums.inc
+	"$(CMAKE_COMMAND)" -E copy_if_different _sprite_defs.inc sprite_defs.inc
+	"$(CMAKE_COMMAND)" -E copy_if_different _atlas_enums.inc atlas_enums.inc
+	"$(CMAKE_COMMAND)" -E copy_if_different _atlas_defs.inc atlas_defs.inc
 
 qoiconv: ext/qoi/qoiconv.c
 	gcc -std=c99 -O -I $(VPATH)/ext/stb $< -Wl,-o$@
@@ -130,7 +131,7 @@ lua: ext/lua/onelua.c
 
 sound_inc: lua sounds.lua $(SFX)
 	./lua sounds.lua $(SFX)
-	touch sound_inc
+	"$(CMAKE_COMMAND)" -E touch $@
 
 resources/%.vert.spv: %.hlsl $(SHADER_INCLUDES) $$(@D)/.dir
 	"$(GLSLANG)" -D -V -S vert -e VShader -o $@ $<
@@ -151,3 +152,6 @@ resources/%.frag $(SPV): %.hlsl $(SHADER_INCLUDES) $$(@D)/.dir
 	"$(GLSLANG)" -D -V -S frag -e FShader -o $(SPV) $< > $(NULL)
 	"$(SPIRV_OPT)" -Oconfig="$(VPATH)/shaders/spirv-opt-gl.cfg" $(SPV) -o $(SPV)
 	"$(SPIRV_CROSS)" --version 330 --no-420pack-extension --output $@ $(SPV)
+
+strings_enums.inc: $(VPATH)/src/drift_strings_en.c lua
+	./lua $(VPATH)/tools/strings.lua $< $@

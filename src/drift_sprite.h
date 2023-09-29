@@ -14,23 +14,23 @@ enum {
 	DRIFT_SPRITE_MODE_EMISSIVE,
 };
 
-typedef struct {
-	struct {u8 l, b, r, t;} bounds;
-	struct {u8 x, y;} anchor;
-	u8 layer, _;
+typedef struct { // 9 bytes
+	struct {u8 l, b, r, t;} bounds; // 4 bytes
+	struct {u8 x, y;} anchor; // 2 bytes
+	u8 layer, glow, shiny; // 3 bytes
 } DriftFrame;
 
 typedef struct {
-	DriftFrame frame; // 4 bytes
-	DriftRGBA8 color; // 4 bytes
 	DriftAffine matrix; // 24 bytes
-	u8 z, shiny, _pad1, _pad2; // 4 bytes
+	DriftRGBA8 color; // 4 bytes
+	DriftFrame frame; // 9 bytes
+	u8 z;
 } DriftSprite;
 
 typedef struct {
-	DriftFrame frame; // 4 bytes
-	DriftVec4 color; // 16 bytes
 	DriftAffine matrix; // 24 bytes
+	DriftVec4 color; // 16 bytes
+	DriftFrame frame; // 9 bytes
 	float radius; // 4 bytes
 } DriftLight;
 

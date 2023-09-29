@@ -282,7 +282,7 @@ void DriftPhysicsTick(DriftUpdate* update, DriftMem* mem){
 	tina_job_wait(update->job, &terrain_job_ctx->group, 0);
 	
 	TracyCZoneN(ZONE_CALLBACKS, "Callbacks", true);
-	static DriftMap COLLISION_MAP;
+	static DriftMap COLLISION_MAP; // TODO static global
 	// Initialize collision calback map if needed.
 	if(COLLISION_MAP.table.buffer == NULL){
 		DriftMapInit(&COLLISION_MAP, DriftSystemMem, "CollisionCallbacks", 0);

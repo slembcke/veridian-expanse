@@ -11,6 +11,16 @@ You should have received a copy of the GNU General Public License along with Ver
 local run = dbg and dbg.call or function(f) f() end
 if dbg then dbg.auto_where = 3 end
 
+function parse_user_data(rect, user_data)
+	if(user_data) then
+		local glow = user_data:match("glow=([.0-9]+)")
+		if(glow) then rect.glow = math.floor(255*tonumber(glow)) end
+		
+		local shiny = user_data:match("shiny=([.0-9]+)")
+		if(shiny) then rect.shiny = math.floor(255*tonumber(shiny)) end
+	end
+end
+
 run(function()
 
 local json = require 'json'
@@ -35,6 +45,7 @@ for _, filename in ipairs(arg) do
 			local pivot = slice.keys[1].pivot
 			if pivot then rect.ax, rect.ay = pivot.x, pivot.y end
 			
+			parse_user_data(rect, slice.data)
 			table.insert(rects, rect)
 		end
 	else
@@ -53,6 +64,8 @@ for _, filename in ipairs(arg) do
 			rect.h = slice_rect.h
 			if pivot then rect.ax, rect.ay = pivot.x, pivot.y end
 			
+			parse_user_data(rect, slice.data)
+			
 			rect.pack = true
 			rect.name = string.format("%s%02d", name:upper(), i - 1)
 			rect.image_idx = #images
@@ -64,15 +77,15 @@ end
 local atlases = gen_atlases(images, rects)
 table.sort(rects, function(a, b) return a.name < b.name end)
 
-local sprite_enums = io.open("sprite_enums.inc", "w")
-local sprite_defs = io.open("sprite_defs.inc", "w")
+local sprite_enums = io.open("_sprite_enums.inc", "w")
+local sprite_defs = io.open("_sprite_defs.inc", "w")
 for _, r in ipairs(rects) do
 	sprite_enums:write(string.format("DRIFT_SPRITE_%s,\n", r.name))
 	
 	local x1, y1 = r.x + r.w - 1, r.y + r.h - 1
 	local ax, ay = r.ax or r.w//2, r.ay or r.h//2
-	local template = "[DRIFT_SPRITE_%s] = {.layer = DRIFT_%s, .bounds = {%d, %d, %d, %d}, .anchor = {%d, %d}},\n"
-	sprite_defs:write(template:format(r.name, r.atlas, r.x, 255 - y1, x1, 255 - r.y, ax, r.h - ay))
+	local template = "[DRIFT_SPRITE_%s] = {.layer = DRIFT_%s, .bounds = {%d, %d, %d, %d}, .anchor = {%d, %d}, .glow = %d, .shiny = %d},\n"
+	sprite_defs:write(template:format(r.name, r.atlas, r.x, 255 - y1, x1, 255 - r.y, ax, r.h - ay, r.glow or 255, r.shiny or 0))
 end
 
 -- local anim_counts = {}
@@ -83,8 +96,8 @@ end
 -- end
 
 local atlas_names = {}
-local atlas_enums = io.open("atlas_enums.inc", "w")
-local atlas_defs = io.open("atlas_defs.inc", "w")
+local atlas_enums = io.open("_atlas_enums.inc", "w")
+local atlas_defs = io.open("_atlas_defs.inc", "w")
 for _, r in ipairs(rects) do
 	local name = r.atlas
 	if r.image_idx and not atlas_names[name] then

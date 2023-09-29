@@ -87,10 +87,12 @@ typedef struct {
 typedef struct {
 	DriftGPUMatrix v_matrix, p_matrix, terrain_matrix;
 	DriftGPUMatrix vp_matrix, vp_inverse, reproj_matrix;
+	DriftVec4 tmp_color[4];
 	DriftVec2 jitter;
 	DriftVec2 raw_extent, virtual_extent, internal_extent;
 	float atlas_size, sharpening, gradmul;
 	float biome_layer, visibility_layer;
+	float tmp_value[4];
 } DriftGlobalUniforms;
 
 struct DriftDraw {
@@ -103,11 +105,11 @@ struct DriftDraw {
 	DriftGameState* state;
 	
 	// Current nanoseconds since launch.
-	u64 nanos;
+	u64 clock_nanos, update_nanos;
 	// Current frame and tick count.
 	uint frame, tick;
 	// Elapsed time since last frame and tick.
-	float dt, dt_since_tick;
+	float dt, dt_before_tick;
 	// Size of the window/framebuffer in pixels.
 	DriftVec2 raw_extent;
 	// The raw extent, but scaled to the effective virtual resolution.
@@ -145,7 +147,7 @@ struct DriftDraw {
 };
 
 DriftDraw* DriftDrawBeginBase(tina_job* job, DriftGameContext* ctx, DriftAffine v_matrix, DriftAffine prev_vp_matrix);
-DriftDraw* DriftDrawBegin(DriftUpdate* update, float dt_since_tick, DriftAffine v_matrix, DriftAffine prev_vp_matrix);
+DriftDraw* DriftDrawBegin(DriftUpdate* update, float dt_before_tick, DriftAffine v_matrix, DriftAffine prev_vp_matrix);
 void DriftDrawBindGlobals(DriftDraw* draw);
 
 DriftGfxPipelineBindings* DriftDrawQuads(DriftDraw* draw, DriftGfxPipeline* pipeline, u32 count);

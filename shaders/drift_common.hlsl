@@ -27,12 +27,14 @@ cbuffer DriftGlobals : register(b0) {
 	row_major float2x4 DRIFT_MATRIX_VP;
 	row_major float2x4 DRIFT_MATRIX_VP_INV;
 	row_major float2x4 DRIFT_MATRIX_REPROJ;
+	float4 TMP_COLOR[4];
 	float2 DRIFT_JITTER;
 	float2 DRIFT_RAW_EXTENTS;
 	float2 DRIFT_VIRTUAL_EXTENTS;
 	float2 DRIFT_INTERNAL_EXTENTS;
 	float DRIFT_ATLAS_SIZE, DRIFT_SHARPENING, DRIFT_GRADMUL;
 	float DRIFT_ATLAS_BIOME, DRIFT_ATLAS_VISIBILITY;
+	float TMP_VALUE[4];
 };
 
 #define DRIFT_UBO1 register(b1)
@@ -71,9 +73,9 @@ struct DriftSpriteVertInput {
 	DRIFT_ATTR1 float4 mat0;
 	DRIFT_ATTR2 float2 mat1;
 	DRIFT_ATTR3 float4 color;
-	DRIFT_ATTR4 uint4 frame_bounds;
-	DRIFT_ATTR5 uint3 frame_props;
-	DRIFT_ATTR6 uint3 sprite_props;
+	DRIFT_ATTR4 uint4 bounds;
+	DRIFT_ATTR5 uint4 anchor;
+	DRIFT_ATTR6 uint4 props; // (layer, glow, shiny, z)
 };
 
 struct DriftSpriteFragInput {
@@ -83,29 +85,31 @@ struct DriftSpriteFragInput {
 	nointerpolation float4 uv_bounds;
 	nointerpolation float4 color;
 	// TODO combine with props?
-	nointerpolation float4 uv_scale_shiny;
+	nointerpolation float4 uv_scale_glow_shiny;
 };
 
 void DriftSpriteVShader(in DriftSpriteVertInput IN, out DriftSpriteFragInput FRAG, bool apply_rounding){
 	// Transform:
 	if(apply_rounding) IN.mat1.xy = round(IN.mat1.xy);
 	float2x3 transform = float2x3(IN.mat0.xz, IN.mat1.x, IN.mat0.yw, IN.mat1.y);
-	float2 size = IN.frame_bounds.zw - IN.frame_bounds.xy + 1;
-	float2 world_pos = mul(transform, float3(size*IN.uv - U8ToSigned(IN.frame_props.xy), 1));
+	float2 size = IN.bounds.zw - IN.bounds.xy + 1;
+	float2 world_pos = mul(transform, float3(size*IN.uv - U8ToSigned(IN.anchor.xy), 1));
 	float2 clip_pos = mul(float2x3(DRIFT_MATRIX_VP), float3(world_pos, 1));
+	
 	// Apply foreshortening.
-	clip_pos *= 1 - IN.sprite_props[0]*(1 - DRIFT_FORESHORTENING)/255;
+	clip_pos *= 1 - IN.props[3]*(1 - DRIFT_FORESHORTENING)/255.0;
 	
 	// Output:
 	FRAG.position = float4(clip_pos, 0, 1);
 	FRAG.ssuv = 0.5*clip_pos + 0.5;
 	FRAG.ssuv_prev = 0.5 + 0.5*mul(float2x3(DRIFT_MATRIX_REPROJ), FRAG.position.xyw).xy;
-	FRAG.uv = float3(lerp(IN.frame_bounds.xy, IN.frame_bounds.zw + 1, IN.uv)/DRIFT_ATLAS_SIZE, IN.frame_props.z);
-	FRAG.uv_bounds = IN.frame_bounds/DRIFT_ATLAS_SIZE;
+	FRAG.uv = float3(lerp(IN.bounds.xy, IN.bounds.zw + 1, IN.uv)/DRIFT_ATLAS_SIZE, IN.props[0]);
+	FRAG.uv_bounds = IN.bounds/DRIFT_ATLAS_SIZE;
 	FRAG.color = IN.color;
 	float2x2 scale = DRIFT_GRADMUL*mul(float2x2(DRIFT_MATRIX_V), float2x2(transform));
-	FRAG.uv_scale_shiny.xy = DRIFT_ATLAS_SIZE*float2(length(scale[0]), length(scale[1]));
-	FRAG.uv_scale_shiny.z = IN.sprite_props.y/255.0;
+	FRAG.uv_scale_glow_shiny.xy = DRIFT_ATLAS_SIZE*float2(length(scale[0]), length(scale[1]));
+	FRAG.uv_scale_glow_shiny[2] = 2*IN.props[1]/255.0;
+	FRAG.uv_scale_glow_shiny[3] = IN.props[2]/255.0;
 }
 
 float2 DoubleAngle(float2 n){

@@ -41,11 +41,6 @@ typedef struct {
 typedef struct {
 	DriftComponent c;
 	DriftEntity* entity;
-} DriftComponentOreDeposit;
-
-typedef struct {
-	DriftComponent c;
-	DriftEntity* entity;
 	DriftItemType* type;
 	uint* tile_idx;
 } DriftComponentItem;
@@ -100,48 +95,11 @@ typedef struct {
 typedef struct {
 	DriftComponent c;
 	DriftEntity* entity;
-	struct {
-		u8 flow_map;
-		DriftEntity node;
-		bool is_valid;
-		DriftVec2 target_pos, target_dir;
-	}* data;
-} DriftNavComponent;
-
-typedef struct {
-	DriftComponent c;
-	DriftEntity* entity;
 	
 	DriftEnemyType* type;
 	uint* tile_idx;
 	u16* aggro_ticks;
 } DriftComponentEnemy;
-
-typedef struct {
-	DriftComponent c;
-	DriftEntity* entity;
-
-	float* speed;
-	float* accel;
-	DriftVec2* forward_bias;
-} DriftComponentBugNav;
-
-typedef enum {
-	DRIFT_PROJECTILE_NONE,
-	DRIFT_PROJECTILE_PLAYER,
-	DRIFT_PROJECTILE_HIVE,
-	_DRIFT_PROJECTILE_COUNT,
-} DriftProjectileType;
-
-typedef struct {
-	DriftComponent c;
-	DriftEntity* entity;
-	DriftProjectileType* type;
-	DriftVec2* origin;
-	DriftVec2* velocity;
-	u32* tick0;
-	float* timeout;
-} DriftComponentProjectiles;
 
 typedef struct {
 	float value, maximum, timeout;
@@ -156,6 +114,13 @@ typedef struct {
 	
 	DriftHealth* data;
 } DriftComponentHealth;
+
+typedef struct DriftGunState DriftGunState;
+
+struct DriftGunState {
+	uint repeat;
+	float timeout;
+};
 
 typedef struct {
 	float angle[3];
@@ -175,6 +140,7 @@ typedef struct DriftPlayerData {
 	DriftArmPose arm_l, arm_r;
 	
 	DriftVec2 reticle;
+	DriftGunState primary, secondary;
 	bool is_digging;
 	DriftVec2 dig_pos;
 	DriftEntity grabbed_entity;
@@ -217,20 +183,21 @@ typedef struct {
 	}* data;
 } DriftComponentDrone;
 
-typedef struct {
-	float health;
-	float pod_progress;
-} DriftHiveData;
+typedef void DriftSystemsInitFunc(DriftGameState* state);
+DriftSystemsInitFunc DriftSystemsInit;
+DriftSystemsInitFunc DriftSystemsInitEnemies;
+DriftSystemsInitFunc DriftSystemsInitWeapons;
 
-typedef struct {
-	DriftComponent c;
-	DriftHiveData* data;
-} DriftComponentHives;
+typedef void DriftSystemsUpdateFunc(DriftUpdate* update);
+DriftSystemsUpdateFunc DriftSystemsUpdate;
 
-void DriftSystemsInit(DriftGameState* state);
-void DriftSystemsUpdate(DriftUpdate* update);
-void DriftSystemsTick(DriftUpdate* update);
-void DriftSystemsDraw(DriftDraw* draw);
+typedef void DriftSystemsTickFunc(DriftUpdate* update);
+DriftSystemsTickFunc DriftSystemsTick;
+DriftSystemsTickFunc DriftSystemsTickWeapons;
+
+typedef void DriftSystemsDrawFunc(DriftDraw* draw);
+DriftSystemsDrawFunc DriftSystemsDraw;
+DriftSystemsDrawFunc DriftSystemsDrawWeapons;
 
 void DriftDrawPowerMap(DriftDraw* draw, float scale);
 
@@ -269,12 +236,13 @@ bool DriftHealthApplyDamage(DriftUpdate* update, DriftEntity entity, float amoun
 
 bool DriftCheckSpawn(DriftUpdate* update, DriftVec2 pos, float terrain_dist);
 
-void DriftFireProjectile(DriftUpdate* update, DriftProjectileType type, DriftVec2 pos, DriftVec2 dir);
+void FireHiveProjectile(DriftUpdate* update, DriftRay2 ray);
 
 typedef enum {
 	DRIFT_BLAST_EXPLODE,
 	DRIFT_BLAST_RICOCHET,
 	DRIFT_BLAST_VIOLET_ZAP,
+	DRIFT_BLAST_GREEN_FLASH,
 	_DRIFT_BLAST_COUNT,
 } DriftBlastType;
 
@@ -289,11 +257,14 @@ uint DriftPlayerItemCount(DriftGameState* state, DriftItemType item);
 uint DriftPlayerItemCap(DriftGameState* state, DriftItemType item);
 uint DriftPlayerCalculateCargo(DriftGameState* state);
 
+void DriftPlayerUpdateGun(DriftUpdate* update, DriftPlayerData* player, DriftAffine transform);
+void DriftPlayerDrawGun(DriftDraw* draw, DriftPlayerData* player, DriftAffine transform, float hud_fade);
+
 void DriftSystemsTickFab(DriftGameContext* ctx, float dt);
 
 typedef struct {
 	const char* label;
-	u8 layer, shiny;
+	u8 layer;
 	float poisson, terrain, weight;
 	DriftSpriteEnum* sprites;
 } DriftDecalDef;

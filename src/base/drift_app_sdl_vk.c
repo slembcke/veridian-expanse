@@ -947,7 +947,7 @@ void DriftVkLoadTextureLayer(const DriftGfxDriver* driver, DriftGfxTexture* text
 
 static VkShaderModule DriftVkShaderModule(DriftVkContext* ctx, const char* shader_name, const char* extension){
 	u8 buffer[64*1024];
-	DriftMem* mem = DriftLinearMemInit(buffer, sizeof(buffer), "Shader Mem");
+	DriftMem* mem = DriftLinearMemMake(buffer, sizeof(buffer), "Shader Mem");
 	DriftData spirv = DriftAssetLoadf(mem, "shaders/%s%s", shader_name, extension);
 	
 	VkShaderModule module;
@@ -1352,7 +1352,7 @@ void* DriftShellSDLVk(DriftShellEvent event, void* shell_value){
 			
 			{
 				u8 mem_buf[64*1024];
-				DriftMem* mem = DriftLinearMemInit(mem_buf, sizeof(mem_buf), "cursor memory");
+				DriftMem* mem = DriftLinearMemMake(mem_buf, sizeof(mem_buf), "cursor memory");
 				DriftImage img = DriftAssetLoadImage(mem, "gfx/cursor.qoi");
 				
 				SDL_Surface* cursor_surface = SDL_CreateRGBSurfaceWithFormatFrom(img.pixels, img.w, img.h, 32, img.w*4, SDL_PIXELFORMAT_RGBA32);

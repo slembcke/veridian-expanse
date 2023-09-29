@@ -25,6 +25,8 @@ You should have received a copy of the GNU General Public License along with Ver
 #define DRIFT_PLAYER_AUTOPILOT_SPEED (2*DRIFT_PLAYER_SPEED)
 #define DRIFT_PLAYER_SIZE 14
 
+#define DRIFT_SCAN_DURATION 3
+
 #define DRIFT_POWER_BEAM_RADIUS (DRIFT_PLAYER_SIZE + 2)
 #define DRIFT_POWER_EDGE_MIN_LENGTH 64
 #define DRIFT_POWER_EDGE_MAX_LENGTH 192
@@ -186,9 +188,13 @@ typedef enum {
 	DRIFT_SCAN_STORAGE_L2,
 	DRIFT_SCAN_STORAGE_L3,
 	DRIFT_SCAN_HIVE,
+	DRIFT_SCAN_HIVE_POD,
 	DRIFT_SCAN_COPPER,
+	DRIFT_SCAN_COPPER_DEPOSIT,
 	DRIFT_SCAN_SILVER,
+	DRIFT_SCAN_SILVER_DEPOSIT,
 	DRIFT_SCAN_GOLD,
+	DRIFT_SCAN_GOLD_DEPOSIT,
 	DRIFT_SCAN_GRAPHENE,
 	DRIFT_SCAN_POWER_SUPPLY,
 	DRIFT_SCAN_DRONE,
@@ -198,7 +204,6 @@ typedef enum {
 typedef enum {
 	DRIFT_SCAN_UI_NONE,
 	DRIFT_SCAN_UI_FABRICATOR,
-	DRIFT_SCAN_UI_DEPOSIT,
 	_DRIFT_SCAN_UI_COUNT,
 } DriftScanUIType;
 
@@ -326,7 +331,6 @@ typedef struct {
 	const char* name;
 	const char* description;
 	const char* usage;
-	uint duration;
 	float radius;
 	DriftVec2 offset;
 	DriftUIState ui_state;
@@ -349,7 +353,6 @@ typedef struct {
 extern const DriftItem DRIFT_ITEMS[_DRIFT_ITEM_COUNT];
 
 static inline const char* DriftItemName(DriftItemType type){return DRIFT_SCANS[DRIFT_ITEMS[type].scan].name;}
-static inline uint DriftItemResearchDuration(DriftItemType type){return DRIFT_SCANS[DRIFT_ITEMS[type].scan].duration ?: 1000;}
 static inline uint DriftItemBuildDuration(DriftItemType type){return DRIFT_ITEMS[type].duration ?: 1000;}
 
 DriftEntity DriftItemMake(DriftGameState* state, DriftItemType type, DriftVec2 pos, DriftVec2 vel, uint tile_idx);
@@ -374,17 +377,15 @@ void DriftDrawHivesMap(DriftDraw* draw, float scale);
 
 // Scripts
 
-typedef void DriftScriptFunc(DriftScript* script);
-typedef bool DriftScriptCheckFunc(DriftScript* script);
-typedef void DriftScriptDrawFunc(DriftDraw* draw, DriftScript* script);
-
 struct DriftScript {
-	DriftScriptFunc* body;
-	DriftScriptCheckFunc* check;
-	DriftScriptDrawFunc* draw;
-	void *ctx, *draw_ctx;
+	void (*body)(DriftScript* script);
+	bool (*check)(DriftScript* script);
+	void (*draw)(DriftDraw* draw, DriftScript* script);
+	void *user_data, *draw_data;
 	bool run;
 	
+	DriftGameContext* game_ctx;
+	DriftGameState* state;
 	DriftUpdate* update;
 	bool debug_skip;
 	
@@ -392,7 +393,8 @@ struct DriftScript {
 	u8 _stack_buffer[];
 };
 
-DriftScript* DriftScriptNew(DriftScriptFunc* script_func, void* script_data);
+typedef void DriftScriptInitFunc(DriftScript* script);
+DriftScript* DriftScriptNew(DriftScriptInitFunc* init_func, void* script_data, DriftGameContext* game_ctx);
 bool DriftScriptTick(DriftScript* script, DriftUpdate* update);
 
 void DriftScriptDraw(DriftScript* script, DriftDraw* draw);
@@ -403,7 +405,7 @@ static inline bool DriftScriptYield(DriftScript* script){
 	return script->run;
 }
 
-void DriftTutorialScript(DriftScript* script);
+extern DriftScriptInitFunc DriftTutorialScript;
 
 // SDFs
 

@@ -42,7 +42,7 @@ const DriftItem DRIFT_ITEMS[_DRIFT_ITEM_COUNT] = {
 	
 	// Intermediate
 	[DRIFT_ITEM_POWER_SUPPLY] = {
-		.scan = DRIFT_SCAN_POWER_SUPPLY, .limit = 10, .is_part = true, .duration = 20,
+		.scan = DRIFT_SCAN_POWER_SUPPLY, .limit = 10, .is_part = true, .duration = 10,
 		.ingredients = {
 			{.type = DRIFT_ITEM_VIRIDIUM, .count = 8},
 			{.type = DRIFT_ITEM_SCRAP, .count = 2},
@@ -50,7 +50,7 @@ const DriftItem DRIFT_ITEMS[_DRIFT_ITEM_COUNT] = {
 		}
 	},
 	[DRIFT_ITEM_OPTICS] = {
-		.scan = DRIFT_SCAN_OPTICS, .limit = 10, .is_part = true, .duration = 20,
+		.scan = DRIFT_SCAN_OPTICS, .limit = 10, .is_part = true, .duration = 10,
 		.ingredients = {
 			{.type = DRIFT_ITEM_VIRIDIUM, .count = 8},
 			{.type = DRIFT_ITEM_LUMIUM, .count = 2},
@@ -60,7 +60,7 @@ const DriftItem DRIFT_ITEMS[_DRIFT_ITEM_COUNT] = {
 	
 	// Tools and upgrades
 	[DRIFT_ITEM_HEADLIGHT] = {
-		.scan = DRIFT_SCAN_HEADLIGHT, .limit = 1, .duration = 10,
+		.scan = DRIFT_SCAN_HEADLIGHT, .limit = 1, .duration = 5,
 		.ingredients = {
 			{.type = DRIFT_ITEM_VIRIDIUM, .count = 10},
 			{.type = DRIFT_ITEM_LUMIUM, .count = 5},
@@ -68,7 +68,7 @@ const DriftItem DRIFT_ITEMS[_DRIFT_ITEM_COUNT] = {
 	},
 	
 	[DRIFT_ITEM_AUTOCANNON] = {
-		.scan = DRIFT_SCAN_AUTOCANNON, .limit = 1, .duration = 30,
+		.scan = DRIFT_SCAN_AUTOCANNON, .limit = 1, .duration = 10,
 		.ingredients = {
 			{.type = DRIFT_ITEM_VIRIDIUM, .count = 6},
 			{.type = DRIFT_ITEM_SCRAP, .count = 3},
@@ -80,7 +80,7 @@ const DriftItem DRIFT_ITEMS[_DRIFT_ITEM_COUNT] = {
 	},
 	
 	[DRIFT_ITEM_MINING_LASER] = {
-		.scan = DRIFT_SCAN_LASER, .limit = 1, .duration = 60,
+		.scan = DRIFT_SCAN_LASER, .limit = 1, .duration = 10,
 		.ingredients = {
 			{.type = DRIFT_ITEM_LUMIUM, .count = 10},
 			{.type = DRIFT_ITEM_OPTICS, .count = 2},
@@ -196,7 +196,7 @@ static DriftEntity pnode_make(DriftGameState* state, DriftItemType type, DriftVe
 }
 
 static void pnode_draw(DriftDraw* draw, DriftVec2 pos){
-	bool flash = DriftWaveSaw(draw->nanos, 3) < 0.75f;
+	bool flash = DriftWaveSaw(draw->update_nanos, 3) < 0.75f;
 	
 	// TODO draw lines in parts to highlight min dist?
 	DriftNearbyNodesInfo info = DriftSystemPowerNodeNearby(draw->state, pos, draw->mem, DRIFT_POWER_BEAM_RADIUS);
@@ -218,7 +218,7 @@ static void pnode_draw(DriftDraw* draw, DriftVec2 pos){
 			DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){pos, p1, {1.5}, {0x80, 0x00, 0x00, 0x80}}));
 			DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){p1, node->pos, {1.5}, {0x80, 0x40, 0x00, 0x80}}));
 			
-			float pulse = 1 - fabsf(DriftWaveComplex(draw->nanos, 1).x);
+			float pulse = 1 - fabsf(DriftWaveComplex(draw->update_nanos, 1).x);
 			DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){p0, DriftVec2Lerp(p0, pos, pulse*node->blocked_at), {DRIFT_POWER_BEAM_RADIUS, DRIFT_POWER_BEAM_RADIUS - 1.5f}, {0x80, 0x40, 0x00, 0x80}}));
 		} else {
 			// Draw good links in green.
@@ -296,7 +296,6 @@ static const struct {
 	
 	uint frame0, frame_n, light_frame;
 	float scale[2], light_size;
-	u8 shiny;
 	DriftVec4 light_color;
 	DriftLight light;
 } DRIFT_PICKUP_ITEMS[_DRIFT_ITEM_COUNT] = {
@@ -305,13 +304,13 @@ static const struct {
 		.frame0 = DRIFT_SPRITE_POWER_NODE, .scale = {1, 1},
 	},
 	
-	[DRIFT_ITEM_SCRAP] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_SCRAP, .scale = {1, 1}, .shiny = 0x80},
-	[DRIFT_ITEM_ADVANCED_SCRAP] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_ADVANCED_SCRAP, .scale = {1, 1}, .shiny = 0xC0},
+	[DRIFT_ITEM_SCRAP] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_SCRAP00, .scale = {1, 1}},
+	[DRIFT_ITEM_ADVANCED_SCRAP] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_ADVANCED_SCRAP, .scale = {1, 1}},
 	
-	[DRIFT_ITEM_VIRIDIUM] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_VIRIDIUM00, .frame_n = DRIFT_SPRITE_VIRIDIUM11, .scale = {0.6f, 0.8f}, .shiny = 0x80},
-	[DRIFT_ITEM_BORONITE] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_BORON00, .scale = {0.6f, 0.8f}, .shiny = 0x80},
-	[DRIFT_ITEM_RADONITE] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_RADONITE00, .scale = {0.6f, 0.8f}, .shiny = 0x80},
-	[DRIFT_ITEM_METRIUM] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_METRIUM00, .scale = {0.6f, 0.8f}, .shiny = 0x80},
+	[DRIFT_ITEM_VIRIDIUM] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_VIRIDIUM00, .frame_n = DRIFT_SPRITE_VIRIDIUM11, .scale = {0.6f, 0.8f}},
+	[DRIFT_ITEM_BORONITE] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_BORON00, .scale = {0.6f, 0.8f}},
+	[DRIFT_ITEM_RADONITE] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_RADONITE00, .scale = {0.6f, 0.8f}},
+	[DRIFT_ITEM_METRIUM] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_METRIUM00, .scale = {0.6f, 0.8f}},
 	
 	[DRIFT_ITEM_LUMIUM] = {
 		.make = item_make_generic, .frame0 = DRIFT_SPRITE_LUMIUM, .scale = {1, 1},
@@ -321,10 +320,10 @@ static const struct {
 	[DRIFT_ITEM_FUNGICITE] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_FUNGICITE, .scale = {1, 1}},
 	[DRIFT_ITEM_MORPHITE] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_MORPHITE, .scale = {1, 1}},
 	
-	[DRIFT_ITEM_COPPER] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_COPPER00, .scale = {1, 1}, .shiny = 0x80},
-	[DRIFT_ITEM_SILVER] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_SILVER00, .scale = {1, 1}, .shiny = 0xFF},
-	[DRIFT_ITEM_GOLD] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_GOLD00, .scale = {1, 1}, .shiny = 0xFF},
-	[DRIFT_ITEM_GRAPHENE] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_GRAPHENE, .scale = {1, 1}, .shiny = 0xFF},
+	[DRIFT_ITEM_COPPER] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_COPPER00, .frame_n = DRIFT_SPRITE_COPPER09, .scale = {1, 1}},
+	[DRIFT_ITEM_SILVER] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_SILVER00, .scale = {1, 1}},
+	[DRIFT_ITEM_GOLD] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_GOLD00, .scale = {1, 1}},
+	[DRIFT_ITEM_GRAPHENE] = {.make = item_make_generic, .frame0 = DRIFT_SPRITE_GRAPHENE, .scale = {1, 1}},
 };
 
 static float scale_for_item(DriftItemType type, uint id){
@@ -363,7 +362,6 @@ DriftSprite DriftSpriteForItem(DriftItemType type, DriftAffine transform, uint i
 	return (DriftSprite){
 		.frame = DRIFT_FRAMES[frame0 + (tick/5)%(frame_n - frame0 + 1)], .color = DRIFT_RGBA8_WHITE,
 		.matrix = DriftAffineMul(transform, (DriftAffine){scale, 0, 0, scale, 0, 0}),
-		.shiny = DRIFT_PICKUP_ITEMS[type].shiny,
 	};
 }
 
@@ -462,7 +460,7 @@ void DriftDrawItems(DriftDraw* draw){
 }
 
 void DriftTickItemSpawns(DriftUpdate* update){
-	static DriftRandom rand[1];
+	static DriftRandom rand[1]; // TODO static global
 	DriftGameState* state = update->state;
 	DriftTerrain* terra = state->terra;
 
@@ -555,6 +553,7 @@ typedef struct {
 	mu_Context* mu;
 	DriftItemType selected;
 	bool focused;
+	DriftScanType research_finished;
 } RowContext;
 
 static const char* TextColor(DriftVec4 color){
@@ -598,7 +597,7 @@ static void craft_item_row(RowContext* ctx, DriftItemType item_type){
 	}
 	
 	mu_layout_row(ctx->mu, 1, (int[]){-1}, 16);
-	bool gfocus = mu_begin_group(ctx->mu, 0);{
+	bool gfocus = mu_begin_group(ctx->mu, MU_OPT_CONTINUOUS);{
 		if(mu_group_is_hovered(ctx->mu)){
 			ctx->selected = item_type;
 			ctx->focused = gfocus;
@@ -609,15 +608,16 @@ static void craft_item_row(RowContext* ctx, DriftItemType item_type){
 			mu_labelf(ctx->mu, TEXT_DISABLED"%s", name);
 			mu_labelf(ctx->mu, "{#23760151} {!%d}", DRIFT_SPRITE_TEXT_CHECK);
 		} else if(can_craft){
-			mu_labelf(ctx->mu, TEXT_ENABLED"%s", name);
+			mu_labelf(ctx->mu, TEXT_ENABLED_GREEN"%s", name);
 			if(item_count) mu_labelf(ctx->mu, TEXT_ENABLED"% 3d", item_count);
 		} else if(is_recipe_known){
 			mu_labelf(ctx->mu, TEXT_DISABLED"%s", name);
 			if(item_count) mu_labelf(ctx->mu, TEXT_DISABLED"% 3d", item_count);
 		} else {
 			if(ingredients_known){
-				mu_labelf(ctx->mu, TEXT_ENABLED_GREEN"%s", name);
-				mu_label(ctx->mu, ctx->draw->tick/10%2 ? TEXT_ENABLED_GREEN"NEW" : TEXT_DISABLED"NEW");
+				mu_labelf(ctx->mu, TEXT_DISABLED"%s", name);
+				bool flash = DriftWaveSaw(ctx->draw->clock_nanos, 2) > 0.5f;
+				if(flash) mu_label(ctx->mu, TEXT_ENABLED_GREEN"NEW");
 			} else {
 				mu_labelf(ctx->mu, TEXT_DISABLED_RED"%s", STR_CORRUPT_DATA);
 				mu_labelf(ctx->mu, TEXT_DISABLED_RED"%d/%d", known_count, ingredient_count);
@@ -633,14 +633,49 @@ static void missing_ingredient(mu_Context* mu, DriftItemType type){
 	mu_label(mu, DRIFT_ITEMS[type].is_part ? missing_research : missing_scan);
 }
 
-static bool fab_button(mu_Context* mu, const char* label, DriftGameState* state){
-	if(state->fab.progress > 0){
-		mu_Rect r = mu_layout_next(mu);
-		mu->draw_frame(mu, r, MU_COLOR_GROUPBG);
-		mu_draw_control_text(mu, "Busy...", r, MU_COLOR_TEXT, MU_OPT_ALIGNCENTER);
+static void disabled_button(mu_Context* mu, const char* label){
+	mu_Rect r = mu_layout_next(mu);
+	mu->draw_frame(mu, r, MU_COLOR_GROUPBG);
+	mu_draw_control_text(mu, label, r, MU_COLOR_TEXT, MU_OPT_ALIGNCENTER);
+}
+
+static bool fab_button(mu_Context* mu, const char* label, DriftDraw* draw, bool focused){
+	if(draw->state->fab.progress > 0){
+		disabled_button(mu, "Busy...");
 		return false;
 	} else {
-		return mu_button(mu, label);
+		// TODO static globals
+		static float progress;
+		static int prev_idx;
+		static bool latch;
+		
+		// Reset progress if group changes.
+		int group_idx = mu->hover_ve ? mu->hover_ve->ve_row : 0;
+		if(prev_idx != group_idx) progress = 0;
+		prev_idx = group_idx;
+		
+		const char* hold = progress > 0 ? DriftSMPrintf(draw->mem, "Hold {!%d}", DRIFT_SPRITE_ICON_PROG0 + (int)(8*progress)) : NULL;
+
+		mu_Id id = mu_get_id(mu, label, strlen(label));
+		mu_Rect r = mu_layout_next(mu);
+		mu_update_control(mu, id, r, 0);
+		mu_draw_control_frame(mu, id, r, MU_COLOR_BUTTON, hold ? MU_OPT_DRAW_FOCUSED : 0);
+		mu_draw_control_text(mu, hold ?: label, r, MU_COLOR_TEXT, MU_OPT_ALIGNCENTER);
+		
+		if((mu->mouse_state == MU_MOUSE_LEFT && mu->focus == id) || focused){
+			if(latch == false) progress = DriftSaturate(progress + draw->dt/0.5f);
+		} else {
+			progress = 0;
+			latch = false;
+		}
+		
+		if(progress >= 1){
+			progress = 0;
+			latch = true;
+			return true;
+		} else {
+			return false;
+		}
 	}
 }
 
@@ -728,24 +763,25 @@ static void craft_pane(RowContext* ctx){
 		mu_labelf(mu, DRIFT_TEXT_GRAY"(have % 2d)", item_count);
 		
 		// TODO apply limit here?
-		if(can_craft && (fab_button(mu, "Build {@ACCEPT}", state) || ctx->focused)){
-			state->fab.is_research = false;
+		if(can_craft && fab_button(mu, "Craft {@ACCEPT}", ctx->draw, ctx->focused)){
 			state->fab.item = ctx->selected;
 			for(uint p = 0; p < ingredient_count; p++){
 				state->inventory.skiff[ingredients[p].type] -= ingredients[p].count;
 			}
+		} else {
+			// disabled_button(mu, "Can't Craft");
 		}
 		
 		mu_layout_row(mu, 2, (int[]){-160, -2}, UI_LINE_HEIGHT);
-		mu_label(mu, DRIFT_TEXT_GRAY"  Time");
-		mu_labelf(mu, DRIFT_TEXT_GRAY"    %2d:%02d", item->duration/60, item->duration%60);
+		// mu_label(mu, DRIFT_TEXT_GRAY"  Craft Time");
+		// mu_labelf(mu, DRIFT_TEXT_GRAY"    %2d:%02d", item->duration/60, item->duration%60);
 		for(uint i = 0; i < ingredient_count; i++){
 			uint ingredient_type = ingredients[i].type;
 			const char* ingredient_name = DriftItemName(ingredient_type);
 			uint have = state->inventory.skiff[ingredient_type], need = ingredients[i].count;
 			bool enough = have >= need;
-			mu_labelf(mu, "%s- %s", enough ? TEXT_ENABLED_GREEN : TEXT_DISABLED, ingredient_name);
-			mu_labelf(mu, "%s %3d / %2d", (enough ? TEXT_ENABLED_GREEN : TEXT_DISABLED), have, need);
+			mu_labelf(mu, DRIFT_TEXT_GRAY"- %s", ingredient_name);
+			mu_labelf(mu, "%s %3d / %2d", (enough ? TEXT_ENABLED_GREEN : TEXT_DISABLED_RED), have, need);
 		}
 		
 		mu_layout_row(mu, 1, (int[]){-1}, UI_LINE_HEIGHT);
@@ -756,14 +792,13 @@ static void craft_pane(RowContext* ctx){
 		mu_layout_next(mu);
 		
 		if(known_count == ingredient_count && progress < 1){
-			if(fab_button(mu, "Research {@ACCEPT}", state) || ctx->focused){
-				state->fab.is_research = true;
-				state->fab.item = ctx->selected;
+			if(fab_button(mu, "Research {@ACCEPT}", ctx->draw, ctx->focused)){
+				state->scan_progress[scan_type] = 1;
+				ctx->research_finished = scan_type;
 			}
 		}
 		
 		mu_layout_row(mu, 1, (int[]){-1}, UI_LINE_HEIGHT);
-		mu_labelf(mu, DRIFT_TEXT_GRAY"  Time: %d:%02d", scan->duration/60, scan->duration%60);
 		for(uint i = 0; i < ingredient_count; i++){
 			uint ingredient_type = ingredients[i].type;
 			const char* ingredient_name = DriftItemName(ingredient_type);
@@ -862,21 +897,20 @@ static void craft_ui(mu_Context* mu, DriftDraw* draw){
 	
 	if(mu_begin_window_ex(mu, "FABTASK", prog_win->rect, MU_OPT_NOTITLE | MU_OPT_NOFRAME)){
 		DriftItemType item = state->fab.item;
-		bool is_research = state->fab.is_research;
 		
-		uint duration = is_research ? DriftItemResearchDuration(item) : DriftItemBuildDuration(item);
 		progress_bar(mu, prog_rect, state->fab.progress);
 		
-		const char* prog_text = DriftSMPrintf(draw->mem, TEXT_ENABLED"%s: "DRIFT_TEXT_GRAY"%s", is_research ? "Researching" : "Building", DriftItemName(item));
+		const char* prog_text = DriftSMPrintf(draw->mem, TEXT_ENABLED"%s: "DRIFT_TEXT_GRAY"%s", "Crafting", DriftItemName(item));
 		mu_draw_control_text(mu, prog_text, prog_rect, MU_COLOR_TEXT, MU_OPT_ALIGNCENTER);
 		
-		uint remain = (uint)(duration - duration*state->fab.progress);
+		uint remain = (uint)(DriftItemBuildDuration(item)*(1 - state->fab.progress));
 		const char* remain_text = DriftSMPrintf(draw->mem, DRIFT_TEXT_GRAY"%d:%02d", remain/60, remain%60);
 		mu_draw_control_text(mu, remain_text, prog_rect, MU_COLOR_TEXT, MU_OPT_ALIGNRIGHT);
 		
 		mu_end_window(mu);
 	}
 	
+	// TODO static globals
 	static DriftItemType transfer_items[_DRIFT_ITEM_COUNT];
 	static uint transfer_count;
 	static float transfer_timeout;
@@ -956,7 +990,7 @@ static void craft_ui(mu_Context* mu, DriftDraw* draw){
 		
 		mu_Vec2 size = {80, 20};
 		mu_layout_set_next(mu, (mu_Rect){(popup_rect.w - size.x)/2, popup_rect.h - size.y - 10, size.x, size.y}, true);
-		if(mu_button(mu, "Done {@ACCEPT}") || (mu->key_down & (MU_KEY_RETURN | MU_KEY_ESCAPE))){
+		if(mu_button(mu, "Dismiss {@ACCEPT}") || (mu->key_down & (MU_KEY_RETURN))){
 			mu_get_current_container(mu)->open = false;
 			transfer_count = 0;
 			
@@ -978,6 +1012,30 @@ static void craft_ui(mu_Context* mu, DriftDraw* draw){
 		
 		mu_end_popup(mu);
 	}
+	
+	// if(ctx.research_finished){
+	// 	DRIFT_LOG("open");
+	// 	mu_open_popup(mu, "RESEARCHED");
+	// }
+	// if(mu_begin_popup(mu, "RESEARCHED")){
+	// 	mu_Container* popup = mu_get_current_container(mu);
+	// 	mu_bring_to_front(mu, popup);
+	// 	popup->rect = popup_rect;
+		
+	// 	uint pad = 3;
+	// 	mu_Rect padded = {.x = pad, .y = pad, .w = popup_rect.w - 2*pad, .h = popup_rect.h - 2*pad};
+	// 	mu_layout_set_next(mu, padded, true);
+	// 	mu_text(mu, "Can't save right now.");
+			
+	// 	mu_Vec2 size = {80, 20};
+	// 	mu_layout_set_next(mu, (mu_Rect){(popup_rect.w - size.x)/2, popup_rect.h - size.y - 10, size.x, size.y}, true);
+	// 	if(mu_button(mu, "Dismiss {@ACCEPT}") || (mu->key_down & (MU_KEY_RETURN))){
+	// 		mu_get_current_container(mu)->open = false;
+	// 		ctx.research_finished = DRIFT_SCAN_NONE;
+	// 	}
+		
+	// 	mu_end_popup(mu);
+	// }
 }
 
 static const mu_Vec2 UI_SIZE = {400, 200};
@@ -985,9 +1043,8 @@ static const mu_Vec2 UI_SIZE = {400, 200};
 static void reboot_ui(mu_Context* mu, DriftDraw* draw){
 	DriftGameState* state = draw->state;
 	
-	static bool show_crash = true;
-	if(show_crash){
-		static uint line_max = 0;
+	if(state->status.factory.needs_reboot){
+		static uint line_max = 0; // TODO static global
 		static const char* crash_txt[] = {
 			DRIFT_TEXT_GRAY"[  "DRIFT_TEXT_GREEN"OK"DRIFT_TEXT_GRAY"  ] Started System Logging Service.\n",
 			DRIFT_TEXT_GRAY"[  "DRIFT_TEXT_GREEN"OK"DRIFT_TEXT_GRAY"  ] Finished Create Volatile Files and Directories.\n",
@@ -1016,7 +1073,7 @@ static void reboot_ui(mu_Context* mu, DriftDraw* draw){
 		if(crash_txt[line_max/6]){
 			line_max++;
 		} else {
-			static bool beep;
+			static bool beep; // TODO static global
 			if(!beep){
 				DriftAudioPlaySample(DRIFT_BUS_UI, DRIFT_SFX_BOOT_FAIL, (DriftAudioParams){.gain = 0.25f});
 				beep = true;
@@ -1024,7 +1081,7 @@ static void reboot_ui(mu_Context* mu, DriftDraw* draw){
 			
 			mu_Vec2 size = {160, 20};
 			mu_layout_set_next(mu, (mu_Rect){(UI_SIZE.x - size.x)/2, (UI_SIZE.y - size.y - 8), size.x, size.y}, true);
-			if(mu_button(mu, "Reboot Fabricator {@ACCEPT}") || mu->key_down & MU_KEY_RETURN) show_crash = false;
+			if(mu_button(mu, "Reboot Fabricator {@ACCEPT}") || mu->key_down & MU_KEY_RETURN) state->status.factory.needs_reboot = false;
 		}
 	} else {
 		static char* reboot_txt;
@@ -1036,11 +1093,10 @@ static void reboot_ui(mu_Context* mu, DriftDraw* draw){
 		
 		mu_layout_row(mu, 1, (int[]){-1}, -1);
 		mu_begin_panel_ex(mu, "reboot", MU_OPT_NOSCROLL);
-		static int scroll = 0;
 		mu_Container* cnt = mu_get_current_container(mu);
-		cnt->scroll = (mu_Vec2){0, scroll};
-		scroll += (int)(900*draw->dt);
-		if(scroll > 1200) state->status.factory_needs_reboot = false;
+		cnt->scroll = (mu_Vec2){0, state->status.factory.scroll};
+		state->status.factory.scroll += (int)(900*draw->dt);
+		if(state->status.factory.scroll > 1200) state->status.factory.needs_scroll = false;
 		
 		mu_layout_row(mu, 1, (int[]){-1}, -1);
 		mu_text(mu, reboot_txt);
@@ -1057,7 +1113,7 @@ void DriftCraftUI(mu_Context* mu, DriftDraw* draw, DriftUIState* ui_state){
 	win->open = (*ui_state == DRIFT_UI_STATE_CRAFT);
 	
 	int opts = MU_OPT_NOSCROLL;
-	bool needs_reboot = draw->state->status.factory_needs_reboot;
+	bool needs_reboot = draw->state->status.factory.needs_scroll;
 	if(needs_reboot) opts |= MU_OPT_NOCLOSE;
 	
 	if(mu_begin_window_ex(mu, TITLE, win->rect, opts)){

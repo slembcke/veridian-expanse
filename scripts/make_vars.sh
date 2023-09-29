@@ -7,4 +7,4 @@ export CMAKE_COMMAND="cmake"
 export VPATH=`dirname $0`/..
 export NULL=/dev/null
 
-WRITE_PNG=1 ZIP_FLAGS=-9 make -f $VPATH/resources.mk resources/art/cryo_nautilus_large_idle.png
+DBG_LUA=1 WRITE_PNG=1 ZIP_FLAGS=-9 make -f $VPATH/resources.mk drift-game-assets

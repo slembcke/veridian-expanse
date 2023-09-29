@@ -15,6 +15,7 @@ set(DRIFT_COMPILE_OPTIONS
 	-Wno-unused -Wno-unused-result -Wno-unused-parameter
 	-Wno-type-limits -Wno-missing-field-initializers -Warray-bounds
 	-Wno-maybe-uninitialized -Waggressive-loop-optimizations
+	# -fanalyzer
 )
 
 option(DRIFT_RESOURCES "Build resources.zip and atlas data." ON)
@@ -131,6 +132,7 @@ add_library(drift-game
 	src/drift_script.c
 	src/drift_ui.c
 	src/drift_hud.c
+	src/drift_weapons.c
 	src/drift_strings_en.c
 )
 
@@ -163,6 +165,7 @@ if(DRIFT_RESOURCES)
 			${CMAKE_BINARY_DIR}/atlas_defs.inc
 			${CMAKE_BINARY_DIR}/sound_enums.inc
 			${CMAKE_BINARY_DIR}/sound_defs.inc
+			${CMAKE_BINARY_DIR}/strings_enums.inc
 			${CMAKE_BINARY_DIR}/sound_inc
 			${CMAKE_BINARY_DIR}/onelua.o
 			${CMAKE_BINARY_DIR}/lua

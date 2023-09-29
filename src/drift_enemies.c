@@ -11,6 +11,52 @@ You should have received a copy of the GNU General Public License along with Ver
 #include <stdlib.h>
 #include "drift_game.h"
 
+typedef struct {
+	DriftComponent c;
+	DriftEntity* entity;
+
+	float* speed;
+	float* accel;
+	DriftVec2* forward_bias;
+} DriftComponentBugNav;
+
+typedef struct {
+	float health;
+	float pod_progress;
+	bool chunk_taken;
+} DriftHiveData;
+
+typedef struct {
+	DriftComponent c;
+	
+	DriftEntity* entity;
+	DriftHiveData* data;
+} DriftComponentHives;
+
+void DriftSystemsInitEnemies(DriftGameState* state){
+	DriftComponentBugNav* bug_nav = DriftAlloc(state->mem, sizeof(*bug_nav));
+	DRIFT_GAMESTATE_TYPED_COMPONENT_MAKE(state, bug_nav, DriftComponentBugNav, ((DriftColumnSet){
+		DRIFT_DEFINE_COLUMN(bug_nav->entity),
+		DRIFT_DEFINE_COLUMN(bug_nav->speed),
+		DRIFT_DEFINE_COLUMN(bug_nav->accel),
+		DRIFT_DEFINE_COLUMN(bug_nav->forward_bias),
+	}), 0);
+	
+	DRIFT_GAMESTATE_TYPED_COMPONENT_MAKE(state, &state->enemies, DriftComponentEnemy, ((DriftColumnSet){
+		DRIFT_DEFINE_COLUMN(state->enemies.entity),
+		DRIFT_DEFINE_COLUMN(state->enemies.type),
+		DRIFT_DEFINE_COLUMN(state->enemies.tile_idx),
+		DRIFT_DEFINE_COLUMN(state->enemies.aggro_ticks),
+	}), 0);
+	
+	DriftComponentHives* hives = DriftAlloc(state->mem, sizeof(*hives));
+	DRIFT_GAMESTATE_TYPED_COMPONENT_MAKE(state, hives, DriftComponentHives, ((DriftColumnSet){
+		DRIFT_DEFINE_COLUMN(hives->entity),
+		DRIFT_DEFINE_COLUMN(hives->data),
+	}), 0);
+	hives->data[0] = (DriftHiveData){.health = 1000};
+}
+
 DriftEntity DriftSpawnEnemy(DriftGameState* state, DriftEnemyType type, DriftVec2 pos, DriftVec2 rot);
 
 static DriftRGBA8 health_flash(uint tick, DriftHealth* health){
@@ -56,7 +102,7 @@ static DriftAffine get_transform(DriftGameState* state, DriftEntity entity){
 
 static void draw_hive(DriftDraw* draw, DriftScript* script, DriftHiveData* data){
 	DriftGameState* state = draw->state;
-	HiveContext* hive = script->draw_ctx;
+	HiveContext* hive = script->draw_data;
 	DriftAffine transform = get_transform(state, hive->entity);
 	
 	DriftVec2 pos = DriftAffineOrigin(transform);
@@ -77,6 +123,11 @@ static void draw_hive(DriftDraw* draw, DriftScript* script, DriftHiveData* data)
 		sprite.color = health_flash(draw->tick, pod_health);
 		if(sprite.color.a) DRIFT_ARRAY_PUSH(draw->flash_sprites, sprite);
 		
+		if(state->scan_progress[DRIFT_SCAN_HIVE_POD] < 1){
+			sprite.color = DriftHUDIndicator(draw, pod, (DriftRGBA8){0x00, 0x80, 0x80, 0x80});
+			if(sprite.color.a) DRIFT_ARRAY_PUSH(draw->flash_sprites, sprite);
+		}
+		
 		DriftVec2 dir = DriftVec2Normalize(DriftVec2Sub(player_pos, pod));
 		DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
 			.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_FLOOD], .color = (DriftVec4){{4.17f, 0.03f, 2.93f, 0.00f}},
@@ -89,7 +140,7 @@ static void draw_hive(DriftDraw* draw, DriftScript* script, DriftHiveData* data)
 		const uint particle_count = 10;
 		const u64 duration_nanos = 0.4e9;
 		for(uint i = 0; i < particle_count; i++){
-			u64 nanos = (draw->nanos + i*duration_nanos/particle_count);
+			u64 nanos = (draw->update_nanos + i*duration_nanos/particle_count);
 			uint seed = nanos/duration_nanos + i;
 			float alpha = (float)(nanos % duration_nanos)/(float)duration_nanos;
 			
@@ -137,6 +188,10 @@ static void draw_hive(DriftDraw* draw, DriftScript* script, DriftHiveData* data)
 			.frame = DRIFT_FRAMES[DRIFT_SPRITE_SHIELD], .color = (DriftRGBA8){0x16, 0x4A, 0xCB, 0x00},
 			.matrix = {rot.x, rot.y, rot.y, -rot.x, pos.x, pos.y}, .z = 150
 		}));
+		DRIFT_ARRAY_PUSH(draw->lights, ((DriftLight){
+			.frame = DRIFT_FRAMES[DRIFT_SPRITE_LIGHT_RADIAL], .color = DRIFT_VEC4_BLUE,
+			.matrix = {250, 0, 0, 250, pos.x, pos.y},
+		}));
 	} else {
 		const char* bar = "############------------" + (uint)(12*hive_health->value/hive_health->maximum);
 		DriftDrawTextF(draw, &draw->overlay_sprites, (DriftVec2){pos.x - 50, pos.y - 50}, "|%.12s|", bar);
@@ -144,9 +199,11 @@ static void draw_hive(DriftDraw* draw, DriftScript* script, DriftHiveData* data)
 }
 
 static void hive_boss_draw(DriftDraw* draw, DriftScript* script){
-	DriftGameState* state = draw->state;
-	HiveInfo* info = script->ctx;
-	DriftHiveData* data = state->hives.data + DriftComponentFind(&state->hives.c, info->key);
+	DriftGameState* state = script->state;
+	HiveInfo* info = script->user_data;
+	DriftComponentHives* hives = DRIFT_GET_TYPED_COMPONENT(state, DriftComponentHives);
+	
+	DriftHiveData* data = hives->data + DriftComponentFind(&hives->c, info->key);
 	if(data->health > 0){
 		draw_hive(draw, script, data);
 	} else {
@@ -161,7 +218,7 @@ static void hive_boss_draw(DriftDraw* draw, DriftScript* script){
 		};
 		
 		DRIFT_ARRAY_PUSH(draw->bg_sprites, sprite);
-		if(state->scan_progress[DRIFT_SCAN_COPPER] < 1){
+		if(state->scan_progress[DRIFT_SCAN_COPPER_DEPOSIT] < 1){
 			sprite.color = DriftHUDIndicator(draw, pos, (DriftRGBA8){0x00, 0x80, 0x80, 0x80});
 			if(sprite.color.a) DRIFT_ARRAY_PUSH(draw->flash_sprites, sprite);
 		}
@@ -169,7 +226,7 @@ static void hive_boss_draw(DriftDraw* draw, DriftScript* script){
 }
 
 static void hive_state_shield(DriftScript* script, HiveContext* hive, DriftHiveData* data){
-	DriftGameState* state = script->update->state;
+	DriftGameState* state = script->state;
 	DriftHealth* health = get_health(state, hive->entity);
 	health->timeout = INFINITY; // TODO this suppresses sounds
 	health->hit_sfx = DRIFT_SFX_SHIELD_SPARK;
@@ -177,7 +234,10 @@ static void hive_state_shield(DriftScript* script, HiveContext* hive, DriftHiveD
 	
 	// Make a shield pod and wait for the player to blow that up.
 	hive->pod_entity = DriftMakeHotEntity(state);
-
+	uint transform_idx = DriftComponentAdd(&state->transforms.c, hive->pod_entity);
+	uint scan_idx = DriftComponentAdd(&state->scan.c, hive->pod_entity);
+	state->scan.type[scan_idx] = DRIFT_SCAN_HIVE_POD;
+	
 	uint body_idx = DriftComponentAdd(&state->bodies.c, hive->pod_entity);
 	state->bodies.position[body_idx] = hive->pod_dest;
 	state->bodies.rotation[body_idx] = DriftRandomOnUnitCircle(hive->rand);
@@ -198,7 +258,7 @@ static void hive_state_shield(DriftScript* script, HiveContext* hive, DriftHiveD
 		DriftVec2 player_pos = state->bodies.position[DriftComponentFind(&state->bodies.c, update->state->player)];
 		DriftVec2 delta = DriftVec2Sub(player_pos, hive->pod_dest);
 		if(update->tick % 60 == 0 && DriftVec2Length(delta) < 500){
-			DriftFireProjectile(update, DRIFT_PROJECTILE_HIVE, hive->pod_dest, delta);
+			FireHiveProjectile(update, (DriftRay2){hive->pod_dest, DriftVec2Normalize(delta)});
 		}
 	}
 	
@@ -208,7 +268,7 @@ static void hive_state_shield(DriftScript* script, HiveContext* hive, DriftHiveD
 }
 
 static void hive_state_aggro(DriftScript* script, HiveContext* hive, DriftHiveData* data){
-	DriftGameState* state = script->update->state;
+	DriftGameState* state = script->state;
 	
 	static const DriftEnemyType SPAWNS[][4] = {
 		{DRIFT_ENEMY_FIGHTER_BUG, DRIFT_ENEMY_FIGHTER_BUG, DRIFT_ENEMY_NONE},
@@ -260,12 +320,15 @@ static void hive_state_aggro(DriftScript* script, HiveContext* hive, DriftHiveDa
 		ticks++;
 	}
 	
+	// copy final health value
+	data->health = get_health(state, hive->entity)->value;
 	AVOID_PLAYER = false;
 }
 
 static void hive_normal_state(DriftScript* script, HiveContext* hive, DriftHiveData* data){
-	DriftGameState* state = script->update->state;
-	HiveInfo* info = script->ctx;
+	DriftGameState* state = script->state;
+	HiveInfo* info = script->user_data;
+	DriftComponentHives* hives = DRIFT_GET_TYPED_COMPONENT(state, DriftComponentHives);
 	
 	DriftEntity entity = hive->entity = DriftMakeHotEntity(state);
 	uint transform_idx = DriftComponentAdd(&state->transforms.c, entity);
@@ -281,7 +344,7 @@ static void hive_normal_state(DriftScript* script, HiveContext* hive, DriftHiveD
 	
 	uint health_idx = DriftComponentAdd(&state->health.c, hive->entity);
 	state->health.data[health_idx] = (DriftHealth){
-		.value = data->health, .maximum = state->hives.data[0].health,
+		.value = data->health, .maximum = hives->data[0].health,
 		.hit_sfx = DRIFT_SFX_THUD1, .die_sfx = DRIFT_SFX_HIVE_DEATH,
 	};
 	
@@ -294,43 +357,80 @@ static void hive_normal_state(DriftScript* script, HiveContext* hive, DriftHiveD
 	DRIFT_LOG("destroyed hive, health: %.1f, prog: %.1f", data->health, data->pod_progress);
 }
 
-static void hive_destroyed_state(DriftScript* script, HiveContext* hive){
-	DriftGameState* state = script->update->state;
+static void hive_destroyed_state(DriftScript* script, HiveContext* hive, DriftHiveData* data){
+	DriftGameState* state = script->state;
 	
-	HiveInfo* info = script->ctx;
+	HiveInfo* info = script->user_data;
 	DriftVec2 pos = info->pos;
 	uint transform_idx = DriftComponentAdd2(&state->transforms.c, info->key, false);
 	state->transforms.matrix[transform_idx] = (DriftAffine){1, 0, 0, 1, pos.x, pos.y};
 
 	uint scan_idx = DriftComponentAdd2(&state->scan.c, info->key, false);
-	state->scan.type[scan_idx] = DRIFT_SCAN_COPPER;
-	uint sui_idx = DriftComponentAdd2(&state->scan_ui.c, info->key, false);
-	state->scan_ui.type[sui_idx] = DRIFT_SCAN_UI_DEPOSIT;
+	state->scan.type[scan_idx] = DRIFT_SCAN_COPPER_DEPOSIT;
+	
+	if(!data->chunk_taken){
+		DriftEntity chunk = DriftItemMake(state, DRIFT_ITEM_COPPER, pos, DRIFT_VEC2_ZERO, 0);
+		while(DriftScriptYield(script) && DriftEntitySetCheck(&state->entities, chunk)){
+			DriftUpdate* update = script->update;
+			DriftVec2 orbit = DriftWaveComplex(update->nanos, 0.032f);
+			orbit = DriftVec2FMA(orbit, DriftWaveComplex(update->nanos, 0.1f), 3.0f);
+			orbit = DriftVec2FMA(pos, orbit, 16);
+			// DriftDebugCircle(state, orbit, 5, DRIFT_RGBA8_RED);
+			
+			uint body_idx = DriftComponentFind(&state->bodies.c, chunk);
+			DriftVec2 delta = DriftVec2Sub(orbit, state->bodies.position[body_idx]);
+			state->bodies.velocity[body_idx] = DriftVec2Mul(delta, 1e-2f/update->tick_dt);
+			
+			if(DriftVec2Length(delta) > 200){
+				DriftDestroyEntity(state, chunk);
+				chunk = DriftItemMake(state, DRIFT_ITEM_COPPER, pos, DRIFT_VEC2_ZERO, 0);
+			}
+			
+			float* w = state->bodies.angular_velocity + body_idx;
+			*w = DriftLerp(-3, *w, expf(-update->tick_dt));
+		}
+		
+		if(DriftEntitySetCheck(&state->entities, chunk)){
+			DriftDestroyEntity(state, chunk);
+		} else {
+			DRIFT_LOG("hive chunk taken");
+			data->chunk_taken = true;
+		}
+	} else {
+		DRIFT_LOG("hive no chunk");
+	}
 }
 
 static bool hive_boss_check(DriftScript* script){
-	DriftGameState* state = script->update->state;
+	DriftGameState* state = script->state;
 	uint player_body_idx = DriftComponentFind(&state->bodies.c, state->player);
 	DriftVec2 player_pos = state->bodies.position[player_body_idx];
 	
-	HiveInfo* info = script->ctx;
+	HiveInfo* info = script->user_data;
 	return DriftVec2Near(player_pos, info->pos, 1000);
 }
 
-static void hive_boss_script(DriftScript* script){
-	DriftGameState* state = script->update->state;
+static void hive_boss_body(DriftScript* script){
 	HiveContext hive = {};
-	script->check = hive_boss_check;
-	script->draw = hive_boss_draw;
-	script->draw_ctx = &hive;
 	
-	HiveInfo* info = script->ctx;
-	uint data_idx = DriftComponentFind(&state->hives.c, info->key);
-	if(data_idx == 0) data_idx = DriftComponentAdd(&state->hives.c, info->key);
-	DriftHiveData* data = state->hives.data + data_idx;
+	script->draw = hive_boss_draw;
+	script->draw_data = &hive;
+	
+	HiveInfo* info = script->user_data;
+	DriftGameState* state = script->state;
+	DriftComponentHives* hives = DRIFT_GET_TYPED_COMPONENT(state, DriftComponentHives);
+	
+	uint data_idx = DriftComponentFind(&hives->c, info->key);
+	if(data_idx == 0) data_idx = DriftComponentAdd(&hives->c, info->key);
+	DriftHiveData* data = hives->data + data_idx;
 	
 	if(data->health > 0) hive_normal_state(script, &hive, data);
-	if(script->run) hive_destroyed_state(script, &hive);
+	if(script->run) hive_destroyed_state(script, &hive, data);
+}
+
+static void hive_boss_script(DriftScript* script){
+	script->check = hive_boss_check;
+	script->body = hive_boss_body;
 }
 
 static void tick_hive_boss(DriftUpdate* update, DriftVec2 player_pos){
@@ -341,7 +441,7 @@ static void tick_hive_boss(DriftUpdate* update, DriftVec2 player_pos){
 		// Look for a nearby hive.
 		for(uint i = 0; i < HIVE_COUNT; i++){
 			if(DriftVec2Near(player_pos, HIVE_INFO[i].pos, radius)){
-				state->script = DriftScriptNew(hive_boss_script, (void*)(HIVE_INFO + i));
+				state->script = DriftScriptNew(hive_boss_script, (void*)(HIVE_INFO + i), update->ctx);
 				break;
 			}
 		}
@@ -388,7 +488,7 @@ static DriftEntity spawn_glow_bug(DriftGameState* state, DriftVec2 pos, DriftVec
 		.health = {.value = 20, .maximum = 20, .drop = DRIFT_ITEM_LUMIUM, .hit_sfx = DRIFT_SFX_THUD1, .die_sfx = DRIFT_SFX_EXPLODE},
 	});
 	
-	DriftComponentAdd(&state->bug_nav.c, e);
+	DriftComponentAdd(DriftGetNamedComponent(state, DRIFT_STR(DriftComponentBugNav)), e);
 	return e;
 }
 
@@ -399,7 +499,7 @@ static DriftEntity spawn_worker_bug(DriftGameState* state, DriftVec2 pos, DriftV
 		.health = {.value = 50, .maximum = 50, .drop = DRIFT_ITEM_SCRAP, .hit_sfx = DRIFT_SFX_THUD1, .die_sfx = DRIFT_SFX_EXPLODE},
 	});
 	
-	DriftComponentAdd(&state->bug_nav.c, e);
+	DriftComponentAdd(DriftGetNamedComponent(state, DRIFT_STR(DriftComponentBugNav)), e);
 	return e;
 }
 
@@ -410,7 +510,7 @@ static DriftEntity spawn_fighter_bug(DriftGameState* state, DriftVec2 pos, Drift
 		.health = {.value = 100, .maximum = 100, .drop = DRIFT_ITEM_SCRAP, .hit_sfx = DRIFT_SFX_THUD1, .die_sfx = DRIFT_SFX_EXPLODE},
 	});
 	
-	DriftComponentAdd(&state->bug_nav.c, e);
+	DriftComponentAdd(DriftGetNamedComponent(state, DRIFT_STR(DriftComponentBugNav)), e);
 	return e;
 }
 
@@ -421,7 +521,7 @@ static DriftEntity spawn_trilobyte(DriftGameState* state, DriftVec2 pos, DriftVe
 		.health = {.value = 400, .maximum = 400, .drop = DRIFT_ITEM_SCRAP, .hit_sfx = DRIFT_SFX_THUD1, .die_sfx = DRIFT_SFX_EXPLODE},
 	});
 	
-	DriftComponentAdd(&state->bug_nav.c, e);
+	DriftComponentAdd(DriftGetNamedComponent(state, DRIFT_STR(DriftComponentBugNav)), e);
 	return e;
 }
 
@@ -432,7 +532,7 @@ static DriftEntity spawn_nautilus(DriftGameState* state, DriftVec2 pos, DriftVec
 		.health = {.value = 250, .maximum = 250, .drop = DRIFT_ITEM_SCRAP, .hit_sfx = DRIFT_SFX_THUD1, .die_sfx = DRIFT_SFX_EXPLODE},
 	});
 	
-	DriftComponentAdd(&state->bug_nav.c, e);
+	DriftComponentAdd(DriftGetNamedComponent(state, DRIFT_STR(DriftComponentBugNav)), e);
 	return e;
 }
 
@@ -466,15 +566,18 @@ bool DriftWorkerDroneCollide(DriftUpdate* update, DriftPhysics* phys, DriftIndex
 }
 
 static void tick_spawns(DriftUpdate* update, DriftVec2 player_pos){
-	static DriftRandom rand[1];
+	static DriftRandom rand[1]; // TODO static global
 	DriftGameState* state = update->state;
 	DriftTerrain* terra = state->terra;
+	DriftTutorialSpawnPhase spawn_phase = state->status.spawn_phase;
 	
 	uint indexes[200];
 	uint tile_count = DriftTerrainSpawnTileIndexes(terra, indexes, 200, player_pos, DRIFT_SPAWN_RADIUS);
 	
 	for(uint i = 0; i < tile_count; i++){
 		uint tile_idx = indexes[i];
+		if(spawn_phase == DRIFT_TUTORIAL_SPAWN_LIMIT && (tile_idx & 1) == 0) continue;
+		
 		uint spawn_count = DriftTerrainTileBiomass(terra, tile_idx);
 		if(spawn_count == 0) continue;
 		DRIFT_ASSERT_WARN(spawn_count <=1, "too many spawns %d", spawn_count);
@@ -487,14 +590,16 @@ static void tick_spawns(DriftUpdate* update, DriftVec2 player_pos){
 		for(uint i = 0; i < spawn_count; i++){
 			DriftVec2 pos = locations[i];
 			DriftReservoir res = DriftReservoirMake(rand);
-			DriftEntity (*spawn_func)(DriftGameState* state, DriftVec2 pos, DriftVec2 rot);
+			DriftEntity (*spawn_func)(DriftGameState* state, DriftVec2 pos, DriftVec2 rot) = NULL;
 			
 			switch(DriftTerrainSampleBiome(state->terra, pos).idx){
 				default:
 				case DRIFT_BIOME_LIGHT:{
+					static const float WORKER_PHASE[] = {[DRIFT_TUTORIAL_SPAWN_LIMIT] = 0, [DRIFT_TUTORIAL_SPAWN_DRONES] = 100, [DRIFT_TUTORIAL_SPAWN_NORMAL] = 20};
+					static const float FIGHTER_PHASE[] = {[DRIFT_TUTORIAL_SPAWN_LIMIT] = 0, [DRIFT_TUTORIAL_SPAWN_DRONES] = 0, [DRIFT_TUTORIAL_SPAWN_NORMAL] = 1};
 					if(DriftReservoirSample(&res, 100)) spawn_func = spawn_glow_bug;
-					if(DriftReservoirSample(&res, 20)) spawn_func = spawn_worker_bug;
-					if(DriftReservoirSample(&res, 1)) spawn_func = spawn_fighter_bug;
+					if(DriftReservoirSample(&res, WORKER_PHASE[spawn_phase])) spawn_func = spawn_worker_bug;
+					if(DriftReservoirSample(&res, FIGHTER_PHASE[spawn_phase])) spawn_func = spawn_fighter_bug;
 				} break;
 				case DRIFT_BIOME_CRYO:{
 					if(DriftReservoirSample(&res, 10)) spawn_func = spawn_trilobyte;
@@ -529,6 +634,7 @@ static void tick_spawns(DriftUpdate* update, DriftVec2 player_pos){
 
 static void tick_enemies(DriftUpdate* update, DriftVec2 player_pos){
 	DriftGameState* state = update->state;
+	DriftComponentBugNav* bug_nav = DRIFT_GET_TYPED_COMPONENT(state, DriftComponentBugNav);
 	bool player_alive = DriftEntitySetCheck(&update->state->entities, update->state->player);
 	
 	// TODO track a nearest enemy for each and bias away from it as well.
@@ -542,7 +648,7 @@ static void tick_enemies(DriftUpdate* update, DriftVec2 player_pos){
 	uint enemy_idx, nav_idx, body_idx;
 	DriftJoin join = DriftJoinMake((DriftComponentJoin[]){
 		{.component = &state->enemies.c, .variable = &enemy_idx},
-		{.component = &state->bug_nav.c, .variable = &nav_idx},
+		{.component = &bug_nav->c, .variable = &nav_idx},
 		{.component = &state->bodies.c, .variable = &body_idx},
 		{},
 	});
@@ -559,63 +665,63 @@ static void tick_enemies(DriftUpdate* update, DriftVec2 player_pos){
 		
 		// Deflect from the player.
 		float bias = DriftSaturate((48 - player_dist)/48);
-		state->bug_nav.forward_bias[nav_idx] = DriftVec2Mul(player_delta, bias*bias);
+		bug_nav->forward_bias[nav_idx] = DriftVec2Mul(player_delta, bias*bias);
 		
 		switch(state->enemies.type[enemy_idx]){
 			case DRIFT_ENEMY_GLOW_BUG: {
 				if(aggro){
-					state->bug_nav.forward_bias[nav_idx] = DriftVec2Mul(player_delta, 0.2f/DriftVec2Length(player_delta));
-					state->bug_nav.speed[nav_idx] = 100;
-					state->bug_nav.accel[nav_idx] = 300;
+					bug_nav->forward_bias[nav_idx] = DriftVec2Mul(player_delta, 0.2f/DriftVec2Length(player_delta));
+					bug_nav->speed[nav_idx] = 100;
+					bug_nav->accel[nav_idx] = 300;
 				} else {
-					state->bug_nav.speed[nav_idx] = 50;
-					state->bug_nav.accel[nav_idx] = 150;
+					bug_nav->speed[nav_idx] = 50;
+					bug_nav->accel[nav_idx] = 150;
 				}
 			} break;
 			
 			case DRIFT_ENEMY_WORKER_BUG: {
 				if(aggro){
-					state->bug_nav.forward_bias[nav_idx] = DriftVec2Mul(player_delta, -0.3f/DriftVec2Length(player_delta));
-					state->bug_nav.speed[nav_idx] = 150;
-					state->bug_nav.accel[nav_idx] = 900;
+					bug_nav->forward_bias[nav_idx] = DriftVec2Mul(player_delta, -0.3f/DriftVec2Length(player_delta));
+					bug_nav->speed[nav_idx] = 150;
+					bug_nav->accel[nav_idx] = 900;
 				} else {
-					if(AVOID_PLAYER) state->bug_nav.forward_bias[nav_idx] = DriftVec2Mul(player_delta, 0.2f/DriftVec2Length(player_delta));
-					state->bug_nav.speed[nav_idx] = 100;
-					state->bug_nav.accel[nav_idx] = 300;
+					if(AVOID_PLAYER) bug_nav->forward_bias[nav_idx] = DriftVec2Mul(player_delta, 0.2f/DriftVec2Length(player_delta));
+					bug_nav->speed[nav_idx] = 100;
+					bug_nav->accel[nav_idx] = 300;
 				}
 			} break;
 			
 			case DRIFT_ENEMY_FIGHTER_BUG: {
 				if(aggro){
-					state->bug_nav.forward_bias[nav_idx] = DriftVec2Mul(player_delta, -0.3f/DriftVec2Length(player_delta));
-					state->bug_nav.speed[nav_idx] = 250;
-					state->bug_nav.accel[nav_idx] = 1200;
+					bug_nav->forward_bias[nav_idx] = DriftVec2Mul(player_delta, -0.3f/DriftVec2Length(player_delta));
+					bug_nav->speed[nav_idx] = 250;
+					bug_nav->accel[nav_idx] = 1200;
 				} else {
-					if(AVOID_PLAYER) state->bug_nav.forward_bias[nav_idx] = DriftVec2Mul(player_delta, 0.2f/DriftVec2Length(player_delta));
-					state->bug_nav.speed[nav_idx] = 150;
-					state->bug_nav.accel[nav_idx] = 450;
+					if(AVOID_PLAYER) bug_nav->forward_bias[nav_idx] = DriftVec2Mul(player_delta, 0.2f/DriftVec2Length(player_delta));
+					bug_nav->speed[nav_idx] = 150;
+					bug_nav->accel[nav_idx] = 450;
 				}
 			} break;
 			
 			case DRIFT_ENEMY_TRILOBYTE_LARGE: {
 				if(aggro){
-					state->bug_nav.forward_bias[nav_idx] = DriftVec2Mul(player_delta, -0.3f/DriftVec2Length(player_delta));
-					state->bug_nav.speed[nav_idx] = 150;
-					state->bug_nav.accel[nav_idx] = 900;
+					bug_nav->forward_bias[nav_idx] = DriftVec2Mul(player_delta, -0.3f/DriftVec2Length(player_delta));
+					bug_nav->speed[nav_idx] = 150;
+					bug_nav->accel[nav_idx] = 900;
 				} else {
-					state->bug_nav.speed[nav_idx] = 100;
-					state->bug_nav.accel[nav_idx] = 300;
+					bug_nav->speed[nav_idx] = 100;
+					bug_nav->accel[nav_idx] = 300;
 				}
 			} break;
 			
 			case DRIFT_ENEMY_NAUTILUS_HEAVY: {
 				if(aggro){
-					state->bug_nav.forward_bias[nav_idx] = DriftVec2Mul(player_delta, -0.3f/DriftVec2Length(player_delta));
-					state->bug_nav.speed[nav_idx] = 150;
-					state->bug_nav.accel[nav_idx] = 900;
+					bug_nav->forward_bias[nav_idx] = DriftVec2Mul(player_delta, -0.3f/DriftVec2Length(player_delta));
+					bug_nav->speed[nav_idx] = 150;
+					bug_nav->accel[nav_idx] = 900;
 				} else {
-					state->bug_nav.speed[nav_idx] = 50;
-					state->bug_nav.accel[nav_idx] = 100;
+					bug_nav->speed[nav_idx] = 50;
+					bug_nav->accel[nav_idx] = 100;
 				}
 			} break;
 			
@@ -630,10 +736,11 @@ static void tick_enemies(DriftUpdate* update, DriftVec2 player_pos){
 
 static void tick_bug_navs(DriftUpdate* update){
 	DriftGameState* state = update->state;
+	DriftComponentBugNav* bug_nav = DRIFT_GET_TYPED_COMPONENT(state, DriftComponentBugNav);
 	
 	uint nav_idx, body_idx;
 	DriftJoin join = DriftJoinMake((DriftComponentJoin[]){
-		{.component = &state->bug_nav.c, .variable = &nav_idx},
+		{.component = &bug_nav->c, .variable = &nav_idx},
 		{.component = &state->bodies.c, .variable = &body_idx},
 		{},
 	});
@@ -644,7 +751,7 @@ static void tick_bug_navs(DriftUpdate* update){
 	while(DriftJoinNext(&join)){
 		DriftVec2 pos = state->bodies.position[body_idx];
 		DriftVec2 forward = DriftVec2Perp(state->bodies.rotation[body_idx]);
-		DriftVec2 forward_bias = DriftVec2Add(forward, state->bug_nav.forward_bias[nav_idx]);
+		DriftVec2 forward_bias = DriftVec2Add(forward, bug_nav->forward_bias[nav_idx]);
 		
 		// Push the forward vector away from terrain.
 		DriftTerrainSampleInfo info = DriftTerrainSampleFine(state->terra, pos);
@@ -659,7 +766,7 @@ static void tick_bug_navs(DriftUpdate* update){
 		DriftVec2* v = state->bodies.velocity + body_idx;
 		float* w = state->bodies.angular_velocity + body_idx;
 		// Accelerate towards forward bias.
-		const float speed = state->bug_nav.speed[nav_idx], accel = state->bug_nav.accel[nav_idx];
+		const float speed = bug_nav->speed[nav_idx], accel = bug_nav->accel[nav_idx];
 		*v = DriftVec2LerpConst(*v, DriftVec2Mul(forward_bias, speed), accel*update->tick_dt);
 		// Rotate to align with motion.
 		*w = (*w)*0.7f + DriftVec2Cross(forward, *v)/50;
@@ -701,7 +808,7 @@ static void DrawGlowBug(DriftDraw* draw, DriftEntity e, DriftAffine transform, D
 	DriftGameState* state = draw->state;
 	uint tick = e.id + draw->tick;
 	DriftFrame frame = DRIFT_FRAMES[anim_loop(tick, 8, DRIFT_SPRITE_GLOW_BUG00, DRIFT_SPRITE_GLOW_BUG05)];
-	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = DRIFT_RGBA8_WHITE, .matrix = transform, .shiny = 0x40}));
+	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = DRIFT_RGBA8_WHITE, .matrix = transform}));
 	if(flash.a) DRIFT_ARRAY_PUSH(draw->flash_sprites, ((DriftSprite){.frame = frame, .color = flash, .matrix = transform}));
 	
 	DriftAffine m = DriftAffineMul(transform, (DriftAffine){120, 0, 0, 120, 0, -8});
@@ -714,7 +821,7 @@ static void DrawGlowBug(DriftDraw* draw, DriftEntity e, DriftAffine transform, D
 static void DrawWorkerBug(DriftDraw* draw, DriftEntity e, DriftAffine transform, DriftRGBA8 flash, DriftRGBA8 aggro){
 	uint tick = e.id + draw->tick;
 	DriftFrame frame = DRIFT_FRAMES[anim_loop(tick, 8, DRIFT_SPRITE_WORKER_DRONE00, DRIFT_SPRITE_WORKER_DRONE03)];
-	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = DRIFT_RGBA8_WHITE, .matrix = transform, .shiny = 0x40}));
+	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = DRIFT_RGBA8_WHITE, .matrix = transform}));
 	if(flash.a) draw_flash(draw, transform, flash, frame);
 	if(aggro.a) draw_agro(draw, transform, aggro, 40);
 	
@@ -725,7 +832,7 @@ static void DrawWorkerBug(DriftDraw* draw, DriftEntity e, DriftAffine transform,
 static void DrawFighterBug(DriftDraw* draw, DriftEntity e, DriftAffine transform, DriftRGBA8 flash, DriftRGBA8 aggro){
 	uint tick = e.id + draw->tick;
 	DriftFrame frame = DRIFT_FRAMES[anim_loop(tick, 8, DRIFT_SPRITE_FIGHTER_DRONE00, DRIFT_SPRITE_FIGHTER_DRONE03)];
-	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = DRIFT_RGBA8_WHITE, .matrix = transform, .shiny = 0x40}));
+	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = DRIFT_RGBA8_WHITE, .matrix = transform}));
 	if(flash.a) draw_flash(draw, transform, flash, frame);
 	if(aggro.a) draw_agro(draw, transform, aggro, 50);
 	
@@ -761,7 +868,7 @@ static void DrawNautilus(DriftDraw* draw, DriftEntity e, DriftAffine transform, 
 	
 	uint tick = e.id + draw->tick;
 	DriftFrame frame = DRIFT_FRAMES[anim_loop(tick, 8, DRIFT_SPRITE_NAUTILUS_HEAVY_IDLE00, DRIFT_SPRITE_NAUTILUS_HEAVY_IDLE07)];
-	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = DRIFT_RGBA8_WHITE, .matrix = transform, .shiny = 0x40}));
+	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = DRIFT_RGBA8_WHITE, .matrix = transform}));
 	if(flash.a) DRIFT_ARRAY_PUSH(draw->flash_sprites, ((DriftSprite){.frame = frame, .color = flash, .matrix = transform}));
 }
 
@@ -797,7 +904,7 @@ void DriftDrawEnemies(DriftDraw* draw){
 		DriftRGBA8 flash = health_flash(draw->tick, health);
 		DriftRGBA8 aggro = DRIFT_RGBA8_CLEAR;
 		if(state->enemies.aggro_ticks[enemy_idx] > 0){
-			aggro = DriftRGBA8Fade(DRIFT_RGBA8_RED, 0.5f + 0.5f*DriftWaveComplex(draw->nanos, 4.0f).x);
+			aggro = DriftRGBA8Fade(DRIFT_RGBA8_RED, 0.5f + 0.5f*DriftWaveComplex(draw->update_nanos, 4.0f).x);
 		}
 		
 		uint scan_idx = DriftComponentFind(&state->scan.c, join.entity);
@@ -821,9 +928,11 @@ void DriftDrawEnemies(DriftDraw* draw){
 
 void DriftDrawHivesMap(DriftDraw* draw, float scale){
 	DriftGameState* state = draw->state;
+	DriftComponentHives* hives = DRIFT_GET_TYPED_COMPONENT(state, DriftComponentHives);
+	
 	for(uint i = 0; i < HIVE_COUNT; i++){
 		DriftVec2 pos = HIVE_INFO[i].pos;
-		DriftHiveData* data = state->hives.data + DriftComponentFind(&state->hives.c, HIVE_INFO[i].key);
+		DriftHiveData* data = hives->data + DriftComponentFind(&hives->c, HIVE_INFO[i].key);
 		DRIFT_ARRAY_PUSH(draw->bg_prims, ((DriftPrimitive){
 			.p0 = pos, .p1 = pos, .radii = {10*scale, 8*scale}, .color = (data->health > 0 ? DRIFT_RGBA8_MAGENTA : DRIFT_RGBA8_ORANGE),
 		}));

@@ -121,8 +121,6 @@ cbuffer Locals : DRIFT_UBO1 {
 	float LightRadius;
 }
 
-float2x2 adjugate(float2x2 m){return float2x2(m[1][1], -m[1][0], -m[0][1], m[0][0]);}
-
 void VShaderMask(MaskVertexInput IN, out MaskFragmentInput FRAG){
 	// Unpack input.
 	float2 endpoint_a = IN.endpoints.zw;
@@ -151,16 +149,20 @@ void VShaderMask(MaskVertexInput IN, out MaskFragmentInput FRAG){
 	FRAG.position = float4(mul(float2x3(DRIFT_MATRIX_VP), proj_pos), 0, w);
 
 	// Penumbras.
-	float2 penumbra_a = mul(adjugate(float2x2( offset_a, -delta_a)), delta - lerp(offset, delta_a, w));
-	float2 penumbra_b = mul(adjugate(float2x2(-offset_b,  delta_b)), delta - lerp(offset, delta_b, w));
-	FRAG.penumbras = (LightRadius > 0.0 ? float4(penumbra_a, penumbra_b) : float4(0, 0, 1, 1));
+	if(LightRadius > 0.0){
+		float2 penumbra_a = mul(float2x2(-delta_a.y,  delta_a.x, -offset_a.y,  offset_a.x), delta - lerp(offset, delta_a, w));
+		float2 penumbra_b = mul(float2x2( delta_b.y, -delta_b.x,  offset_b.y, -offset_b.x), delta - lerp(offset, delta_b, w));
+		FRAG.penumbras = float4(penumbra_a, penumbra_b);
+	} else {
+		FRAG.penumbras = float4(0, 0, 1, 1);
+	}
 
 	// Clipping values.
-	float2 seg_delta = endpoint_b - endpoint_a;
+	float2 seg_delta = 2*(endpoint_b - endpoint_a);
+	float2 dsum = delta_a + delta_b;
 	float2 seg_normal = seg_delta.yx*float2(-1.0, 1.0);
-	FRAG.edges.xy = -mul(adjugate(float2x2(seg_delta, delta_a + delta_b)), delta - offset*(1 - w));
-	FRAG.edges.y *= 2.0;
-	FRAG.edges.z = flip*dot(seg_normal, swept_edge)*(1 - w);
+	float2 edges = mul(float2x2(dsum.y, -dsum.x, -seg_delta.y, seg_delta.x), (1 - w)*offset - delta);
+	FRAG.edges = float3(edges, flip*dot(seg_normal, swept_edge)*(1 - w));
 
 	// deltas for light penetration.
 	float light_penetration = 16;

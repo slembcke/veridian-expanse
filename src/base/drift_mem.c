@@ -91,17 +91,68 @@ static void* DriftLinearMemFunc(DriftMem* mem, void* ptr, size_t osize, size_t n
 	}
 }
 
-static DriftLinearMem* _DriftLinearMemInit(void* buffer, size_t size, const char* label){
+static DriftLinearMem* _DriftLinearMemMake(void* buffer, size_t size, const char* label){
 	DriftLinearMem tmp = {.buffer = (uintptr_t)buffer, .cursor = (uintptr_t)buffer + size};
 	// Allocate the header from the block, copy, and return it.
 	DriftLinearMem* mem = DriftLinearMemAlloc(&tmp, sizeof(tmp));
+	DRIFT_ASSERT_HARD(mem, "Could not allocate linear allocator header for: '%s'", label);
+	
 	tmp.mem = (DriftMem){.func = DriftLinearMemFunc, .label = "DriftLinearMem"};
 	(*mem) = tmp;
 	return mem;
 }
 
-DriftMem* DriftLinearMemInit(void* buffer, size_t size, const char* label){
-	return &_DriftLinearMemInit(buffer, size, label)->mem;
+DriftMem* DriftLinearMemMake(void* buffer, size_t size, const char* label){
+	return &_DriftLinearMemMake(buffer, size, label)->mem;
+}
+
+
+// MARK: List mem
+
+typedef struct {
+	DriftMem mem;
+	DriftMap map;
+} DriftListMem;
+
+static void* DriftListMemFunc(DriftMem* mem, void* ptr, size_t osize, size_t nsize){
+	DriftMap* map = &((DriftListMem*)mem)->map;
+	DriftMem* parent_mem = map->table.desc.mem;
+	
+	if(osize == 0){
+		void* ptr = DriftAlloc(parent_mem, nsize);
+		DriftMapInsert(map, (uintptr_t)ptr, nsize);
+		return ptr;
+	} else if(nsize == 0){
+		DRIFT_ASSERT_HARD(DriftMapRemove(map, (uintptr_t)ptr) == osize, "Allocation size mismatch.");
+		DriftDealloc(parent_mem, ptr, osize);
+		return NULL;
+	} else {
+		DRIFT_ASSERT_HARD(DriftMapRemove(map, (uintptr_t)ptr) == osize, "Allocation size mismatch.");
+		ptr = DriftRealloc(parent_mem, ptr, osize, nsize);
+		DriftMapInsert(map, (uintptr_t)ptr, nsize);
+		return ptr;
+	}
+	
+	DRIFT_ASSERT_HARD(false, "Allocation not found!");
+}
+
+DriftMem* DriftListMemNew(DriftMem* parent_mem, const char* label){
+	DriftListMem* mem = DRIFT_COPY(parent_mem, ((DriftListMem){.mem.func = DriftListMemFunc, .mem.label = label}));
+	DriftMapInit(&mem->map, parent_mem, "ListMem Map", 0);
+	return &mem->mem;
+}
+
+void DriftListMemFree(DriftMem* mem){
+	DRIFT_ASSERT_HARD(mem->func == DriftListMemFunc, "Wrong memory type.");
+	DriftMap* map = &((DriftListMem*)mem)->map;
+	DriftMem* parent_mem = map->table.desc.mem;
+	
+	for(uint i = 0; i < map->table.row_capacity; i++){
+		if(DriftMapActiveIndex(map, i)) DriftDealloc(parent_mem, (void*)map->keys[i], map->values[i]);
+	}
+	DriftMapDestroy(map);
+	
+	DriftDealloc(parent_mem, mem, sizeof(DriftListMem));
 }
 
 
@@ -152,7 +203,7 @@ static void* get_block(DriftZoneMemHeap* heap){
 		DRIFT_LOG("Zone heap '%s' allocated new block. (%d/%d)", heap->label, header->count, header->capacity);
 	}
 	
-	void* block = DRIFT_ARRAY_POP(heap->pooled_blocks);
+	void* block = DRIFT_ARRAY_POP(heap->pooled_blocks, NULL);
 	SDL_UnlockMutex(heap->lock);
 	
 	return block;
@@ -215,7 +266,7 @@ static void* DriftZoneMemAlloc(DriftZone* zone, size_t size){
 	zone->blocks[zone->block_count++] = block;
 	// Initialize the allocator.
 	ASAN_UNPOISON_MEMORY_REGION(block + block_size - sizeof(DriftLinearMem), sizeof(DriftLinearMem));
-	zone->current_allocator[thread_id] = _DriftLinearMemInit(block, block_size, zone->mem.label);
+	zone->current_allocator[thread_id] = _DriftLinearMemMake(block, block_size, zone->mem.label);
 	return DriftLinearMemAlloc(zone->current_allocator[thread_id], size);
 }
 
@@ -226,6 +277,8 @@ static void* DriftZoneMemFunc(DriftMem* mem, void* ptr, size_t osize, size_t nsi
 	} else {
 		// Combined alloc/grow.
 		void* new_ptr = DriftZoneMemAlloc((DriftZone*)mem, nsize);
+		DRIFT_ASSERT_HARD(new_ptr, "Failed to resize memory for '%s'", mem->label);
+		
 		ASAN_UNPOISON_MEMORY_REGION(new_ptr, nsize);
 		return (osize > 0 ? memcpy(new_ptr, ptr, osize) : new_ptr);
 	}
@@ -233,7 +286,7 @@ static void* DriftZoneMemFunc(DriftMem* mem, void* ptr, size_t osize, size_t nsi
 
 DriftMem* DriftZoneMemAquire(DriftZoneMemHeap* heap, const char* label){
 	SDL_LockMutex(heap->lock);
-	DriftZone* zone = DRIFT_ARRAY_POP(heap->pooled_zones);
+	DriftZone* zone = DRIFT_ARRAY_POP(heap->pooled_zones, NULL);
 	SDL_UnlockMutex(heap->lock);
 	
 	DRIFT_ASSERT(zone, "Ran out of pooled zones.");
@@ -304,7 +357,9 @@ void* _DriftArrayNew(DriftMem* mem, size_t capacity, size_t elt_size){
 	if(capacity < DRIFT_STRETCHY_BUFER_MIN_CAPACITY) capacity = DRIFT_STRETCHY_BUFER_MIN_CAPACITY;
 	DriftArray tmp = {._magic = 0xABCDABCDABCDABCD, .mem = mem, .capacity = capacity, .elt_size = elt_size};
 	
-	DriftArray* header = DriftAlloc(mem, DriftStretchyBufferSize(&tmp));
+	size_t size = DriftStretchyBufferSize(&tmp);
+	DriftArray* header = DriftAlloc(mem, size);
+	memset(header, 0, size);
 	*header = tmp;
 	return header->array;
 }

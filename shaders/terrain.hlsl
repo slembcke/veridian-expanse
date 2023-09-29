@@ -99,6 +99,7 @@ float4 FShader(in FragInput FRAG) : SV_TARGET0{
 	// Normals
 	float2 deriv = dheight + 8*dmod + 2*(2*DriftAtlas.Sample(_repeat, float3(uv2, layer + 1)) - 1);
 	deriv = float2(dot(deriv, ddx(FRAG.uv.xy)), dot(deriv, ddy(FRAG.uv.xy)))*FRAG.uv_scale;
+	// return float4(0.5 + 0.5*deriv, 0, 1)*sdf_mask;
 	float3 n = float3(-deriv, 1)/sqrt(1 + dot(deriv, deriv));
 	
 	float3 light = SampleLightField(n, FRAG.uv_light, 1);

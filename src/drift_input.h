@@ -28,7 +28,7 @@ extern const DriftInputIcon* DRIFT_INPUT_ICON_SETS[_DRIFT_INPUT_SET_COUNT];
 
 const DriftInputIcon* DriftInputIconFind(const DriftInputIcon* icons, const char* label);
 
-enum {
+typedef enum {
 	DRIFT_INPUT_AXIS_MOVE_X,
 	DRIFT_INPUT_AXIS_MOVE_Y,
 	DRIFT_INPUT_AXIS_LOOK_X,
@@ -51,8 +51,8 @@ enum {
 	DRIFT_INPUT_SCAN = (1<<10),
 	DRIFT_INPUT_DROP = (1<<11),
 	DRIFT_INPUT_LASER = (1<<12),
-	DRIFT_INPUT_QUICK_GRAB = (1<<13),
-};
+	DRIFT_INPUT_STASH = (1<<13),
+} DriftInputValue;
 
 enum {
 	DRIFT_MOUSE_LEFT,

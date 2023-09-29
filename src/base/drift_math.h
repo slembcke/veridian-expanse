@@ -55,6 +55,10 @@ static inline DriftVec2 DriftVec2RotateInv(DriftVec2 v1, DriftVec2 v2){return (D
 static inline DriftVec2 DriftVec2ForAngle(float angle){return (DriftVec2){cosf(angle), sinf(angle)};}
 
 typedef struct {
+	DriftVec2 origin, dir;
+} DriftRay2;
+
+typedef struct {
 	float l, b, r, t;
 } DriftAABB2;
 
@@ -104,6 +108,8 @@ typedef union {
 
 static inline DriftVec4 DriftVec4Add(DriftVec4 v1, DriftVec4 v2){return (DriftVec4){{v1.x + v2.x, v1.y + v2.y, v1.z + v2.z, v1.w + v2.w}};}
 static inline DriftVec4 DriftVec4Mul(DriftVec4 v, float s){return (DriftVec4){{v.x*s, v.y*s, v.z*s, v.w*s}};}
+static inline DriftVec4 DriftVec4CMul(DriftVec4 a, DriftVec4 b){return (DriftVec4){{a.x*b.x, a.y*b.y, a.z*b.z, a.w*b.w}};}
+static inline DriftVec4 DriftVec4Lerp(DriftVec4 a, DriftVec4 b, float t){return DriftVec4Add(DriftVec4Mul(a, 1 - t), DriftVec4Mul(b, t));}
 
 typedef struct {u8 r, g, b, a;} DriftRGBA8;
 static inline DriftRGBA8 DriftRGBA8FromColor(DriftVec4 color){

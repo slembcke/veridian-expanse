@@ -134,7 +134,10 @@ void DriftDealloc(DriftMem* mem, void* ptr, size_t size);
 
 extern DriftMem* const DriftSystemMem;
 
-DriftMem* DriftLinearMemInit(void* buffer, size_t capacity, const char* label);
+DriftMem* DriftLinearMemMake(void* buffer, size_t capacity, const char* label);
+
+DriftMem* DriftListMemNew(DriftMem* parent_mem, const char* label);
+void DriftListMemFree(DriftMem* mem);
 
 typedef struct DriftZoneMemHeap DriftZoneMemHeap;
 DriftZoneMemHeap* DriftZoneMemHeapNew(DriftMem* mem, const char* label);
@@ -187,7 +190,7 @@ static inline void* _DriftArrayEnsure(void* ptr, size_t n_elt){
 }
 
 #define DRIFT_ARRAY_PUSH(_ptr_, _elt_) (_ptr_ = _DriftArrayEnsure(_ptr_, 1), (_ptr_)[DriftArrayHeader(_ptr_)->count++] = _elt_)
-#define DRIFT_ARRAY_POP(_ptr_) ({DriftArray* arr = DriftArrayHeader(_ptr_); arr->count ? _ptr_[--arr->count] : NULL;})
+#define DRIFT_ARRAY_POP(_ptr_, _default_) ({DriftArray* _arr_ = DriftArrayHeader(_ptr_); _arr_->count ? (_ptr_)[--_arr_->count] : _default_;})
 void DriftArrayTruncate(void* ptr, size_t len);
 
 #define DRIFT_ARRAY_RANGE(_ptr_, _n_elt_) (_ptr_ = _DriftArrayEnsure(_ptr_, _n_elt_), (_ptr_) + DriftArrayHeader(_ptr_)->count)
@@ -291,6 +294,9 @@ uintptr_t DriftMapInsert(DriftMap *map, uintptr_t key, uintptr_t value);
 uintptr_t DriftMapFind(DriftMap const* map, uintptr_t key);
 uintptr_t DriftMapRemove(DriftMap* map, uintptr_t key);
 static inline bool DriftMapActiveIndex(DriftMap const* map, uint idx){return map->infobytes[idx];}
+
+uintptr_t DriftFNV64Str(const char* str);
+uintptr_t DriftFNV64(const u8* ptr, size_t size);
 
 // Entities
 

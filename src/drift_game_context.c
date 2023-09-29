@@ -68,17 +68,20 @@ void DriftDestroyEntity(DriftGameState* state, DriftEntity entity){
 }
 
 DriftGameState* DriftGameStateNew(tina_job* job){
-	DriftGameState* state = DriftAlloc(DriftSystemMem, sizeof(*state));
+	DriftMem* mem = DriftListMemNew(DriftSystemMem, "GameState Mem");
+	DriftGameState* state = DriftAlloc(mem, sizeof(*state));
 	memset(state, 0, sizeof(*state));
 	
-	state->tables = DRIFT_ARRAY_NEW(DriftSystemMem, 0, DriftTable*);
-	state->components = DRIFT_ARRAY_NEW(DriftSystemMem, 0, DriftComponent*);
-	state->hot_entities = DRIFT_ARRAY_NEW(DriftSystemMem, 0, DriftEntity);
-	state->dead_entities = DRIFT_ARRAY_NEW(DriftSystemMem, 256, DriftEntity);
+	state->mem = mem;
+	state->tables = DRIFT_ARRAY_NEW(state->mem, 0, DriftTable*);
+	state->components = DRIFT_ARRAY_NEW(state->mem, 0, DriftComponent*);
+	DriftMapInit(&state->named_components, state->mem, "NamedComponents", 0);
+	state->hot_entities = DRIFT_ARRAY_NEW(state->mem, 0, DriftEntity);
+	state->dead_entities = DRIFT_ARRAY_NEW(state->mem, 256, DriftEntity);
 	
 	// TODO put these somewhere else?
-	state->debug.sprites = DRIFT_ARRAY_NEW(DriftSystemMem, 0, DriftSprite);
-	state->debug.prims = DRIFT_ARRAY_NEW(DriftSystemMem, 0, DriftPrimitive);
+	state->debug.sprites = DRIFT_ARRAY_NEW(state->mem, 0, DriftSprite);
+	state->debug.prims = DRIFT_ARRAY_NEW(state->mem, 0, DriftPrimitive);
 	
 	DriftEntitySetInit(&state->entities);
 	DriftSystemsInit(state);
@@ -88,16 +91,7 @@ DriftGameState* DriftGameStateNew(tina_job* job){
 }
 
 void DriftGameStateFree(DriftGameState* state){
-	DriftArrayFree(state->tables);
-	DriftArrayFree(state->components);
-	DriftArrayFree(state->hot_entities);
-	DriftArrayFree(state->dead_entities);
-	
-	DriftArrayFree(state->debug.sprites);
-	DriftArrayFree(state->debug.prims);
-	DriftTerrainFree(state->terra);
-	
-	DriftDealloc(DriftSystemMem, state, sizeof(*state));
+	DriftListMemFree(state->mem);
 }
 
 void DriftGameStateSetupIntro(DriftGameState* state){
@@ -130,7 +124,7 @@ void DriftGameStateSetupIntro(DriftGameState* state){
 		};
 		
 		u8 buffer[16*1024];
-		DriftMem* mem = DriftLinearMemInit(buffer, sizeof(buffer), "startup mem");
+		DriftMem* mem = DriftLinearMemMake(buffer, sizeof(buffer), "startup mem");
 		for(uint i = 0; i < sizeof(nodes)/sizeof(*nodes); i++){
 			DriftEntity e = DriftItemMake(state, DRIFT_ITEM_POWER_NODE, nodes[i], DRIFT_VEC2_ZERO, 0);
 			DriftPowerNodeActivate(state, e, mem);
@@ -270,6 +264,8 @@ void DriftGameStateRender(DriftDraw* draw){
 	}
 	
 	uint light_count = DriftArrayLength(draw->lights);
+	
+	// Debug draw lights.
 	if(false){
 		for(uint i = 0; i < light_count; i++){
 			DriftAffine light_matrix = draw->lights[i].matrix;
@@ -422,23 +418,36 @@ void DriftGameStateRender(DriftDraw* draw){
 	render_plasma(draw);
 	
 	DriftDrawBatches(draw, (DriftDrawBatch[]){
+		{.arr = draw->bullet_sprites, .pipeline = draw_shared->sprite_pipeline, .bindings = &draw->default_bindings},
 		{.arr = draw->fg_sprites, .pipeline = draw_shared->sprite_pipeline, .bindings = &draw->default_bindings},
 		{.arr = draw->flash_sprites, .pipeline = draw_shared->flash_sprite_pipeline, .bindings = &draw->default_bindings},
-		{.arr = draw->bullet_sprites, .pipeline = draw_shared->sprite_pipeline, .bindings = &draw->default_bindings},
 		{},
 	});
-	
 	
 	// DriftGfxPipelineBindings* bindings = DriftGfxRendererPushBindPipelineCommand(renderer, draw_shared->debug_lightfield_pipeline);
 	// *bindings = draw->default_bindings;
 	// DriftGfxRendererPushDrawIndexedCommand(renderer, draw->quad_index_binding, 6, 1);
 	
-	// Resolve HDR
-	DriftPlayerData* player = draw->state->players.data + DriftComponentFind(&draw->state->players.c, draw->state->player);
+	// Resolve HDR and effects
+	DriftGameState* state = draw->state;
+	DriftPlayerData* player = state->players.data + DriftComponentFind(&state->players.c, state->player);
+	// uint health_idx = DriftComponentFind(&state->health.c, state->player);
+	// DriftHealth* health = state->health.data + health_idx;
+	// float low_health = 1;DriftSmoothstep(1.0f, 0.25f, health->value/health->maximum);
+	float power = DriftSaturate(player->energy/DriftPlayerEnergyCap(state));
+	float heat = player->is_overheated ? DriftSmoothstep(0.0f, 0.15f, player->temp) : DriftSmoothstep(0.25f, 1.0f, player->temp);
+	
+	DriftVec4 inner_tint = draw->screen_tint;
+	// inner_tint = DriftVec4CMul(inner_tint, DriftVec4Lerp(DRIFT_VEC4_ONE, TMP_COLOR[0], low_health));
+	DriftVec4 outer_tint = inner_tint;
+	// outer_tint = DriftVec4CMul(outer_tint, DriftVec4Lerp(DRIFT_VEC4_ONE, TMP_COLOR[1], low_health));
+	outer_tint = DriftVec4CMul(outer_tint, DriftVec4Lerp(DRIFT_VEC4_ONE, (DriftVec4){{0.13f, 0.39f, 0.76f}}, 1 - power));
+	outer_tint = DriftVec4CMul(outer_tint, DriftVec4Lerp(DRIFT_VEC4_ONE, (DriftVec4){{2.54f, 0.84f, 0.56f}}, heat));
+	
 	struct {
 		DriftVec4 scatter[5];
 		DriftVec4 transmit[5];
-		DriftVec4 effect_tint;
+		DriftVec4 effect_tint[2];
 		float effect_static;
 		float effect_heat;
 	} effects = {
@@ -458,9 +467,9 @@ void DriftGameStateRender(DriftDraw* draw){
 			[DRIFT_BIOME_DARK ] = (DriftVec4){{0.98f, 0.73f, 0.88f, 0.00f}},
 			[DRIFT_BIOME_SPACE] = (DriftVec4){{0.80f, 0.80f, 0.80f, 0.80f}},
 		},
-		.effect_tint = draw->screen_tint,
-		.effect_static = DriftSaturate(1 - player->energy/DriftPlayerEnergyCap(draw->state)),
-		.effect_heat = DriftSaturate(player->temp),
+		.effect_tint = {inner_tint, outer_tint},
+		.effect_static = 1 - power,
+		.effect_heat = heat*heat,
 	}; // TODO GL packing warning, wants 160 bytes
 	
 	if(draw->ctx->debug.disable_haze){
@@ -488,6 +497,16 @@ void DriftGameStateRender(DriftDraw* draw){
 		{.arr = draw->hud_sprites, .pipeline = draw_shared->overlay_sprite_pipeline, .bindings = &hud_bindings},
 		{},
 	});
+}
+
+DriftComponent* DriftGameStateNamedComponentMake(DriftGameState* state, DriftComponent* component, const char* name, DriftColumnSet columns, uint capacity){
+	DriftComponentInit(component, (DriftTableDesc){.name = name, .mem = state->mem, .min_row_capacity = capacity, .columns = columns});
+	DRIFT_ARRAY_PUSH(state->components, component);
+	
+	uintptr_t check = DriftMapInsert(&state->named_components, DriftFNV64Str(component->table.desc.name), (uintptr_t)component);
+	DRIFT_ASSERT_HARD(check == 0, "Duplicate hash in named components.");
+	
+	return component;
 }
 
 static void destroy_entities(DriftGameState* state, DriftEntity* list){
@@ -555,7 +574,7 @@ static void update_reverb(tina_job* job){
 	DriftVec2 origin = DriftAffineOrigin(DriftAffineInverse(update->prev_vp_matrix));
 	
 	DriftTerrain* terra = state->terra;
-	static DriftRandom rand = {};
+	static DriftRandom rand = {}; // TODO static global
 	float jitter = DriftRandomUNorm(&rand);
 	
 	uint n = 16;
@@ -620,7 +639,7 @@ DriftLoopYield DriftGameContextLoop(tina_job* job){
 	
 	state->status.save_lock = 0;
 	if(state->status.needs_tutorial){
-		state->script = DriftScriptNew(DriftTutorialScript, NULL);
+		state->tutorial = DriftScriptNew(DriftTutorialScript, NULL, ctx);
 	}
 	
 	DriftTerrainResetCache(state->terra);
@@ -640,7 +659,7 @@ DriftLoopYield DriftGameContextLoop(tina_job* job){
 		ctx->debug.show_ui = true;
 		// ctx->debug.ui->show_inspector = true;
 		// ctx->debug.godmode = true;
-		// if(ctx->state->script) ctx->state->script->debug_skip = true;
+		// if(ctx->state->tutorial) ctx->state->tutorial->debug_skip = true;
 		// ctx->debug.pause = true;
 		// ctx->debug.paint = true;
 		// ctx->debug.draw_terrain_sdf = true;
@@ -722,14 +741,19 @@ DriftLoopYield DriftGameContextLoop(tina_job* job){
 			update.tick = ctx->current_tick = ctx->_tick_counter;
 			update.nanos = ctx->tick_nanos;
 			
-			TracyCZoneN(ZONE_TICK, "Tick", true);
-			DriftSystemsTick(&update);
-			TracyCZoneEnd(ZONE_TICK);
+			if(state->tutorial && !DriftScriptTick(state->tutorial, &update)){
+				DriftScriptFree(state->tutorial);
+				state->tutorial = NULL;
+			}
 			
 			if(state->script && !DriftScriptTick(state->script, &update)){
 				DriftScriptFree(state->script);
 				state->script = NULL;
 			}
+			
+			TracyCZoneN(ZONE_TICK, "Tick", true);
+			DriftSystemsTick(&update);
+			TracyCZoneEnd(ZONE_TICK);
 			
 			TracyCZoneN(ZONE_PHYSICS, "Physics", true);
 			DRIFT_ASSERT(DriftVec2Length(state->bodies.velocity[0]) == 0, "Velocity 0 before physics.");
@@ -747,11 +771,11 @@ DriftLoopYield DriftGameContextLoop(tina_job* job){
 		DriftGameStateCleanup(&update);
 		TracyCZoneEnd(CLEANUP_ZONE);
 		
-		float dt_since_tick = (ctx->tick_nanos - ctx->update_nanos)/-1e9f;
+		float dt_tick_diff = (ctx->tick_nanos - ctx->update_nanos)/-1e9f;
 		ctx->update_nanos += update_nanos;
 		
 		TracyCZoneN(INTERPOLATE_ZONE, "Interpolate", true);
-		DriftPhysicsSyncTransforms(&update, dt_since_tick);
+		DriftPhysicsSyncTransforms(&update, dt_tick_diff);
 		TracyCZoneEnd(INTERPOLATE_ZONE);
 		
 		TracyCZoneN(DRAW_ZONE, "Draw", true);
@@ -766,7 +790,7 @@ DriftLoopYield DriftGameContextLoop(tina_job* job){
 			v_matrix = (DriftAffine){1, 0, 0, 1, -player_pos.x, -player_pos.y};
 		}
 		
-		DriftDraw* draw = DriftDrawBegin(&update, dt_since_tick, v_matrix, prev_vp_matrix);
+		DriftDraw* draw = DriftDrawBegin(&update, dt_tick_diff, v_matrix, prev_vp_matrix);
 		if(ctx->debug.pause){
 			const u8* keystate = SDL_GetKeyboardState(NULL);
 			
@@ -814,6 +838,7 @@ DriftLoopYield DriftGameContextLoop(tina_job* job){
 		DriftTerrainDrawTiles(draw, debug_zoom > 1);
 		DriftSystemsDraw(draw);
 		
+		if(state->tutorial) DriftScriptDraw(state->tutorial, draw);
 		if(state->script) DriftScriptDraw(state->script, draw);
 		DriftImAudioUpdate();
 		
@@ -839,11 +864,13 @@ DriftLoopYield DriftGameContextLoop(tina_job* job){
 			}
 		}
 		
-		DriftVec2 p = {roundf(draw->virtual_extent.x) - 10*8, 16};
-		p = DriftDrawTextF(draw, &draw->hud_sprites, p, "{#40404040}% 9.2f ms\n", filtered_nanos/1e6f);
-		p = DriftDrawTextF(draw, &draw->hud_sprites, p,"{#80808080}DEV {#40408080}%s\n",
-			/*DRIFT_VERSION_MAJOR, DRIFT_VERSION_MINOR,*/ DRIFT_GIT_SHORT_SHA
-		);
+		if(!state->status.disable_hud){
+			DriftVec2 p = {roundf(draw->virtual_extent.x) - 10*8, 16};
+			p = DriftDrawTextF(draw, &draw->hud_sprites, p, "{#40404040}% 9.2f ms\n", filtered_nanos/1e6f);
+			p = DriftDrawTextF(draw, &draw->hud_sprites, p,"{#80808080}DEV {#40408080}%s\n",
+				/*DRIFT_VERSION_MAJOR, DRIFT_VERSION_MINOR,*/ DRIFT_GIT_SHORT_SHA
+			);
+		}
 		
 		TracyCZoneN(DEBUG_UI_ZONE, "Debug UI", true);
 		DriftDebugUI(&update, draw);
@@ -900,6 +927,7 @@ DriftLoopYield DriftGameContextLoop(tina_job* job){
 			DriftAudioPlaySample(DRIFT_BUS_UI, DRIFT_SFX_TEXT_BLIP, (DriftAudioParams){.gain = 1});
 			destroy_entities(state, state->hot_entities);
 			ResetHotComponents(state);
+			state->tutorial = NULL;
 			state->script = NULL;
 			
 			tina_job_wait(job, &reverb_job, 0);

@@ -27,7 +27,7 @@ struct FragInput {
 cbuffer Locals : DRIFT_UBO1 {
 	float4 _scatter[5];
 	float4 _transmit[5];
-	float4 _effect_tint;
+	float4 _effect_tint[2];
 	float _effect_static;
 	float _effect_heat;
 }
@@ -65,36 +65,43 @@ float3 HBD(float3 rgb){
 	return (x*(6.2*x + 0.5))/(x*(6.2*x + 1.7) + 0.06);
 }
 
+// float2 uv_hex = FRAG.uv_hex;
+// // Odd and even rows.
+// float2 off0 = frac(uv_hex + 0.0)*UV_COEF - (0.5*UV_COEF);
+// float2 off1 = frac(uv_hex + 0.5)*UV_COEF - (0.5*UV_COEF);
+// float2 off = dot(off0, off0) < dot(off1, off1) ? off0 : off1;
+// off *= pow(length(off), 6)/DRIFT_INTERNAL_EXTENTS;
+
 float4 FShader(in FragInput FRAG) : SV_TARGET0 {
+	float2 delta = FRAG.uv - 0.5;
+	float effect_mask = smoothstep(0, 0.5, length(delta));
+	
+	float3 noise_static = DriftAtlas.Sample(_repeat, FRAG.uv_static) - 0.5;
 	float4 blue_noise = DriftAtlas.Sample(_repeat, FRAG.uv_jitter);
 	blue_noise.xy -= blue_noise.zw;
-	float3 noise_static = DriftAtlas.Sample(_repeat, FRAG.uv_static) - 0.5;
 	float2 jitter = _effect_heat*blue_noise/DRIFT_INTERNAL_EXTENTS;
 	jitter.x += noise_static*(1.2*_effect_static)/DRIFT_INTERNAL_EXTENTS.x;
 	
-	// float2 uv_hex = FRAG.uv_hex;
-	// // Odd and even rows.
-	// float2 off0 = frac(uv_hex + 0.0)*UV_COEF - (0.5*UV_COEF);
-	// float2 off1 = frac(uv_hex + 0.5)*UV_COEF - (0.5*UV_COEF);
-	// float2 off = dot(off0, off0) < dot(off1, off1) ? off0 : off1;
-	// off *= pow(length(off), 6)/DRIFT_INTERNAL_EXTENTS;
-	
 	// Jitter mask
-	float2 delta = FRAG.uv - 0.5;
 	delta.y *= DRIFT_INTERNAL_EXTENTS.y/DRIFT_INTERNAL_EXTENTS.x;
-	jitter *= lerp(1, 4, smoothstep(0, 0.5, length(delta)));
+	jitter *= lerp(1, 4, effect_mask);
 	
 	// Get color and apply haze.
-	float3 color = 1*_texture.Sample(DriftNearest, FRAG.uv + jitter);
+	float3 color_lin = 1*_texture.Sample(DriftNearest, FRAG.uv + jitter);
 	float3 light = DriftLightfield.Sample(DriftLinear, float3(FRAG.uv, 0));
 	float3 shadow =  DriftShadowfield.Sample(DriftLinear, float3(FRAG.uv, 0));
-	color = color*FRAG.transmit + FRAG.scatter.rgb*lerp(light, shadow, FRAG.scatter.a);
-	color = LinearToSRGB(color);
-	// color = HBD(color);
-	// color = LinearToSRGB(color/(color + 1));
+	color_lin = color_lin*FRAG.transmit + FRAG.scatter.rgb*lerp(light, shadow, FRAG.scatter.a);
+	float3 color_gam = LinearToSRGB(color_lin);
+	// float3 color_gam = HBD(color_lin);
+	// float3 color_gam = LinearToSRGB(2*color_lin/(color_lin + 1));
 	
-	color += (0.2*_effect_static)*noise_static;
+	// Apply tinting.
+	color_gam *= lerp(_effect_tint[0], _effect_tint[1], effect_mask);
+	
+	// Add video static effect
+	color_gam += (0.2*_effect_static)*noise_static;
+	
 	// TODO bother with triangle noise or something?
 	// float dither = frac(dot(FRAG.position.xy, float2(0.7548776662, 0.56984029))) - 0.5;
-	return float4(color*_effect_tint + blue_noise.rgb/256, 1);
+	return float4(color_gam + blue_noise.rgb/256, 1);
 }

@@ -21,6 +21,12 @@ typedef struct DriftNuklear DriftNuklear;
 typedef struct DriftGameContext DriftGameContext;
 typedef struct DriftGameState DriftGameState;
 
+typedef enum {
+	DRIFT_TUTORIAL_SPAWN_NORMAL,
+	DRIFT_TUTORIAL_SPAWN_LIMIT,
+	DRIFT_TUTORIAL_SPAWN_DRONES,
+} DriftTutorialSpawnPhase;
+
 typedef struct {
 	DriftItemType type;
 	uint count;
@@ -28,7 +34,10 @@ typedef struct {
 
 // TODO audit
 struct DriftGameState {
+	DriftMem* mem;
 	DRIFT_ARRAY(DriftComponent*) components;
+	DriftMap named_components;
+	
 	DRIFT_ARRAY(DriftTable*) tables;
 	DRIFT_ARRAY(DriftEntity) hot_entities;
 	
@@ -45,13 +54,8 @@ struct DriftGameState {
 	DriftComponentPowerNode power_nodes;
 	DriftTablePowerNodeEdges power_edges;
 	DriftComponentFlowMap flow_maps[_DRIFT_FLOW_MAP_COUNT];
-	DriftNavComponent navs;
-	DriftComponentProjectiles projectiles;
 	DriftComponentHealth health;
-	DriftComponentBugNav bug_nav;
 	DriftComponentEnemy enemies;
-	
-	DriftComponentHives hives;
 	
 	DriftTerrain* terra;
 	DriftRTree rtree;
@@ -67,7 +71,6 @@ struct DriftGameState {
 	} inventory;
 	
 	struct {
-		bool is_research;
 		DriftItemType item;
 		float progress;
 	} fab;
@@ -76,6 +79,7 @@ struct DriftGameState {
 		uint count, pod;
 	} dispatch;
 	
+	DriftScript* tutorial;
 	DriftScript* script;
 	
 	// TODO move into player?
@@ -83,11 +87,19 @@ struct DriftGameState {
 	
 	struct {
 		// NOTE: These fields do not get saved and default to 0.
+		// Mostly used by the tutorial or other scripts.
 		uint save_lock;
-		bool disable_look, disable_move, disable_hud, disable_scan;
-		bool needs_tutorial, spawn_at_start, factory_needs_reboot, never_seen_map;
+		
+		bool disable_look, disable_move, disable_hud, disable_scan, disable_nodes;
+		bool needs_tutorial, spawn_at_start, never_seen_map;
+		DriftTutorialSpawnPhase spawn_phase;
 		DriftToolType tool_restrict;
 		DriftScanType scan_restrict;
+		
+		struct {
+			bool needs_reboot, needs_scroll;
+			int scroll;
+		} factory;
 	} status;
 	
 	struct {
@@ -101,6 +113,20 @@ void DriftGameStateFree(DriftGameState* state);
 void DriftGameStateSetupIntro(DriftGameState* state);
 
 void DriftGameStateRender(DriftDraw* draw);
+
+DriftComponent* DriftGameStateNamedComponentMake(DriftGameState* state, DriftComponent* component, const char* name, DriftColumnSet columns, uint capacity);
+static inline DriftComponent* DriftGetNamedComponent(DriftGameState* state, const char* name){
+	uintptr_t value = DriftMapFind(&state->named_components, DriftFNV64Str(name));
+	DRIFT_ASSERT_HARD(value, "Component not found '%s'", name);
+	return (DriftComponent*)value;
+}
+
+#define DRIFT_GAMESTATE_TYPED_COMPONENT_MAKE(_state_, _component_, _type_, _columns_, _min_capacity_){ \
+	_Static_assert(offsetof(_type_, c) == 0); /* Make sure component is well formed */ \
+	_type_* do_types_match = _component_; /* Make sure types match */ \
+	DriftGameStateNamedComponentMake(_state_, &(_component_)->c, DRIFT_STR(_type_), _columns_, _min_capacity_); \
+}
+#define DRIFT_GET_TYPED_COMPONENT(_state_, _type_) ((_type_*)DriftGetNamedComponent(_state_, DRIFT_STR(_type_)))
 
 DriftEntity DriftMakeEntity(DriftGameState* state);
 DriftEntity DriftMakeHotEntity(DriftGameState* state);

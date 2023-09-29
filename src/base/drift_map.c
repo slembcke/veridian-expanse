@@ -153,6 +153,21 @@ uintptr_t DriftMapRemove(DriftMap* map, uintptr_t key){
 	}
 }
 
+// http://www.isthe.com/chongo/tech/comp/fnv/index.html#xor-fold
+uintptr_t DriftFNV64(const u8* ptr, size_t size){
+	_Static_assert(sizeof(uintptr_t) == 8);
+	
+	uintptr_t hash = 14695981039346656037u, prime = 1099511628211u;
+	for(const u8* end = ptr + size; ptr < end; ptr++){
+		hash = (hash ^ *ptr)*prime;
+	}
+	
+	return hash;
+}
+
+uintptr_t DriftFNV64Str(const char* str){return DriftFNV64((const u8*)str, strlen(str));}
+
+
 #if DRIFT_DEBUG
 void unit_test_map(void){
 	DriftMap map = {0};

@@ -346,6 +346,15 @@ void DriftDebugUI(DriftUpdate* _update, DriftDraw* _draw){
 				nk_checkbox_label(NK, "Show Paths", &DRIFT_DEBUG_SHOW_PATH);
 				
 				if(nk_menu_item_label(NK, "Toggle Examples", NK_TEXT_LEFT)) CTX->debug.ui->show_examples = !CTX->debug.ui->show_examples;
+				
+				extern uint GUN_TYPE, GUN_LEVEL;
+				if(nk_option_label(NK, "Slug", GUN_TYPE == 0)) GUN_TYPE = 0;
+				if(nk_option_label(NK, "Plasma", GUN_TYPE == 1)) GUN_TYPE = 1;
+				if(nk_option_label(NK, "Proton", GUN_TYPE == 2)) GUN_TYPE = 2;
+				if(nk_option_label(NK, "Level 1", GUN_LEVEL == 0)) GUN_LEVEL = 0;
+				if(nk_option_label(NK, "Level 2", GUN_LEVEL == 1)) GUN_LEVEL = 1;
+				if(nk_option_label(NK, "Level 3", GUN_LEVEL == 2)) GUN_LEVEL = 2;
+				
 				nk_menu_end(NK);
 			}
 			
@@ -534,7 +543,7 @@ void DriftDebugUI(DriftUpdate* _update, DriftDraw* _draw){
 			
 			nk_checkbox_label(NK, "No HUD", &STATE->status.disable_hud);
 			nk_checkbox_label(NK, "Super", &CTX->debug.godmode);
-			if(STATE->script && nk_button_label(NK, "Skip")) STATE->script->debug_skip = true;
+			if(STATE->tutorial && nk_button_label(NK, "Skip")) STATE->tutorial->debug_skip = true;
 			if(nk_button_label(NK, "Insp")) CTX->debug.ui->show_inspector ^= true;
 			if(nk_button_label(NK, "Paint")) SetPaintMode(true);
 		} nk_menubar_end(NK);

@@ -55,7 +55,7 @@ static const GradientInfo GRADIENT_INFO[] = {
 	{.frame = DRIFT_SPRITE_DRONE_CHASSIS, .shape = {8, 2, KernelBlackman}, .detail = {1, 1, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_DRONE_HATCH, .shape = {8, 2, KernelBlackman}, .detail = {1, 1, KernelBlackman}},
 	
-	{.frame = DRIFT_SPRITE_SCRAP         , .shape = {1.5, 2, KernelBlackman}, .detail = {1.5f, 5.0f, KernelBlackman}},
+	{.frame = DRIFT_SPRITE_SCRAP00, .shape = {1.5, 2, KernelBlackman}, .detail = {1.5f, 5.0f, KernelBlackman}},
 	{.frame = DRIFT_SPRITE_ADVANCED_SCRAP, .shape = {1.5, 2, KernelBlackman}, .detail = {1.5f, 5.0f, KernelBlackman}},
 
 	{.frame = DRIFT_SPRITE_LUMIUM   , .shape = {3, 3.2f, KernelBlackman}, .detail = {1.25, 3.2f, KernelBlackman}},

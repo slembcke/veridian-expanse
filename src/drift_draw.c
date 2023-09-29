@@ -300,8 +300,8 @@ DriftDrawShared* DriftDrawSharedNew(tina_job* job, float lightfield_scale){
 		.vertex[2] = {.type = DRIFT_GFX_TYPE_FLOAT32_2, .offset = offsetof(DriftSprite, matrix.x), .instanced = true},
 		.vertex[3] = {.type = DRIFT_GFX_TYPE_UNORM8_4, .offset = offsetof(DriftSprite, color), .instanced = true},
 		.vertex[4] = {.type = DRIFT_GFX_TYPE_U8_4, .offset = offsetof(DriftSprite, frame.bounds), .instanced = true},
-		.vertex[5] = {.type = DRIFT_GFX_TYPE_U8_4, .offset = offsetof(DriftSprite, frame.anchor), .instanced = true},
-		.vertex[6] = {.type = DRIFT_GFX_TYPE_U8_2, .offset = offsetof(DriftSprite, z), .instanced = true},
+		.vertex[5] = {.type = DRIFT_GFX_TYPE_U8_2, .offset = offsetof(DriftSprite, frame.anchor), .instanced = true},
+		.vertex[6] = {.type = DRIFT_GFX_TYPE_U8_4, .offset = offsetof(DriftSprite, frame.layer), .instanced = true},
 		.instance_stride = sizeof(DriftSprite),
 		DRIFT_GLOBAL_BINDINGS,
 	};
@@ -417,7 +417,8 @@ DriftDraw* DriftDrawBeginBase(tina_job* job, DriftGameContext* ctx, DriftAffine 
 	return DRIFT_COPY(mem, ((DriftDraw){
 		.job = job, .mem = mem, .renderer = renderer,
 		.ctx = ctx, .state = ctx->state, .shared = ctx->draw_shared,
-		.frame = ctx->current_frame, .tick = ctx->current_tick, .nanos = ctx->update_nanos,
+		.frame = ctx->current_frame, .tick = ctx->current_tick,
+		.clock_nanos = ctx->clock_nanos, .update_nanos = ctx->update_nanos,
 		.raw_extent = raw_extent, .virtual_extent = virtual_extent, .internal_extent = internal_extent,
 		.p_matrix = p_matrix, .v_matrix = v_matrix, .vp_matrix = vp_matrix, .vp_inverse = vp_inverse,
 		.ui_matrix = DriftAffineOrtho(0, internal_extent.x, 0, internal_extent.y),
@@ -445,11 +446,11 @@ DriftDraw* DriftDrawBeginBase(tina_job* job, DriftGameContext* ctx, DriftAffine 
 	}));
 }
 
-DriftDraw* DriftDrawBegin(DriftUpdate* update, float dt_since_tick, DriftAffine v_matrix, DriftAffine prev_vp_matrix){
+DriftDraw* DriftDrawBegin(DriftUpdate* update, float dt_before_tick, DriftAffine v_matrix, DriftAffine prev_vp_matrix){
 	DriftGameContext* ctx = update->ctx;
 	DriftDraw* draw = DriftDrawBeginBase(update->job, ctx, v_matrix, prev_vp_matrix);
 	draw->dt = update->dt;
-	draw->dt_since_tick = dt_since_tick;
+	draw->dt_before_tick = dt_before_tick;
 	
 	return draw;
 }
@@ -470,6 +471,10 @@ void DriftDrawBindGlobals(DriftDraw* draw){
 		.internal_extent = draw->internal_extent,
 		.atlas_size = DRIFT_ATLAS_SIZE, .sharpening = APP->prefs.sharpening, .gradmul = draw->shared->hires,
 		.biome_layer = DRIFT_ATLAS_BIOME, .visibility_layer = DRIFT_ATLAS_VISIBILITY,
+#if DRIFT_DEBUG
+		.tmp_color = {TMP_COLOR[0], TMP_COLOR[1], TMP_COLOR[2], TMP_COLOR[3]},
+		.tmp_value = {TMP_VALUE[0], TMP_VALUE[1], TMP_VALUE[2], TMP_VALUE[3]},
+#endif
 	};
 	
 	DriftGlobalUniforms ui_uniforms = global_uniforms;
@@ -699,7 +704,7 @@ DriftAffine DriftDrawTextFull(DriftDraw* draw, DRIFT_ARRAY(DriftSprite)* array, 
 							if(digit < 10){
 								frame = 10*frame + digit;
 							} else {
-								*glyphs++ = (DriftSprite){DRIFT_FRAMES[frame], color, t};
+								*glyphs++ = (DriftSprite){.matrix = t, .color = color, .frame = DRIFT_FRAMES[frame]};
 								t.x += GLYPH_ADVANCE*opts.matrix.a;
 								t.y += GLYPH_ADVANCE*opts.matrix.b;
 								glyph_count++;
@@ -716,7 +721,7 @@ DriftAffine DriftDrawTextFull(DriftDraw* draw, DRIFT_ARRAY(DriftSprite)* array, 
 						while(true){
 							DriftFrame frame = DRIFT_FRAMES[icon->frame];
 							
-							*glyphs++ = (DriftSprite){frame, DriftRGBA8FromColor(opts.tint), t};
+							*glyphs++ = (DriftSprite){.matrix = t, .color = DriftRGBA8FromColor(opts.tint), .frame = frame};
 							t.x += icon->advance*GLYPH_ADVANCE*opts.matrix.a;
 							t.y += icon->advance*GLYPH_ADVANCE*opts.matrix.b;
 							glyph_count++;

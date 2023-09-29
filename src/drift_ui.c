@@ -83,15 +83,15 @@ static void patch9(DRIFT_ARRAY(DriftSprite)* arr, DriftAABB2 bb, uint patch_id, 
 	float sy = (float)((bb.t - bb.b) - (split.b - border.b) - (split.t - border.t))/(float)(fy2 - fy1 - 1);
 	
 	DriftSprite* cursor = DRIFT_ARRAY_RANGE(*arr, 9);
-	*cursor++ = (DriftSprite){{{fx0 + 0, fy2 + 0, fx1 - 0, fy3 - 0}, {ax0, ay1}, frame.layer}, tint, { 1, 0, 0,  1, bb.l, bb.t}};
-	*cursor++ = (DriftSprite){{{fx1 + 1, fy2 + 0, fx2 - 1, fy3 - 0}, {  0, ay1}, frame.layer}, tint, {sx, 0, 0,  1, midx, bb.t}};
-	*cursor++ = (DriftSprite){{{fx2 + 0, fy2 + 0, fx3 - 0, fy3 - 0}, {ax1, ay1}, frame.layer}, tint, { 1, 0, 0,  1, bb.r, bb.t}};
-	*cursor++ = (DriftSprite){{{fx0 + 0, fy1 + 1, fx1 - 0, fy2 - 1}, {ax0,   0}, frame.layer}, tint, { 1, 0, 0, sy, bb.l, midy}};
-	*cursor++ = (DriftSprite){{{fx1 + 1, fy1 + 1, fx2 - 1, fy2 - 1}, {  0,   0}, frame.layer}, tint, {sx, 0, 0, sy, midx, midy}};
-	*cursor++ = (DriftSprite){{{fx2 + 0, fy1 + 1, fx3 - 0, fy2 - 1}, {ax1,   0}, frame.layer}, tint, { 1, 0, 0, sy, bb.r, midy}};
-	*cursor++ = (DriftSprite){{{fx0 + 0, fy0 + 0, fx1 - 0, fy1 - 0}, {ax0, ay0}, frame.layer}, tint, { 1, 0, 0,  1, bb.l, bb.b}};
-	*cursor++ = (DriftSprite){{{fx1 + 1, fy0 + 0, fx2 - 1, fy1 - 0}, {  0, ay0}, frame.layer}, tint, {sx, 0, 0,  1, midx, bb.b}};
-	*cursor++ = (DriftSprite){{{fx2 + 0, fy0 + 0, fx3 - 0, fy1 - 0}, {ax1, ay0}, frame.layer}, tint, { 1, 0, 0,  1, bb.r, bb.b}};
+	*cursor++ = (DriftSprite){.matrix = { 1, 0, 0,  1, bb.l, bb.t}, .color = tint, .frame = {{fx0 + 0, fy2 + 0, fx1 - 0, fy3 - 0}, {ax0, ay1}, frame.layer}};
+	*cursor++ = (DriftSprite){.matrix = {sx, 0, 0,  1, midx, bb.t}, .color = tint, .frame = {{fx1 + 1, fy2 + 0, fx2 - 1, fy3 - 0}, {  0, ay1}, frame.layer}};
+	*cursor++ = (DriftSprite){.matrix = { 1, 0, 0,  1, bb.r, bb.t}, .color = tint, .frame = {{fx2 + 0, fy2 + 0, fx3 - 0, fy3 - 0}, {ax1, ay1}, frame.layer}};
+	*cursor++ = (DriftSprite){.matrix = { 1, 0, 0, sy, bb.l, midy}, .color = tint, .frame = {{fx0 + 0, fy1 + 1, fx1 - 0, fy2 - 1}, {ax0,   0}, frame.layer}};
+	*cursor++ = (DriftSprite){.matrix = {sx, 0, 0, sy, midx, midy}, .color = tint, .frame = {{fx1 + 1, fy1 + 1, fx2 - 1, fy2 - 1}, {  0,   0}, frame.layer}};
+	*cursor++ = (DriftSprite){.matrix = { 1, 0, 0, sy, bb.r, midy}, .color = tint, .frame = {{fx2 + 0, fy1 + 1, fx3 - 0, fy2 - 1}, {ax1,   0}, frame.layer}};
+	*cursor++ = (DriftSprite){.matrix = { 1, 0, 0,  1, bb.l, bb.b}, .color = tint, .frame = {{fx0 + 0, fy0 + 0, fx1 - 0, fy1 - 0}, {ax0, ay0}, frame.layer}};
+	*cursor++ = (DriftSprite){.matrix = {sx, 0, 0,  1, midx, bb.b}, .color = tint, .frame = {{fx1 + 1, fy0 + 0, fx2 - 1, fy1 - 0}, {  0, ay0}, frame.layer}};
+	*cursor++ = (DriftSprite){.matrix = { 1, 0, 0,  1, bb.r, bb.b}, .color = tint, .frame = {{fx2 + 0, fy0 + 0, fx3 - 0, fy1 - 0}, {ax1, ay0}, frame.layer}};
 	DriftArrayRangeCommit(*arr, cursor);
 }
 
@@ -186,7 +186,7 @@ void DriftUIHandleEvent(mu_Context* mu, SDL_Event* event, float scale){
 	uint c = KEY_MAP[event->key.keysym.sym & 0xFF];
 	uint g = GAMEPAD_MAP[event->cbutton.button & 0xF];
 	switch (event->type) {
-		case SDL_MOUSEMOTION: mu_input_mousemove(mu, (int)(event->motion.x/scale), (int)(event->motion.y/scale), event->motion.state); break;
+		case SDL_MOUSEMOTION: mu_input_mousemove(mu, (int)(event->motion.x/scale), (int)(event->motion.y/scale)); break;
 		case SDL_MOUSEWHEEL: mu_input_scroll(mu, 0, -30*event->wheel.y); break;
 		case SDL_TEXTINPUT: mu_input_text(mu, event->text.text); break;
 
@@ -272,6 +272,7 @@ void DriftUIPresent(mu_Context* mu, DriftDraw* draw){
 	DriftGfxPipelineBindings ui_bindings = draw->default_bindings;
 	ui_bindings.instance = DriftGfxRendererPushGeometry(renderer, geo, DriftArraySize(geo)).binding;
 	ui_bindings.uniforms[0] = draw->ui_binding;
+	float hires = draw->shared->hires;
 	
 	uint count = 0;
 	for(mu_Command *cmd = NULL; mu_next_command(mu, &cmd);){
@@ -284,7 +285,7 @@ void DriftUIPresent(mu_Context* mu, DriftDraw* draw){
 				
 				mu_Rect r = cmd->clip.rect;
 				r.y = (int)(h - r.y - r.h);
-				DriftGfxRendererPushScissorCommand(renderer, (DriftAABB2){r.x, r.y, r.x + r.w, r.y + r.h});
+				DriftGfxRendererPushScissorCommand(renderer, (DriftAABB2){hires*r.x, hires*r.y, hires*(r.x + r.w), hires*(r.y + r.h)});
 			} break;
 			
 			case MU_COMMAND_TEXT: count += *text_len++; break;
@@ -298,6 +299,7 @@ void DriftUIPresent(mu_Context* mu, DriftDraw* draw){
 	DriftGfxRendererPushDrawIndexedCommand(renderer, draw->quad_index_binding, 6, count);
 	DriftGfxRendererPushScissorCommand(renderer, DRIFT_AABB2_ALL);
 	
+	// TODO static globals
 	static mu_Container* last_hover;
 	static int last_row;
 	static mu_Id last_focus;
@@ -461,8 +463,10 @@ static void DriftSettingsPane(mu_Context* mu, DriftVec2 extents, UIStack* stack)
 			mu_begin_group(mu, 0);
 			mu_layout_row(mu, 2, widths, -1);
 			mu_label(mu, "Mouse Sensitivity:");
-			mu_slider_ex(mu, &APP->prefs.mouse_sensitivity, 0.5f, 3, 0, NULL, 0);
-			if(mu_group_is_hovered(mu)) APP->prefs.mouse_sensitivity = DriftClamp(APP->prefs.mouse_sensitivity + inc/4, 0.5f, 3);
+			float log_scale = log2f(APP->prefs.mouse_sensitivity);
+			mu_slider_ex(mu, &log_scale, -2, 2, 0, NULL, 0);
+			if(mu_group_is_hovered(mu)) log_scale = DriftClamp(log_scale + inc/4, -2, 2);
+			APP->prefs.mouse_sensitivity = exp2f(log_scale);
 			mu_end_group(mu);
 		}{
 			bool gfocus = mu_begin_group(mu, 0);
@@ -669,22 +673,22 @@ typedef struct {
 	tina* coro;
 } IntroContext;
 
-static void wait_for_message(tina* coro, const char* message){
+static void wait_for_message(tina* coro, DriftStringID strid){
 	IntroContext* ctx = coro->user_data;
 	ctx->timer = 0;
-	ctx->message = message;
+	ctx->message = DRIFT_STRINGS[strid];
 	ctx->text_active = true;
 	while(ctx->text_active) tina_yield(coro, NULL);
 	while(!DriftInputButtonPress(DRIFT_INPUT_ACCEPT)) tina_yield(coro, NULL);
 	while(DriftInputButtonPress(DRIFT_INPUT_ACCEPT)) tina_yield(coro, NULL);
 	
-	ctx->rate = 1;
+	ctx->message = NULL, ctx->rate = 1;
 }
 
 static void fade(tina* coro, float a, float b){
 	IntroContext* ctx = coro->user_data;
 	
-	static float duration = 0.5;
+	static const float duration = 0.5;
 	ctx->timer = 0;
 	for(float t = 0; t < 1; t = ctx->timer/duration){
 		ctx->fade = DriftLerp(a, b, DriftSaturate(t));
@@ -694,43 +698,35 @@ static void fade(tina* coro, float a, float b){
 	ctx->fade = b;
 }
 
+#define DELAY "{+60}"
+
 static void* intro_coro(tina* coro, void* value){
 	IntroContext* ctx = coro->user_data;
 	
 	ctx->image = "gfx/images/intro-homeworld.qoi";
 	fade(coro, 0, 1);
-	wait_for_message(coro, DRIFT_STRINGS[DRIFT_STRING_INTRO_TROUBLE]);
-	wait_for_message(coro, DRIFT_STRINGS[DRIFT_STRING_INTRO_SOLUTION]);
-	ctx->message = NULL, ctx->rate = 1;
+	wait_for_message(coro, DRIFT_STR_INTRO_0);
 	fade(coro, 1, 0);
 
 	ctx->image = "gfx/images/intro-colonies.qoi";
 	fade(coro, 0, 1);
-	wait_for_message(coro, DRIFT_STRINGS[DRIFT_STRING_INTRO_COLONIES]);
-	wait_for_message(coro, DRIFT_STRINGS[DRIFT_STRING_INTRO_PROBLEM]);
-	ctx->message = NULL, ctx->rate = 1;
+	wait_for_message(coro, DRIFT_STR_INTRO_1);
 	fade(coro, 1, 0);
 	
 	ctx->image = "gfx/images/intro-proposals.qoi";
 	fade(coro, 0, 1);
-	wait_for_message(coro, DRIFT_STRINGS[DRIFT_STRING_INTRO_PROPOSALS]);
-	wait_for_message(coro, DRIFT_STRINGS[DRIFT_STRING_INTRO_REJECTED]);
-	ctx->message = NULL, ctx->rate = 1;
+	wait_for_message(coro, DRIFT_STR_INTRO_2);
 	fade(coro, 1, 0);
 	
 	ctx->image = "gfx/images/intro-viridius.qoi";
 	fade(coro, 0, 1);
-	wait_for_message(coro, DRIFT_STRINGS[DRIFT_STRING_INTRO_VIRIDIUM]);
-	wait_for_message(coro, DRIFT_STRINGS[DRIFT_STRING_INTRO_BETUS]);
-	ctx->message = NULL, ctx->rate = 1;
+	wait_for_message(coro, DRIFT_STR_INTRO_3);
 	fade(coro, 1, 0);
 	
 	ctx->image = "gfx/images/intro-pioneer.qoi";
 	fade(coro, 0, 1);
-	wait_for_message(coro, DRIFT_STRINGS[DRIFT_STRING_INTRO_PIONEER]);
-	wait_for_message(coro, DRIFT_STRINGS[DRIFT_STRING_INTRO_BABYSIT]);
-	wait_for_message(coro, DRIFT_STRINGS[DRIFT_STRING_INTRO_INTERESTING]);
-	ctx->message = NULL, ctx->rate = 1;
+	wait_for_message(coro, DRIFT_STR_INTRO_4);
+	wait_for_message(coro, DRIFT_STR_INTRO_5);
 	fade(coro, 1, 0);
 	
 	return NULL;
@@ -1132,7 +1128,7 @@ static int ui_tab(mu_Context *ctx, const char *label, bool focus){
 		ctx->draw_frame(ctx, r, MU_COLOR_GROUPBG);
 	}
 	
-	if (label) { mu_draw_control_text(ctx, label, r, MU_COLOR_TEXT, MU_OPT_ALIGNCENTER); }
+	mu_draw_control_text(ctx, label, r, MU_COLOR_TEXT, MU_OPT_ALIGNCENTER);
 	return res;
 }
 
@@ -1148,6 +1144,9 @@ DriftLoopYield DriftGameContextMapLoop(DriftGameContext* ctx, tina_job* job, Dri
 	DriftVec2 pivot = DRIFT_VEC2_ZERO;
 	DriftAffine v_matrix = {1, 0, 0, 1, -player_pos.x, -player_pos.y};
 	float zoom = 1;
+	
+	DriftVec2 vel = DRIFT_VEC2_ZERO;
+	const float accel = 5000;
 	
 	DriftAudioBusSetActive(DRIFT_BUS_SFX, false);
 	DriftAudioBusSetActive(DRIFT_BUS_HUD, false);
@@ -1165,22 +1164,24 @@ DriftLoopYield DriftGameContextMapLoop(DriftGameContext* ctx, tina_job* job, Dri
 		if(ctx->ui_state == DRIFT_UI_STATE_MAP){
 			if(DriftInputButtonPress(DRIFT_INPUT_CANCEL)) ctx->ui_state = DRIFT_UI_STATE_NONE;
 			
-			float delta_zoom = 1;
-			DriftVec2 pan = DRIFT_VEC2_ZERO;
+			DriftVec2 desired_vel = DriftVec2Mul(DriftInputJoystick(DRIFT_INPUT_AXIS_MOVE_X, DRIFT_INPUT_AXIS_MOVE_Y), -600);
+			vel = DriftVec2LerpConst(vel, desired_vel, accel*dt);
+			DriftVec2 pan = DriftVec2Mul(vel, dt);
+			
+			float delta_zoom = 1, zoom_min = 1/64.0f, zoom_max = 1/10.0f;
 			if(INPUT->icon_type == DRIFT_INPUT_SET_MOUSE_KEYBOARD){
 				if(INPUT->mouse_state[DRIFT_MOUSE_LEFT]){
-					pan = DriftAffineDirection(v_matrix, INPUT->mouse_rel_world);
+					pan = DriftVec2Add(pan, DriftAffineDirection(v_matrix, INPUT->mouse_rel_world));
 				} else {
 					cursor_pos = INPUT->mouse_pos_world;
 				}
-				zoom = DriftClamp(zoom*exp2f(0.5f*INPUT->mouse_wheel), 1/256.0f, 0.25f);
+				zoom = DriftClamp(zoom*exp2f(0.5f*INPUT->mouse_wheel), zoom_min, zoom_max);
 				delta_zoom = powf(v_matrix.a/zoom, expf(-15.0f*dt) - 1);
 				if(INPUT->mouse_wheel) pivot = DriftAffinePoint(v_matrix, cursor_pos);
 			} else {
 				cursor_pos = DriftAffineOrigin(DriftAffineInverse(v_matrix));
-				pan = DriftVec2Mul(DriftInputJoystick(DRIFT_INPUT_AXIS_MOVE_X, DRIFT_INPUT_AXIS_MOVE_Y), -600*dt);
 				zoom *= expf(10*DriftInputJoystick(DRIFT_INPUT_AXIS_LOOK_X, DRIFT_INPUT_AXIS_LOOK_Y).y*dt);
-				zoom = DriftLogerp(DriftClamp(zoom, 1/64.0f, 0.25f), zoom, expf(-10*dt));
+				zoom = DriftLogerp(DriftClamp(zoom, zoom_min, zoom_max), zoom, expf(-10*dt));
 				delta_zoom = zoom/v_matrix.a;
 				pivot = DRIFT_VEC2_ZERO;
 			}
@@ -1268,7 +1269,7 @@ DriftLoopYield DriftGameContextMapLoop(DriftGameContext* ctx, tina_job* job, Dri
 			mu_button_ex(mu, "<{@PREV}", 0, MU_OPT_NOFRAME | MU_OPT_ALIGNCENTER);
 			if(ui_tab(mu, "Map", ctx->ui_state == DRIFT_UI_STATE_MAP)) ctx->ui_state = DRIFT_UI_STATE_MAP;
 			if(ui_tab(mu, "Scans", ctx->ui_state == DRIFT_UI_STATE_SCAN)) ctx->ui_state = DRIFT_UI_STATE_SCAN;
-			if(ui_tab(mu, "Build", ctx->ui_state == DRIFT_UI_STATE_CRAFT)) ctx->ui_state = DRIFT_UI_STATE_CRAFT;
+			if(ui_tab(mu, "Craft", ctx->ui_state == DRIFT_UI_STATE_CRAFT)) ctx->ui_state = DRIFT_UI_STATE_CRAFT;
 			if(ui_tab(mu, "Equip", false)){};
 			if(ui_tab(mu, "Logs", ctx->ui_state == DRIFT_UI_STATE_LOGS)) ctx->ui_state = DRIFT_UI_STATE_LOGS;
 			mu_button_ex(mu, "{@NEXT}>", 0, MU_OPT_NOFRAME | MU_OPT_ALIGNCENTER);

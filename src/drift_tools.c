@@ -36,18 +36,20 @@ static void update_base_look(DriftUpdate* update, DriftPlayerData* player, Drift
 	player->reticle = DriftVec2Mul((DriftVec2){transform.c, transform.d}, 64);
 }
 
-static void draw_base_look(DriftDraw* draw, DriftPlayerData* player, DriftAffine transform){
-	if(draw->state->status.disable_look) return;
+static float draw_base_look(DriftDraw* draw, DriftPlayerData* player, DriftAffine transform){
+	if(draw->state->status.disable_look) return 0;
 	
 	DriftVec2 pos = DriftAffineOrigin(transform), rot = player->desired_rotation;
 	DriftAffine m1 = (DriftAffine){rot.y, -rot.x, rot.x, rot.y, pos.x, pos.y};
+	float fade = player->tool_anim*DriftSmoothstep(0.0f, 0.7f, DriftVec2Length(rot));
+	
 	float r = 1.5f*DriftVec2Length(rot);
 	DriftVec2 p1[] = {
 		DriftAffinePoint(m1, (DriftVec2){-4, 36}),
 		DriftAffinePoint(m1, (DriftVec2){ 0, 38}),
 		DriftAffinePoint(m1, (DriftVec2){ 4, 36}),
 	};
-	DriftRGBA8 green = DriftRGBA8FromColor(DriftVec4Mul((DriftVec4){{0, 1, 0, 0.5f}}, player->tool_anim));
+	DriftRGBA8 green = DriftRGBA8FromColor(DriftVec4Mul((DriftVec4){{0, 1, 0, 0.5f}}, fade));
 	DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = p1[0], .p1 = p1[1], .radii = {r}, .color = green}));
 	DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = p1[1], .p1 = p1[2], .radii = {r}, .color = green}));
 	
@@ -56,11 +58,12 @@ static void draw_base_look(DriftDraw* draw, DriftPlayerData* player, DriftAffine
 		DriftAffinePoint(transform, (DriftVec2){ 0, 40}),
 		DriftAffinePoint(transform, (DriftVec2){ 6, 37}),
 	};
-	DriftRGBA8 red = DriftRGBA8FromColor(DriftVec4Mul((DriftVec4){{1, 0, 0, 0.5f}}, player->tool_anim));
+	DriftRGBA8 red = DriftRGBA8FromColor(DriftVec4Mul((DriftVec4){{1, 0, 0, 0.5f}}, fade));
 	DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = p0[0], .p1 = p0[1], .radii = {1.5f}, .color = red}));
 	DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = p0[1], .p1 = p0[2], .radii = {1.5f}, .color = red}));
 	
 	draw_mouse(draw, (DriftRGBA8){0x00, 0xFF, 0x00, 0x80});
+	return fade;
 }
 
 static void update_none(DriftUpdate* update, DriftPlayerData* player, DriftAffine transform){
@@ -81,8 +84,8 @@ static void draw_none(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 	
 	DriftFrame frame = DRIFT_FRAMES[DRIFT_SPRITE_HATCH];
 	DriftRGBA8 color = DRIFT_RGBA8_WHITE;
-	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = color, .matrix = DriftAffineMul(m_l, m_hatch), .shiny = 30,}));
-	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = color, .matrix = DriftAffineMul(m_r, m_hatch), .shiny = 30,}));
+	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = color, .matrix = DriftAffineMul(m_l, m_hatch)}));
+	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = frame, .color = color, .matrix = DriftAffineMul(m_r, m_hatch)}));
 }
 
 static const float GRABBER_RADIUS = 10;
@@ -90,7 +93,7 @@ static const float GRABBER_RADIUS = 10;
 static uint find_nearest_grabbable(DriftGameState* state, DriftVec2 position, float limit){
 	uint nearest_idx = 0;
 	float nearest_dist = INFINITY, nearest_weight = INFINITY;
-	float power_node_weight = (state->scan_progress[DRIFT_SCAN_POWER_NODE] >= 1 ? 4 : INFINITY);
+	float power_node_weight = (state->status.disable_nodes ? INFINITY : 4);
 	
 	uint item_idx, scan_idx, transform_idx;
 	DriftJoin join = DriftJoinMake((DriftComponentJoin[]){
@@ -136,7 +139,11 @@ static bool grabber_grab(DriftUpdate* update, DriftPlayerData* player, DriftVec2
 static void grabber_update(DriftUpdate* update, DriftPlayerData* player, DriftVec2 position){
 	DriftGameState* state = update->state;
 	DriftEntity e = player->grabbed_entity;
-	DRIFT_ASSERT(DriftEntitySetCheck(&state->entities, e), "Grabbed entity e%d does not exist.", e.id);
+	if(!DriftEntitySetCheck(&state->entities, e)){
+		player->grabbed_type = DRIFT_ITEM_NONE;
+		player->grabbed_entity.id = 0;
+		return;
+	}
 	
 	uint transform_idx = DriftComponentFind(&state->transforms.c, e);
 	DRIFT_ASSERT(transform_idx, "Grabbed entity e%d has no transform.", e.id);
@@ -223,9 +230,9 @@ static void update_grab(DriftUpdate* update, DriftPlayerData* player, DriftAffin
 	
 	bool mouse_look = INPUT->mouse_captured;
 	DriftVec2 local_look = {}, pull = {};
-	if(DriftInputButtonState(DRIFT_INPUT_QUICK_GRAB)){
+	if(DriftInputButtonState(DRIFT_INPUT_STASH)){
 		// First frame should be centered to grab the correct object before pulling in.
-		local_look = (DriftVec2){0, DriftInputButtonPress(DRIFT_INPUT_QUICK_GRAB) ? 0 : -1};
+		local_look = (DriftVec2){0, DriftInputButtonPress(DRIFT_INPUT_STASH) ? 0 : -1};
 	} else if(mouse_look){
 		// Clamp mouse to a slightly larger than normal radius.
 		MOUSE_POS = DriftVec2Clamp(DriftVec2FMA(MOUSE_POS, INPUT->mouse_rel, APP->prefs.mouse_sensitivity), 100);
@@ -249,7 +256,7 @@ static void update_grab(DriftUpdate* update, DriftPlayerData* player, DriftAffin
 	DriftTerrainSampleInfo info = DriftTerrainSampleFine(state->terra, DriftVec2Add(pos, reticle));
 	player->reticle = reticle = DriftVec2FMA(reticle, info.grad, fmaxf(0, GRABBER_RADIUS - info.dist));
 	
-	uint grab_mask = DRIFT_INPUT_GRAB | DRIFT_INPUT_QUICK_GRAB;
+	uint grab_mask = DRIFT_INPUT_GRAB | DRIFT_INPUT_STASH;
 	bool grab_state = DriftInputButtonState(grab_mask);
 	if(!mouse_look){
 		// Pull towards the reticle in gamepad mode.
@@ -267,7 +274,8 @@ static void update_grab(DriftUpdate* update, DriftPlayerData* player, DriftAffin
 	player->desired_rotation = DriftAffineDirection(transform, (DriftVec2){rotation_rate, 1});
 	
 	DriftVec2 world_reticle = DriftVec2Add(pos, reticle);
-	if(player->grabbed_type == DRIFT_ITEM_NONE){
+	DriftItemType grabbed_type = player->grabbed_type;
+	if(grabbed_type == DRIFT_ITEM_NONE){
 		if(DriftInputButtonPress(grab_mask)) grabber_grab(update, player, world_reticle);
 	} else {
 		if(DriftInputButtonRelease(grab_mask)){
@@ -276,7 +284,7 @@ static void update_grab(DriftUpdate* update, DriftPlayerData* player, DriftAffin
 			// Player pulled the grabber in, stash the item.
 			uint body_idx = DriftComponentFind(&state->bodies.c, player->grabbed_entity);
 			if(grabber_stash(update, player)){
-				DriftHUDPushSwoop(update->ctx, DriftAffineOrigin(transform), player->reticle, GRAB_LABEL_COLOR, player->grabbed_type);
+				DriftHUDPushSwoop(update->ctx, DriftAffineOrigin(transform), player->reticle, GRAB_LABEL_COLOR, grabbed_type);
 			} else if(body_idx) {
 				// Make it drift away if it can't be stashed, and has a physics body.
 				state->bodies.velocity[body_idx] = DriftAffineDirection(transform, (DriftVec2){0, 50});
@@ -287,7 +295,7 @@ static void update_grab(DriftUpdate* update, DriftPlayerData* player, DriftAffin
 		}
 	}
 	
-	if(player->grabbed_type){
+	if(grabbed_type){
 		// TODO force the player to drop here?
 	} else if(DriftInputButtonState(DRIFT_INPUT_DROP) && state->inventory.cargo[DRIFT_ITEM_POWER_NODE] > 0){
 		DriftNearbyNodesInfo nodes = DriftSystemPowerNodeNearby(state, world_reticle, update->mem, DRIFT_POWER_BEAM_RADIUS);
@@ -376,7 +384,7 @@ static void draw_arm_with_ik(DriftDraw* draw, DriftAffine transform, float anim,
 	// Draw grippers
 	float angle_3 = angle[0] + angle[1] + angle[2];
 	float grip_angle = DriftLerp(+2.9f - angle_3, 3.1f, grip);
-	float grip_close = DriftLerp(-1.0f + DriftWaveComplex(draw->nanos, 0.9f).x*0.5f - angle_3, -0.15f, grip);
+	float grip_close = DriftLerp(-1.0f + DriftWaveComplex(draw->update_nanos, 0.9f).x*0.5f - angle_3, -0.15f, grip);
 	float grip_retract = DriftSmoothstep(0.6f, 1.0f, anim);
 	float claw_angle_b = DriftLerp(-2.5f - angle_3, grip_angle + grip_close, grip_retract);
 	float claw_angle_t = DriftLerp(+8.4f - angle_3, grip_angle - grip_close, grip_retract);
@@ -429,7 +437,7 @@ static void draw_grab(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 		if(player->grabbed_type != DRIFT_ITEM_POWER_NODE) DriftHudDrawOffsetLabel(draw, DriftAffineOrigin(transform), player->reticle, color, name);
 		DriftItemDraw(draw, player->grabbed_type, gripper_location, player->grabbed_entity.id, 0);
 		
-		float bob = 3*fabsf(DriftWaveComplex(draw->nanos, 1).x);
+		float bob = 3*fabsf(DriftWaveComplex(draw->update_nanos, 1).x);
 		DriftVec2 p[] = {
 			DriftAffinePoint(transform, (DriftVec2){-4, 24 - bob}),
 			DriftAffinePoint(transform, (DriftVec2){ 0, 21 - bob}),
@@ -446,9 +454,9 @@ static void draw_grab(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 		}
 	}
 	
-	DriftVec2 wobble = DriftWaveComplex(draw->nanos, 0.5f);
+	DriftVec2 wobble = DriftWaveComplex(draw->update_nanos, 0.5f);
 	wobble.y = 0.5f*DriftVec2Rotate(wobble, wobble).y;
-	float grip = DriftInputButtonState(DRIFT_INPUT_GRAB | DRIFT_INPUT_QUICK_GRAB | DRIFT_INPUT_DROP);
+	float grip = DriftInputButtonState(DRIFT_INPUT_GRAB | DRIFT_INPUT_STASH | DRIFT_INPUT_DROP);
 	DriftVec2 desired = DriftVec2FMA(player->reticle, wobble, 3*(1 - grip));
 	float err_rate = 8*draw->dt, err_smooth = 1 - expf(-30*draw->dt);
 	
@@ -539,12 +547,12 @@ static void update_dig_laze(DriftUpdate* update, DriftPlayerData* player, DriftA
 }
 
 static void draw_dig_laze(DriftDraw* draw, DriftPlayerData* player, DriftAffine transform){
-	draw_base_look(draw, player, transform);
+	float hud_fade = draw_base_look(draw, player, transform);
 	
 	DriftVec2 p0 = DriftAffineOrigin(transform), p1 = player->dig_pos;
 	DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){
 		.p0 = p0, .p1 = DriftAffinePoint(transform, (DriftVec2){0, LASER_LENGTH}),
-		.radii = {LASER_RADIUS, LASER_RADIUS - 1}, .color = DriftRGBA8FromColor(DriftVec4Mul(DRIFT_VEC4_RED, player->tool_anim)),
+		.radii = {LASER_RADIUS, LASER_RADIUS - 1}, .color = DriftRGBA8FromColor(DriftVec4Mul(DRIFT_VEC4_RED, hud_fade)),
 	}));
 	
 	DriftVec4 laser_glow = DriftVec4Mul((DriftVec4){{1.00f, 0.00f, 0.17f, 0.50f}}, player->tool_anim);
@@ -609,97 +617,21 @@ static void draw_dig_laze(DriftDraw* draw, DriftPlayerData* player, DriftAffine 
 static void update_dig(DriftUpdate* update, DriftPlayerData* player, DriftAffine transform){update_dig_laze(update, player, transform);}
 static void draw_dig(DriftDraw* draw, DriftPlayerData* player, DriftAffine transform){draw_dig_laze(draw, player, transform);}
 
-typedef struct {
-	DriftAffine arr[4];
-} PlayerCannonTransforms;
-
-// TODO refactor this, at least pass in the player transform directly
-static PlayerCannonTransforms CalculatePlayerCannonTransforms(float cannon_anim){
-	cannon_anim = DriftSmoothstep(0, 1, cannon_anim);
-	DriftAffine matrix_gun0 = {1, 0, 0, 1,  8, -7 - -7*cannon_anim - 3};
-	DriftAffine matrix_gun1 = {1, 0, 0, 1, 12, -5 - -5*cannon_anim - 5};
-	
-	return (PlayerCannonTransforms){{
-		DriftAffineMul((DriftAffine){-1, 0, 0, 1, 0, 0}, matrix_gun0),
-		DriftAffineMul((DriftAffine){+1, 0, 0, 1, 0, 0}, matrix_gun0),
-		DriftAffineMul((DriftAffine){-1, 0, 0, 1, 0, 0}, matrix_gun1),
-		DriftAffineMul((DriftAffine){+1, 0, 0, 1, 0, 0}, matrix_gun1),
-	}};
-}
-
-// TODO pull out commonalities to fly?
 static void update_gun(DriftUpdate* update, DriftPlayerData* player, DriftAffine transform){
 	update_base_move(update, player);
 	update_base_look(update, player, transform);
 	
 	player->reticle = DriftVec2Mul((DriftVec2){transform.c, transform.d}, 64);
-
-	static uint repeat = 0;
-	static float timeout = 0, inc = 0;
-	timeout -= update->dt;
-	
 	if(player->tool_anim == 0){
 		DriftAudioPlaySample(DRIFT_BUS_SFX, DRIFT_SFX_GUN_LOAD, (DriftAudioParams){.gain = 0.5f});
 	}
 	
-	DriftPlayerInput* input = &INPUT->player;
-	if(timeout < 0 && DriftInputButtonPress(DRIFT_INPUT_FIRE)){
-		timeout = 0;
-		
-		if(player->energy == 0){
-			DriftAudioPlaySample(DRIFT_BUS_HUD, DRIFT_SFX_DENY, (DriftAudioParams){.gain = 1});
-			DriftHudPushToast(update->ctx, 0, DRIFT_TEXT_RED"Cannon has no power");
-		} else if(player->is_overheated){
-			DriftAudioPlaySample(DRIFT_BUS_HUD, DRIFT_SFX_DENY, (DriftAudioParams){.gain = 1});
-		} else {
-			repeat = 2, inc = 6/DRIFT_TICK_HZ;
-			if(update->state->inventory.skiff[DRIFT_ITEM_AUTOCANNON]) repeat = 6, inc = 4/DRIFT_TICK_HZ;
-			if(update->state->inventory.skiff[DRIFT_ITEM_ZIP_CANNON]) repeat = 12, inc = 2/DRIFT_TICK_HZ;
-		}
-	}
-	
-	if(repeat && timeout <= 0){
-		PlayerCannonTransforms cannons = CalculatePlayerCannonTransforms(1);
-		static uint which = 0;
-		uint cannon_idx = which++ % (repeat ? 4 : 2);
-		DriftAffine cannon = cannons.arr[cannon_idx];
-		cannon.c -= cannon.x/300;
-		
-		cannon = DriftAffineMul(transform, cannon);
-		DriftFireProjectile(update, DRIFT_PROJECTILE_PLAYER, DriftAffineOrigin(cannon), DriftAffineDirection(cannon, (DriftVec2){0, 1}));
-		DriftRumble();
-		repeat--, timeout += inc;
-		
-		player->energy -= 2;
-		player->temp += 4e-2f;
-	}
+	DriftPlayerUpdateGun(update, player, transform);
 }
 
 static void draw_gun(DriftDraw* draw, DriftPlayerData* player, DriftAffine transform){
-	draw_base_look(draw, player, transform);
-	
-	PlayerCannonTransforms cannons = CalculatePlayerCannonTransforms(player->tool_anim);
-	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = DRIFT_FRAMES[DRIFT_SPRITE_GUN], .color = DRIFT_RGBA8_WHITE, .matrix = DriftAffineMul(transform, cannons.arr[0])}));
-	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = DRIFT_FRAMES[DRIFT_SPRITE_GUN], .color = DRIFT_RGBA8_WHITE, .matrix = DriftAffineMul(transform, cannons.arr[1])}));
-	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = DRIFT_FRAMES[DRIFT_SPRITE_GUN], .color = DRIFT_RGBA8_WHITE, .matrix = DriftAffineMul(transform, cannons.arr[2])}));
-	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){.frame = DRIFT_FRAMES[DRIFT_SPRITE_GUN], .color = DRIFT_RGBA8_WHITE, .matrix = DriftAffineMul(transform, cannons.arr[3])}));
-	
-	for(uint i = 0; i < 4; i++){
-		DriftAffine cannon = cannons.arr[i];
-		cannon.c -= cannon.x/300;
-		
-		DriftAffine t = DriftAffineMul(transform, cannon);
-		DriftVec2 p[4] = {
-			DriftAffinePoint(t, (DriftVec2){0, 60}),
-			DriftAffinePoint(t, (DriftVec2){0, 85}),
-			DriftAffinePoint(t, (DriftVec2){0, 140}),
-			DriftAffinePoint(t, (DriftVec2){0, 150}),
-		};
-		DriftRGBA8 red0 = DriftRGBA8FromColor(DriftVec4Mul((DriftVec4){{0.5f, 0, 0, 0.25f}}, player->tool_anim));
-		DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = p[0], .p1 = p[1], .radii = {1.0f}, .color = red0}));
-		DriftRGBA8 red1 = DriftRGBA8FromColor(DriftVec4Mul((DriftVec4){{1, 0, 0, 0.5f}}, player->tool_anim));
-		DRIFT_ARRAY_PUSH(draw->overlay_prims, ((DriftPrimitive){.p0 = p[2], .p1 = p[3], .radii = {1.2f}, .color = red1}));
-	}
+	float hud_fade = draw_base_look(draw, player, transform);
+	DriftPlayerDrawGun(draw, player, transform, hud_fade);
 }
 
 #define SCANNER_INNER_RADIUS 10
@@ -735,7 +667,7 @@ static void update_scan(DriftUpdate* update, DriftPlayerData* player, DriftAffin
 	
 	DriftVec2 world_reticle = DriftVec2Add(player_pos, player->reticle);
 	DriftEntity closest_entity = {};
-	float closest_dist = INFINITY;
+	float closest_weight = INFINITY;
 	DriftVec2 closest_pos = DRIFT_VEC2_ZERO;
 	DriftScanType closest_type = DRIFT_SCAN_NONE;
 	
@@ -749,10 +681,11 @@ static void update_scan(DriftUpdate* update, DriftPlayerData* player, DriftAffin
 		if(type == DRIFT_SCAN_POWER_NODE) continue;
 		
 		DriftVec2 scan_pos = DriftAffinePoint(state->transforms.matrix[transform_idx], DRIFT_SCANS[type].offset);
-		float dist = DriftVec2Distance(world_reticle, scan_pos);
-		if(dist < SCANNER_OUTER_RADIUS && dist < closest_dist){
+		float dist = DriftVec2Distance(world_reticle, scan_pos), weight = dist;
+		if(state->scan_progress[type] >= 1) weight *= 4;
+		if(dist < SCANNER_OUTER_RADIUS && weight < closest_weight){
 			closest_entity = join.entity;
-			closest_dist = dist;
+			closest_weight = weight;
 			closest_pos = scan_pos;
 			closest_type = type;
 		}
@@ -764,7 +697,7 @@ static void update_scan(DriftUpdate* update, DriftPlayerData* player, DriftAffin
 	float scan0 = state->scan_progress[closest_type];
 	if(closest_type && update->ctx->ui_state == DRIFT_UI_STATE_NONE){
 		DriftGameContext* ctx = update->ctx;
-		float scan1 = state->scan_progress[closest_type] = DriftLerpConst(scan0, 1, update->dt/DRIFT_SCANS[closest_type].duration);
+		float scan1 = state->scan_progress[closest_type] = DriftLerpConst(scan0, 1, update->dt/DRIFT_SCAN_DURATION);
 		if(scan0 < 1 && scan1 == 1){
 			ctx->ui_state = DRIFT_UI_STATE_SCAN;
 			ctx->last_scan = closest_type;
@@ -778,13 +711,10 @@ static void update_scan(DriftUpdate* update, DriftPlayerData* player, DriftAffin
 				ctx->ui_state = DRIFT_UI_STATE_CRAFT;
 				ctx->is_docked = true;
 			}
-			if(sui_type == DRIFT_SCAN_UI_DEPOSIT){
-				DriftVec2 vel = DriftVec2Mul(DriftVec2Normalize(DriftVec2Sub(player_pos, closest_pos)), 100);
-				DriftItemMake(state, DRIFT_ITEM_COPPER, closest_pos, vel, 0);
-			}
 		}
 	}
 	
+	// TODO static globals
 	static DriftAudioSampler sampler;
 	static float pitch = 1;
 	pitch = DriftLerpConst(pitch, 1 + fmodf(scan0, 1), update->dt/0.25f);
@@ -826,7 +756,7 @@ static void draw_scan(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 		DriftAffine m = state->transforms.matrix[transform_idx];
 		DriftVec2 item_pos = DriftAffinePoint(m, DRIFT_SCANS[type].offset);
 		if(state->scan_progress[type] < 1){
-			DriftVec2 rot = DriftWaveComplex(draw->nanos - (uint64_t)(1.5e6*DriftVec2Length(item_pos)), 1);
+			DriftVec2 rot = DriftWaveComplex(draw->update_nanos - (uint64_t)(1.5e6*DriftVec2Length(item_pos)), 1);
 			// draw_indicator(draw, item_pos, rot, DRIFT_SCANS[type].radius, (DriftRGBA8){0x00, 0x80, 0x80, 0x80});
 		}
 		
@@ -855,9 +785,6 @@ static void draw_scan(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 				uint node_idx = DriftComponentFind(&state->power_nodes.c, closest_entity);
 				label = "Fabricator\nUse {@SCAN}";
 			}
-			if(scan_progress >= 1 && sui_type == DRIFT_SCAN_UI_DEPOSIT){
-				label = "Mineral Deposit\nUse {@SCAN}";
-			}
 			
 			if(label) DriftHudDrawOffsetLabel(draw, player_pos, label_delta, DRIFT_VEC4_WHITE, label);
 		}
@@ -869,7 +796,7 @@ static void draw_scan(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 		DriftAffinePoint(transform, (DriftVec2){-retract, retract}),
 	};
 	
-	float phase0 = 2*(float)M_PI*DriftWaveSaw(draw->nanos, 0.7f);
+	float phase0 = 2*(float)M_PI*DriftWaveSaw(draw->update_nanos, 0.7f);
 	DriftVec4 light_color = DriftVec4Mul((DriftVec4){{0, 6, 6, 0}}, anim_brightness);
 	
 	DRIFT_ARRAY_PUSH(draw->fg_sprites, ((DriftSprite){
@@ -898,6 +825,7 @@ static void draw_scan(DriftDraw* draw, DriftPlayerData* player, DriftAffine tran
 		.matrix = DriftAffineTRS(origin[1], +phase0, (DriftVec2){30, 30}),
 	}));
 	
+	// TODO static globals
 	static float scan_radius = 0;
 	static DriftVec2 scan_offset = DRIFT_VEC2_ZERO;
 	const float rate = 100*draw->dt;
