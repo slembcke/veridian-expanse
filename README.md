@@ -12,7 +12,6 @@ Some highlights:
 * Simple ECS(ish) based game objects
 * High performance physics engine
 * High performance r-tree
-* MIT License: Use whatever you find useful
 
 # How to Build:
 At the moment... you can't. The build process relies on the assets, which I haven't included.
