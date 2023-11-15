@@ -1,5 +1,5 @@
 # Veridian Expanse
-Veridian Expanse is a side project I've been working on for a while now. Lately I've been putting a lot more time into it with plans to release it on Steam. (https://store.steampowered.com/app/2137670/Veridian_Expanse/) It won't be a free game, but I don't see any problem releasing the source code (without the assets) for it, especially since I keep telling people all the "good parts" anyway. I have a bit of information about the game [on my blog](https://slembcke.github.io/ProjectDrift). The working name for the game used to be "Project Drift", so there's still plenty of references around using that name.
+Veridian Expanse is a side project I've been working on for a while now. Lately I've been putting a lot more time into it with plans to release it on [Steam](https://store.steampowered.com/app/2137670/Veridian_Expanse/), [Itch.io](https://howlingmoonsoftware.itch.io/veridian-expanse), and Flathub. It won't be a free game, but I don't see any problem releasing the source code (without the assets) for it, especially since I keep telling people all the "good parts" anyway. I have a bit of information about the game [on my blog](https://slembcke.github.io/ProjectDrift). The working name for the game used to be "Project Drift", so there's still plenty of references around using that name.
 
 Some highlights:
 
